@@ -5,7 +5,7 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持按中文原文和拼音搜索，所有历史只存在本机 SQLite 中，
 没有云同步，没有遥测。
 
-> 当前状态：`0.1.0` 未签名预发布版。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从本仓库 Release 下载。
+> 当前版本：`0.2.0` 未签名预发布版。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从本仓库 Release 下载。
 
 ## 当前能力
 

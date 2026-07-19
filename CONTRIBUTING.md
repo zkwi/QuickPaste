@@ -48,6 +48,12 @@ npm run check
 
 自动化覆盖范围与需要人工检查的 Windows 场景见 [docs/testing.md](docs/testing.md)，缺陷分级和回归闭环见 [docs/quality.md](docs/quality.md)。
 
+## 版本定级
+
+- 新功能、显著 UI/交互调整，或一组用户可感知的体验改进，默认提升 minor 版本。
+- patch 只用于范围明确、不会改变主要流程或布局结构的修复。
+- 同一版本按影响最高的变更定级；`1.0.0` 前的破坏性变化至少提升 minor，并记录迁移影响。
+
 ## 代码边界
 
 - 可独立测试且不依赖 UI 的规则放在 `src/domain/`。

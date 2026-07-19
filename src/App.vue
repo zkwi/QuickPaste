@@ -1576,11 +1576,16 @@ function finishOnboarding() {
 }
 
 function focusOnboardingStep() {
-  if (window.innerWidth <= 360 || window.innerHeight <= 360) {
-    onboardingDialog.value?.focus({ preventScroll: true })
-    document.querySelector<HTMLElement>('.onboarding-backdrop')?.scrollTo({ top: 0, left: 0 })
+  const dialog = onboardingDialog.value
+  const backdrop = document.querySelector<HTMLElement>('.onboarding-backdrop')
+  const dialogOverflows = Boolean(dialog && dialog.scrollHeight > dialog.clientHeight + 1)
+  dialog?.scrollTo({ top: 0, left: 0 })
+  backdrop?.scrollTo({ top: 0, left: 0 })
+
+  if (window.innerWidth <= 360 || window.innerHeight <= 360 || dialogOverflows) {
+    dialog?.focus({ preventScroll: true })
   } else {
-    onboardingPrimary.value?.focus()
+    onboardingPrimary.value?.focus({ preventScroll: true })
   }
 }
 
@@ -2568,6 +2573,7 @@ onBeforeUnmount(() => {
           role="dialog"
           aria-modal="true"
           aria-labelledby="onboarding-title"
+          aria-describedby="onboarding-description"
           @keydown="trapModalFocus"
         >
           <header class="onboarding-header">
@@ -2603,7 +2609,7 @@ onBeforeUnmount(() => {
           <div class="onboarding-copy">
             <span>{{ currentOnboardingStep.eyebrow }}</span>
             <h1 id="onboarding-title">{{ currentOnboardingStep.title }}</h1>
-            <p>{{ currentOnboardingStep.description }}</p>
+            <p id="onboarding-description">{{ currentOnboardingStep.description }}</p>
           </div>
 
           <footer class="onboarding-footer">

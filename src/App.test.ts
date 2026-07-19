@@ -78,6 +78,29 @@ describe('QuickPaste quick panel', () => {
     }
   })
 
+  it('keeps the onboarding header visible when effective height makes the dialog overflow', async () => {
+    localStorage.clear()
+    const originalHeight = window.innerHeight
+    Object.defineProperty(window, 'innerHeight', { configurable: true, value: 440 })
+    const wrapper = mount(App, { attachTo: document.body })
+    try {
+      await wrapper.vm.$nextTick()
+      const dialog = wrapper.get('[data-testid="onboarding-dialog"]')
+      Object.defineProperty(dialog.element, 'clientHeight', { configurable: true, value: 360 })
+      Object.defineProperty(dialog.element, 'scrollHeight', { configurable: true, value: 412 })
+      const scrollTo = vi.spyOn(dialog.element, 'scrollTo')
+
+      await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
+      await wrapper.vm.$nextTick()
+
+      expect(document.activeElement).toBe(dialog.element)
+      expect(scrollTo).toHaveBeenCalledWith({ top: 0, left: 0 })
+    } finally {
+      wrapper.unmount()
+      Object.defineProperty(window, 'innerHeight', { configurable: true, value: originalHeight })
+    }
+  })
+
   it('filters clipboard rows with Chinese pinyin search terms', async () => {
     const wrapper = mount(App)
 

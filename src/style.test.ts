@@ -27,7 +27,7 @@ function visibleClipRows(shellHeight: number, variant: DensityVariant): number {
 
 function cssRule(selector: string): string {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = styles.match(new RegExp(`${escaped}\\s*\\{([\\s\\S]*?)\\}`))
+  const match = styles.match(new RegExp(`(?:^|\\n)${escaped}\\s*\\{([\\s\\S]*?)\\}`))
   if (!match) throw new Error(`Missing CSS rule: ${selector}`)
   return match[1]
 }
@@ -78,5 +78,13 @@ describe('quick-panel density contract', () => {
   it('covers the full maximized window with settings modals', () => {
     expect(cssRule('.app-stage.is-window-maximized .settings-modal-backdrop')).toMatch(/width:\s*100vw/)
     expect(cssRule('.app-stage.is-window-maximized .settings-modal-backdrop')).toMatch(/height:\s*100vh/)
+  })
+
+  it('compacts onboarding at reduced effective heights with an overflow safety fallback', () => {
+    expect(cssRule('.onboarding-backdrop')).toMatch(/inset:\s*0/)
+    expect(cssRule('.onboarding-dialog')).toMatch(/display:\s*grid/)
+    expect(cssRule('.onboarding-dialog')).toMatch(/max-height:\s*100%/)
+    expect(cssRule('.onboarding-dialog')).toMatch(/overflow:\s*auto/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.onboarding-visual\s*\{[\s\S]*?height:\s*148px/)
   })
 })

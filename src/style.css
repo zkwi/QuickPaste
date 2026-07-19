@@ -163,6 +163,10 @@ button:disabled {
   border-radius: 0;
 }
 
+.app-stage.is-window-maximized .onboarding-backdrop {
+  border-radius: 0;
+}
+
 .quick-panel,
 .library-shell {
   position: relative;
@@ -2202,21 +2206,23 @@ kbd {
 .onboarding-backdrop {
   position: fixed;
   z-index: 30;
-  inset: auto;
+  inset: 0;
   display: grid;
   place-items: center;
-  width: min(760px, calc(100vw - 32px));
-  height: min(548px, calc(100vh - 32px));
-  padding: 18px;
+  width: 100vw;
+  height: 100vh;
+  padding: clamp(8px, 3vh, 18px);
   overflow: auto;
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--bg-canvas-deep) 38%, transparent);
-  backdrop-filter: blur(9px) saturate(0.94);
+  overscroll-behavior: contain;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--bg-canvas-deep) 52%, transparent);
+  backdrop-filter: blur(12px) saturate(0.92);
 }
 
 .onboarding-dialog {
-  width: min(458px, calc(100vw - 36px));
-  max-height: calc(100% - 8px);
+  display: grid;
+  width: min(458px, 100%);
+  max-height: 100%;
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--border-strong) 56%, transparent);
   border-radius: 21px;
@@ -2595,8 +2601,7 @@ kbd {
     border-radius: 15px;
   }
 
-  .settings-modal-backdrop,
-  .onboarding-backdrop {
+  .settings-modal-backdrop {
     width: calc(100vw - 16px);
     height: calc(100vh - 16px);
     min-height: 0;
@@ -2751,6 +2756,50 @@ kbd {
   .clip-primary {
     padding-block: 2px;
   }
+
+  .onboarding-backdrop {
+    padding: 8px 12px;
+  }
+
+  .onboarding-header {
+    height: 44px;
+    padding-inline: 15px;
+  }
+
+  .onboarding-visual {
+    height: 148px;
+    margin-inline: 14px;
+    border-radius: 14px;
+  }
+
+  .shortcut-visual,
+  .search-visual,
+  .privacy-visual {
+    transform: scale(0.88);
+    transform-origin: center;
+  }
+
+  .onboarding-copy {
+    padding: 11px 24px 10px;
+  }
+
+  .onboarding-copy h1 {
+    margin: 4px 0 5px;
+    font-size: 19px;
+  }
+
+  .onboarding-copy p {
+    font-size: 10px;
+    line-height: 1.5;
+  }
+
+  .onboarding-footer {
+    height: 49px;
+  }
+
+  .onboarding-next {
+    height: 31px;
+  }
 }
 
 @media (max-width: 360px), (max-height: 360px) {
@@ -2767,12 +2816,16 @@ kbd {
     overflow: auto;
   }
 
-  .settings-modal-backdrop,
-  .onboarding-backdrop {
+  .settings-modal-backdrop {
     width: calc(100vw - 8px);
     height: calc(100vh - 8px);
     padding: 4px;
     overflow: auto;
+    place-items: start center;
+  }
+
+  .onboarding-backdrop {
+    padding: 4px;
     place-items: start center;
   }
 
