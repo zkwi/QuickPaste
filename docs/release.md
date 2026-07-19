@@ -86,3 +86,9 @@ foreach ($artifact in $artifacts) {
 - 先验证候选产物与隐私扫描，再创建不可变版本标签；标签应指向产生该产物的提交。
 - 不提交 `dist`、`target`、`output`、日志、数据库、WAL/SHM 或签名材料。
 - 发布后从下载入口重新获取安装包，再次核对 SHA-256、大小和未签名状态，避免上传过程选错文件。
+
+## 7. GitHub Actions 异步复核
+
+- 发布是否继续，以本机 `npm run check`、`npm run build:windows`、隐私扫描和产物校验结果为准。
+- 推送后记录对应 GitHub Actions 链接与当时状态，不在发布任务中阻塞等待远端 Runner 完成。
+- CI 后续失败时创建修复提交并重新验证；若失败影响已发布安装包的正确性或安全性，应撤下或明确标记对应 Release。

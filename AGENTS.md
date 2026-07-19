@@ -33,4 +33,8 @@ npm run check
 npm run build:windows
 ```
 
+- 本地 `npm run check`、Windows 构建、隐私扫描和发布产物核验是发布阻断门槛。
+- GitHub Actions 只作为推送后的异步复核；发布任务记录运行链接和当时状态，但不阻塞等待远端 CI 完成。
+- 异步 CI 后续失败时应进入缺陷修复闭环，不得静默忽略；必要时撤下或标记受影响的 Release。
+
 提交与发布由维护者明确发起；不要自动提交、推送、打标签或发布。
