@@ -1,0 +1,61 @@
+{
+  "name": "quickpaste",
+  "private": true,
+  "license": "UNLICENSED",
+  "version": "0.1.0",
+  "packageManager": "npm@11.9.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:governance": "node --test scripts/check-repository.test.mjs scripts/check-versions.test.mjs scripts/check-privacy.test.mjs",
+    "check:versions": "node scripts/check-versions.mjs",
+    "check:repository": "node scripts/check-repository.mjs",
+    "check:privacy": "node scripts/check-privacy.mjs",
+    "check:governance": "npm run test:governance && npm run check:versions && npm run check:repository && npm run check:privacy",
+    "check:frontend": "npm test && npm run build",
+    "format:rust:check": "cargo fmt --manifest-path src-tauri/Cargo.toml -- --check",
+    "lint:rust": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+    "test:rust": "cargo test --locked --manifest-path src-tauri/Cargo.toml --all-features",
+    "check:rust": "npm run format:rust:check && npm run lint:rust && npm run test:rust",
+    "check": "npm run check:governance && npm run check:frontend && npm run check:rust",
+    "format:rust": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "build:windows": "tauri build --bundles nsis --target x86_64-pc-windows-msvc",
+    "tauri": "tauri"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "devEngines": {
+    "runtime": {
+      "name": "node",
+      "version": "22.14.0",
+      "onFail": "error"
+    },
+    "packageManager": {
+      "name": "npm",
+      "version": "11.9.0",
+      "onFail": "error"
+    }
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/test-utils": "^2.4.11",
+    "happy-dom": "^20.10.6",
+    "typescript": "~6.0.2",
+    "vite": "^8.1.1",
+    "vitest": "^4.1.10",
+    "vue-tsc": "^3.2.4"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "lucide-vue-next": "^0.577.0",
+    "pinyin-pro": "3.28.1",
+    "vue": "^3.5.40"
+  }
+}

@@ -1,0 +1,59 @@
+# Dependencies and build output
+/node_modules/
+/dist/
+/.vite/
+/src-tauri/gen/schemas/
+*.tsbuildinfo
+/src-tauri/target/
+
+# Local UI test artifacts
+/.playwright-cli/
+/.playwright-mcp/
+/output/
+/coverage/
+/test-results/
+/playwright-report/
+
+# Local environment and private signing material
+**/.env
+**/.env.*
+!**/.env.example
+*.pfx
+*.p12
+*.pvk
+*.pem
+*.key
+
+# Runtime data must never be committed by a clipboard application
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+*.sqlite-journal
+*.sqlite3-journal
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+
+# Editor and operating-system files
+/.idea/
+/.vs/
+/.vscode/*
+!/.vscode/extensions.json
+!/.vscode/settings.json
+!/.vscode/tasks.json
+!/.vscode/launch.json
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.local

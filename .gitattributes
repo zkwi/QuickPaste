@@ -1,0 +1,32 @@
+* text=auto eol=lf
+
+# Normalize source and configuration files so diffs stay stable across Windows tools.
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.rs text eol=lf
+*.svg text eol=lf
+*.toml text eol=lf
+*.ts text eol=lf
+*.vue text eol=lf
+*.xml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Native Windows scripts keep the platform convention.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary assets and release artifacts.
+*.dll binary
+*.exe binary
+*.icns binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.png binary
+*.webp binary
