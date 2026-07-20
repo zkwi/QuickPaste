@@ -232,6 +232,7 @@ describe('quick panel high-frequency interaction', () => {
       id: 'ocr-visible', kind: 'image', title: 'Invoice', content: 'clipboard image', sourceApp: 'Snipping Tool',
       copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [], formats: ['image'],
       imageUrl: 'data:image/png;base64,AA==', imageHash: 'a'.repeat(64),
+      omittedFormats: ['object'],
       ocrStatus: 'completed', ocrText: 'Invoice number 2026-001',
     }]))
     wrapper = mount(App, { attachTo: document.body })
@@ -242,9 +243,14 @@ describe('quick panel high-frequency interaction', () => {
 
     const preview = wrapper.get('[data-testid="preview-panel"]')
     expect(preview.get('.preview-body').classes()).toContain('image-preview-body')
-    expect(preview.get('.preview-heading').classes()).toContain('image-preview-heading')
+    expect(preview.find('.image-preview-heading').exists()).toBe(false)
+    expect(preview.get('.preview-image-title').text()).toBe('Invoice')
     expect(preview.find('.format-badge').exists()).toBe(false)
-    expect(preview.get('[data-testid="preview-ocr-text"]').text()).toContain('Invoice number 2026-001')
+    expect(preview.find('.format-omission-warning').exists()).toBe(false)
+    const ocrDetails = preview.get('[data-testid="preview-ocr-text"]')
+    expect(ocrDetails.element.tagName).toBe('DETAILS')
+    expect(ocrDetails.attributes('open')).toBeUndefined()
+    expect(ocrDetails.text()).toContain('Invoice number 2026-001')
   })
 
   it('runs manager-only typed system actions without leaving or mutating the manager', async () => {
@@ -583,8 +589,13 @@ describe('quick panel high-frequency interaction', () => {
     })
   })
 
-  it('does not advertise a separate plain-text action before rich formats are stored', () => {
-    expect(wrapper.get('.keyboard-legend').text()).not.toContain('纯文本')
+  it('moves destination and manager access into the title bar without a redundant footer', () => {
+    const chrome = wrapper.get('.panel-chrome')
+
+    expect(wrapper.find('.panel-footer').exists()).toBe(false)
+    expect(wrapper.find('.keyboard-legend').exists()).toBe(false)
+    expect(chrome.find('[data-testid="paste-target"]').exists()).toBe(true)
+    expect(chrome.find('[data-testid="open-library"]').exists()).toBe(true)
   })
 
   it('keeps only the active filter and selected result actions in the Tab order', () => {

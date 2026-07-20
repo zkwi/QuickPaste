@@ -3547,6 +3547,22 @@ onBeforeUnmount(() => {
             <span class="capture-state" :class="{ paused: capturePaused, unavailable: captureAvailability === 'unavailable' }">
               <span class="state-dot"></span>{{ captureStatusText }}
             </span>
+            <div
+              data-testid="paste-target"
+              class="chrome-target"
+              aria-live="polite"
+              aria-atomic="true"
+              :title="`${t('pasteTo')} ${targetApp ?? t('currentApp')}`"
+            >
+              <SourceAppIcon
+                class="target-icon"
+                :source="targetApp ?? t('currentApp')"
+                :icon="targetAppIcon ?? undefined"
+              />
+              <span class="sr-only">{{ t('pasteTo') }}</span>
+              <strong>{{ targetApp ?? t('currentApp') }}</strong>
+              <span v-if="targetElevated" class="target-admin" :title="t('administratorWindow')"><ShieldCheck :size="11" /><span class="sr-only">{{ t('administratorWindow') }}</span></span>
+            </div>
           </div>
           <div class="chrome-actions">
             <button
@@ -3565,6 +3581,9 @@ onBeforeUnmount(() => {
             <button class="icon-button" type="button" :aria-label="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" @click="toggleTheme">
               <Moon v-if="theme === 'light'" :size="16" />
               <Sun v-else :size="16" />
+            </button>
+            <button data-testid="open-library" class="icon-button" type="button" :aria-label="t('manageClipboardShort')" :title="t('manageClipboardShort')" @click="openLibrary()">
+              <LayoutList :size="16" />
             </button>
             <button class="icon-button" type="button" :aria-label="t('openSettings')" @click="openLibrary('settings')">
               <Settings2 :size="16" />
@@ -3644,10 +3663,11 @@ onBeforeUnmount(() => {
                 <button data-testid="close-preview" class="back-button" type="button" @click="closePreview">
                   <ArrowLeft :size="17" /> {{ t('backToHistory') }}
                 </button>
-                <span class="preview-type">{{ kindLabel(previewClip.kind) }}</span>
+                <span v-if="previewClip.kind === 'image'" class="preview-image-title">{{ previewClip.title }}</span>
+                <span v-else class="preview-type">{{ kindLabel(previewClip.kind) }}</span>
               </div>
               <div class="preview-body" :class="{ 'image-preview-body': previewClip.kind === 'image' }">
-                <div class="preview-heading" :class="{ 'image-preview-heading': previewClip.kind === 'image' }">
+                <div v-if="previewClip.kind !== 'image'" class="preview-heading">
                   <span class="kind-icon large" :style="{ '--source-color': previewClip.color }">
                     <component :is="kindIcon(previewClip.kind)" :size="20" />
                   </span>
@@ -3659,14 +3679,15 @@ onBeforeUnmount(() => {
                 <div v-if="previewClip.kind !== 'image' && previewClip.formats?.length" class="format-badges" :aria-label="previewClip.formats.join(', ')">
                   <span v-for="format in previewClip.formats" :key="format" class="format-badge">{{ format.toUpperCase() }}</span>
                 </div>
-                <p v-if="previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
+                <p v-if="previewClip.kind !== 'image' && previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
                   {{ t('omittedFormatsWarning', { formats: previewClip.omittedFormats.map((format) => format.toUpperCase()).join(', ') }) }}
                 </p>
                 <div v-if="previewClip.kind === 'image'" class="image-preview-content">
                   <img class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
-                  <p v-if="previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
-                    <strong>{{ t('ocrRecognizedText') }}</strong><span>{{ previewClip.ocrText }}</span>
-                  </p>
+                  <details v-if="previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
+                    <summary><strong>{{ t('ocrRecognizedText') }}</strong></summary>
+                    <div>{{ previewClip.ocrText }}</div>
+                  </details>
                 </div>
                 <CodePreview
                   v-else-if="previewClip.kind === 'code'"
@@ -3804,23 +3825,6 @@ onBeforeUnmount(() => {
           </Transition>
         </div>
 
-        <footer class="panel-footer">
-          <div data-testid="paste-target" class="target-app" role="status" aria-live="polite" aria-atomic="true">
-            <SourceAppIcon
-              class="target-icon"
-              :source="targetApp ?? t('currentApp')"
-              :icon="targetAppIcon ?? undefined"
-            /><span>{{ t('pasteTo') }}</span><strong>{{ targetApp ?? t('currentApp') }}</strong>
-            <span v-if="targetElevated" class="target-admin"><ShieldCheck :size="12" /><span class="target-admin-label">{{ t('administratorWindow') }}</span></span>
-          </div>
-          <div v-if="historyState === 'ready' && visibleItems.length && !previewClip" class="keyboard-legend" :aria-label="t('keyboardHints')">
-            <span><kbd>↑↓</kbd> {{ t('select') }}</span>
-            <span><kbd>Enter</kbd> {{ t('paste') }}</span>
-          </div>
-          <button data-testid="open-library" class="library-link" type="button" @click="openLibrary()">
-            <LayoutList :size="15" /> {{ t('manageClipboardShort') }} <kbd>Ctrl L</kbd>
-          </button>
-        </footer>
       </section>
 
       <section v-else key="library" data-testid="library-view" class="library-shell" :aria-label="t('clipboardManager')" :inert="modalOverlayOpen">

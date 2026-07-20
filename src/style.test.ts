@@ -16,7 +16,6 @@ function visibleClipRows(shellHeight: number, variant: DensityVariant): number {
     '--quick-chrome-height',
     '--quick-search-area-height',
     '--quick-filter-height',
-    '--quick-footer-height',
   ].reduce((total, name) => total + quickPanelMetric(name, variant), 0)
   const listPadding = quickPanelMetric('--quick-list-padding-block', variant) * 2
   const rowHeight = quickPanelMetric('--quick-row-height', variant)
@@ -55,10 +54,14 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.clip-meta')).toMatch(/display:\s*flex/)
     expect(cssRule('.clip-meta')).toMatch(/width:\s*92px/)
     expect(cssRule('.clip-meta')).toMatch(/flex-direction:\s*column/)
+    expect(cssRule('.clip-meta')).toMatch(/justify-content:\s*center/)
     expect(cssRule('.source-app')).toMatch(/grid-template-columns:\s*14px\s+minmax\(0,\s*1fr\)/)
+    expect(cssRule('.source-app')).toMatch(/line-height:\s*14px/)
     expect(cssRule('.clip-time')).toMatch(/font-variant-numeric:\s*tabular-nums/)
     expect(cssRule('.app-dot')).toMatch(/width:\s*14px/)
     expect(cssRule('.app-dot')).toMatch(/height:\s*14px/)
+    expect(cssRule('.manager-meta')).toMatch(/justify-content:\s*center/)
+    expect(cssRule('.manager-source')).toMatch(/line-height:\s*16px/)
   })
 
   it('keeps metadata visible on primary keyboard focus and only replaces it inside row actions', () => {
@@ -67,17 +70,26 @@ describe('quick-panel density contract', () => {
     expect(styles).toContain('.clip-row:has(.row-actions:focus-within) .clip-meta')
   })
 
-  it('collapses the administrator label before it can crowd out the target app', () => {
-    expect(styles).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?\.target-admin-label\s*\{[\s\S]*?display:\s*none/)
+  it('keeps the compact title bar free of the old footer allocation', () => {
+    expect(styles).not.toContain('--quick-footer-height')
+    expect(styles).not.toContain('.panel-footer')
+    expect(cssRule('.chrome-target')).toMatch(/align-items:\s*center/)
+    expect(cssRule('.chrome-target')).toMatch(/max-width:\s*112px/)
   })
 
   it('adapts settings columns to available content width without stretching short cards', () => {
-    expect(styles).toMatch(/\.settings-content\s*\{\s*display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(360px,\s*1fr\)\)/)
+    expect(styles).toMatch(/\.settings-content\s*\{\s*display:\s*grid;[\s\S]*?width:\s*min\(100%,\s*960px\);[\s\S]*?margin-inline:\s*auto;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
     expect(cssRule('.setting-group')).toMatch(/align-self:\s*start/)
     expect(cssRule('.settings-primary-actions,\n.update-card,\n.settings-loading')).toMatch(/grid-column:\s*1\s*\/\s*-1/)
-    expect(cssRule('.settings-primary-actions')).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+    expect(cssRule('.settings-primary-actions')).toMatch(/grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(280px,\s*1fr\)\)/)
     expect(cssRule('.settings-primary-card')).toMatch(/display:\s*grid/)
-    expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.settings-content\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+    expect(cssRule('.setting-row')).toMatch(/display:\s*grid/)
+    expect(cssRule('.setting-row')).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto/)
+    expect(cssRule('.shortcut-card')).toMatch(/grid-template-columns:\s*34px\s+minmax\(0,\s*1fr\)/)
+    expect(cssRule('.shortcut-recorder')).toMatch(/grid-column:\s*2/)
+    expect(cssRule('.update-card')).toMatch(/grid-template-columns:\s*24px\s+minmax\(0,\s*1fr\)/)
+    expect(cssRule('.update-actions')).toMatch(/grid-column:\s*2/)
+    expect(cssRule('.update-actions')).toMatch(/flex-wrap:\s*wrap/)
   })
 
   it('keeps settings copy readable without flattening its visual hierarchy', () => {
@@ -124,23 +136,27 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/display:\s*flex/)
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/overflow:\s*hidden/)
     expect(cssRule('.image-preview-content')).toMatch(/display:\s*grid/)
-    expect(cssRule('.image-preview-content')).toMatch(/grid-template-rows:\s*minmax\(140px,\s*1fr\)\s+auto/)
-    expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*140px/)
+    expect(cssRule('.image-preview-content')).toMatch(/grid-template-rows:\s*minmax\(180px,\s*1fr\)\s+auto/)
+    expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*180px/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/max-height:\s*none/)
-    expect(cssRule('.preview-ocr-text')).toMatch(/max-height:\s*72px/)
-    expect(cssRule('.preview-ocr-text')).toMatch(/grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)/)
-    expect(cssRule('.image-preview-heading')).toMatch(/min-height:\s*0/)
-    expect(cssRule('.image-preview-heading')).toMatch(/margin-bottom:\s*6px/)
-    expect(cssRule('.image-preview-heading .kind-icon')).toMatch(/display:\s*none/)
-    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-content\s*\{[\s\S]*?grid-template-rows:\s*minmax\(72px,\s*1fr\)\s+auto/)
-    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-body \.preview-image\s*\{[\s\S]*?min-height:\s*72px/)
-    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.preview-ocr-text\s*\{[\s\S]*?max-height:\s*42px/)
+    expect(cssRule('.preview-ocr-text')).toMatch(/max-height:\s*30px/)
+    expect(cssRule('.preview-ocr-text[open]')).toMatch(/max-height:\s*96px/)
+    expect(cssRule('.preview-ocr-text summary')).toMatch(/cursor:\s*pointer/)
+    expect(cssRule('.preview-image-title')).toMatch(/text-overflow:\s*ellipsis/)
+    expect(cssRule('.preview-image-title')).toMatch(/white-space:\s*nowrap/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-content\s*\{[\s\S]*?grid-template-rows:\s*minmax\(120px,\s*1fr\)\s+auto/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-body \.preview-image\s*\{[\s\S]*?min-height:\s*120px/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.preview-ocr-text\[open\]\s*\{[\s\S]*?max-height:\s*72px/)
   })
 
   it('keeps manager controls and row metadata on stable compact tracks', () => {
     expect(cssRule('.manager-toolbar')).toMatch(/display:\s*grid/)
-    expect(cssRule('.manager-toolbar')).toMatch(/grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+auto\s+auto/)
+    expect(cssRule('.manager-toolbar')).toMatch(/grid-template-columns:\s*minmax\(240px,\s*1fr\)\s+auto/)
+    expect(cssRule('.manager-toolbar')).toMatch(/grid-template-areas:\s*"search actions"\s*"filters filters"/)
     expect(cssRule('.manager-toolbar-actions')).toMatch(/display:\s*flex/)
+    expect(cssRule('.manager-filters')).toMatch(/overflow-x:\s*auto/)
+    expect(cssRule('.manager-filters button')).toMatch(/flex:\s*0\s+0\s+auto/)
+    expect(cssRule('.manager-filters button')).toMatch(/white-space:\s*nowrap/)
     expect(cssRule('.manager-row')).toMatch(/grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+96px\s+90px/)
   })
 

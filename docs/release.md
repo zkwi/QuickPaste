@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.11.0` 是当前 GitHub Release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.11.0>。本清单把“GitHub 发布渠道”和“验证完成度”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须保留 `pending real-machine`，不得宣称已经全面验收。是否使用 Pre-release 由维护者在发布时明确决定，不能用渠道标签替代验证证据。
+`0.12.0` 是当前 GitHub Release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.12.0>。本清单把“GitHub 发布渠道”和“验证完成度”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须保留 `pending real-machine`，不得宣称已经全面验收。是否使用 Pre-release 由维护者在发布时明确决定，不能用渠道标签替代验证证据。
 
 ## 版本定级
 
