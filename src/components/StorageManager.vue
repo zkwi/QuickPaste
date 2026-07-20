@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { Database, Rows3 } from 'lucide-vue-next'
+import { Database, FolderOpen, Rows3 } from 'lucide-vue-next'
 import { translate, type Locale } from '../i18n'
 import type {
   HistoryHealth,
@@ -24,6 +24,7 @@ const emit = defineEmits<{
   'commit-restore': [token: string]
   'discard-restore': [token: string]
   compact: []
+  'open-data-directory': []
   refresh: []
 }>()
 
@@ -154,6 +155,19 @@ function requestRefresh(event: Event) {
         <p>{{ t('storageDescription') }}</p>
       </div>
     </header>
+
+    <aside class="storage-data-location" data-testid="storage-data-location">
+      <FolderOpen :size="18" aria-hidden="true" />
+      <p>{{ t('storageDataLocationDescription') }}</p>
+      <button
+        class="storage-directory-button"
+        data-testid="storage-open-directory"
+        type="button"
+        @click="$emit('open-data-directory')"
+      >
+        {{ t('storageOpenDirectory') }}
+      </button>
+    </aside>
 
     <aside
       v-if="health?.status === 'recovered'"

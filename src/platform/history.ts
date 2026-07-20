@@ -406,6 +406,15 @@ export function getNativeStorageStats(invokeAdapter?: HistoryInvoke): Promise<St
   return invokeParsed('get_storage_stats', {}, parseStorageStats, invokeAdapter)
 }
 
+export async function openNativeHistoryDataDirectory(invokeAdapter?: HistoryInvoke): Promise<boolean> {
+  if (!invokeAdapter && !isTauriRuntime()) return false
+  try {
+    return await (invokeAdapter ?? invokeThroughTauri)('open_history_data_directory', {}) === true
+  } catch {
+    return false
+  }
+}
+
 export function compactNativeHistoryDatabase(invokeAdapter?: HistoryInvoke): Promise<StorageStats | null> {
   return invokeParsed('compact_history_database', {}, parseStorageStats, invokeAdapter)
 }

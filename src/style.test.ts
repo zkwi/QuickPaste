@@ -99,7 +99,7 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.setting-heading p,\n.setting-row small')).toMatch(/font-size:\s*10px/)
     expect(cssRule('.setting-row strong')).toMatch(/font-size:\s*11\.5px/)
     expect(cssRule('.storage-manager-header p,\n.storage-panel header p,\n.storage-health-notice p,\n.storage-operation-card p,\n.storage-operation-card small')).toMatch(/font-size:\s*10px/)
-    expect(cssRule('.storage-action-button,\n.storage-refresh-button,\n.storage-cancel-button,\n.storage-danger-button')).toMatch(/font-size:\s*9\.5px/)
+    expect(cssRule('.storage-action-button,\n.storage-directory-button,\n.storage-refresh-button,\n.storage-cancel-button,\n.storage-danger-button')).toMatch(/font-size:\s*9\.5px/)
     expect(cssRule('.update-copy p')).toMatch(/font-size:\s*10\.5px/)
   })
 

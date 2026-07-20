@@ -81,6 +81,20 @@ export async function setQuickPanelPinned(
   }
 }
 
+export async function setOnboardingWindowActive(
+  enabled: boolean,
+  invokeAdapter?: WindowInvoke,
+): Promise<boolean> {
+  if (!invokeAdapter && !('__TAURI_INTERNALS__' in window)) return false
+
+  try {
+    await (invokeAdapter ?? invokeThroughTauri)('set_onboarding_window_active', { enabled })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function runWindowAction(
   action: WindowAction,
   resolveWindow: WindowResolver = resolveTauriWindow,

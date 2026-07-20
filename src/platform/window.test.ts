@@ -1,6 +1,7 @@
 import {
   observeWindowMaximizedState,
   runWindowAction,
+  setOnboardingWindowActive,
   setQuickPanelPinned,
   setWindowMode,
   type DesktopWindow,
@@ -108,5 +109,14 @@ describe('desktop window actions', () => {
 
     await expect(setQuickPanelPinned(true, invoke)).resolves.toBe(true)
     expect(invoke).toHaveBeenCalledWith('set_quick_panel_pinned', { enabled: true })
+  })
+
+  it('asks the native shell to present and protect first-run onboarding', async () => {
+    const invoke: WindowInvoke = vi.fn().mockResolvedValue(undefined)
+
+    await expect(setOnboardingWindowActive(true, invoke)).resolves.toBe(true)
+    await expect(setOnboardingWindowActive(false, invoke)).resolves.toBe(true)
+    expect(invoke).toHaveBeenNthCalledWith(1, 'set_onboarding_window_active', { enabled: true })
+    expect(invoke).toHaveBeenNthCalledWith(2, 'set_onboarding_window_active', { enabled: false })
   })
 })

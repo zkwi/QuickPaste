@@ -124,6 +124,7 @@ import {
   getNativeStorageStats,
   listNativeHistoryCollections,
   loadNativeClipPayload,
+  openNativeHistoryDataDirectory,
   prepareNativeHistoryRestore,
   queryNativeHistory,
   renameNativeHistoryCollection,
@@ -149,12 +150,11 @@ import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
 import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setLaunchAtStartup, setScreenCaptureProtection } from './platform/settings'
 import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
 import {
-  centerCurrentWindow,
   observeWindowMaximizedState,
   runWindowAction,
+  setOnboardingWindowActive,
   setQuickPanelPinned,
   setWindowMode,
-  startWindowDragging,
   type WindowAction,
 } from './platform/window'
 import { checkForUpdate, connectUpdateCheckRequested, downloadUpdate, getCurrentVersion, installDownloadedUpdate, type UpdateProgress, type UpdateStatus } from './platform/updater'
@@ -1765,6 +1765,13 @@ async function refreshHistoryStorage() {
   }
 }
 
+async function openHistoryDataDirectory() {
+  const opened = await openNativeHistoryDataDirectory()
+  storageStatusMessage.value = opened
+    ? storageStatus('已打开数据目录。', 'Data folder opened.')
+    : storageStatus('无法打开数据目录，请确认程序目录仍然可用。', 'The data folder could not be opened. Check that the application directory is still available.')
+}
+
 function loadMoreNativeHistory() {
   if (!nativeRuntime) return
   void runNativeHistoryQuery(true)
@@ -3048,17 +3055,11 @@ function handleWindowBlur() {
   }
 }
 
-function handleTitlebarPointerDown(event: PointerEvent) {
-  if (event.button !== 0 || event.isPrimary === false || event.defaultPrevented) return
-  const target = event.target instanceof Element ? event.target : null
-  if (target?.closest('button, a, input, select, textarea, [role="button"]')) return
-  void startWindowDragging()
-}
-
 function finishOnboarding() {
   onboardingPracticePending.value = false
   onboardingCompleted.value = true
   onboardingStep.value = -1
+  if (nativeRuntime) void setOnboardingWindowActive(false)
   nextTick(() => searchInput.value?.focus())
 }
 
@@ -3109,6 +3110,7 @@ async function finishOnboardingWithSample() {
     onboardingPracticePending.value = true
     onboardingCompleted.value = true
     onboardingStep.value = -1
+    if (nativeRuntime) void setOnboardingWindowActive(false)
     nextTick(() => searchInput.value?.focus())
   } finally {
     onboardingSampleBusy.value = false
@@ -3571,7 +3573,7 @@ onMounted(() => {
   relativeTimeTimer = setInterval(() => {
     relativeTimeNow.value = new Date()
   }, 60_000)
-  if (nativeRuntime && !onboardingCompleted.value) void centerCurrentWindow()
+  if (nativeRuntime && !onboardingCompleted.value) void setOnboardingWindowActive(true)
   // 会话和目标事件必须先于设置/历史加载订阅，避免冷启动期间丢失第一次唤起。
   void connectSessionBridges()
   void connectClipboardBridge()
@@ -3628,7 +3630,7 @@ onBeforeUnmount(() => {
   >
     <Transition name="panel-swap" mode="out-in" @after-enter="focusCurrentView">
       <section v-if="currentView === 'quick'" key="quick" class="quick-panel" :aria-label="`${t('productName')} ${t('quickPanel')}`" :inert="onboardingStep >= 0 || modalOverlayOpen">
-        <header class="panel-chrome" @pointerdown="handleTitlebarPointerDown">
+        <header class="panel-chrome" data-tauri-drag-region="deep">
           <div class="brand-lockup">
             <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
             <span class="brand-name">{{ t('productName') }}</span>
@@ -3969,7 +3971,7 @@ onBeforeUnmount(() => {
         </aside>
 
         <main class="library-main">
-          <header class="library-header" data-tauri-drag-region>
+          <header class="library-header" data-tauri-drag-region="deep">
             <div>
               <button ref="libraryBackButton" class="back-button subtle" type="button" @click="returnToQuickPanel"><ChevronLeft :size="17" />{{ t('backToQuick') }}</button>
               <h1>{{ librarySection === 'settings' ? t('settings') : t('manageClipboard') }}</h1>
@@ -4129,6 +4131,7 @@ onBeforeUnmount(() => {
               @commit-restore="commitHistoryRestore"
               @discard-restore="discardHistoryRestore"
               @compact="compactHistoryDatabase"
+              @open-data-directory="openHistoryDataDirectory"
               @refresh="refreshHistoryStorage"
             />
             <article class="update-card" :aria-busy="updateBusy">
@@ -4319,7 +4322,7 @@ onBeforeUnmount(() => {
           aria-describedby="onboarding-description"
           @keydown="trapModalFocus"
         >
-          <header class="onboarding-header">
+          <header class="onboarding-header" data-tauri-drag-region="deep">
             <div class="onboarding-brand">
               <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
               <span>{{ t('productName') }}</span>

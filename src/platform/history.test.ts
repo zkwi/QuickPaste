@@ -16,6 +16,7 @@ import {
   loadNativeClipPayload,
   loadNativeHistory,
   listNativeHistoryCollections,
+  openNativeHistoryDataDirectory,
   prepareNativeHistoryRestore,
   queryNativeHistory,
   renameNativeHistoryCollection,
@@ -183,6 +184,13 @@ const itemChanges: Array<[string, (item: LoadedClipboardItem) => LoadedClipboard
 ]
 
 describe('native clipboard history storage', () => {
+  it('opens the managed history data directory without exposing its path to the frontend', async () => {
+    const invoke = vi.fn<HistoryInvoke>().mockResolvedValue(true)
+
+    await expect(openNativeHistoryDataDirectory(invoke)).resolves.toBe(true)
+    expect(invoke).toHaveBeenCalledExactlyOnceWith('open_history_data_directory', {})
+  })
+
   it('parses pathless backup and prepare cancel/success results without leaking file paths', async () => {
     const invoke = vi.fn<HistoryInvoke>()
       .mockResolvedValueOnce({ status: 'cancelled' })

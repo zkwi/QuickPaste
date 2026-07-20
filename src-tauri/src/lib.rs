@@ -205,8 +205,26 @@ impl CurrentQuickPanelSession {
 #[derive(Clone, Default)]
 struct QuickPanelPinned(Arc<AtomicBool>);
 
-fn should_auto_hide_quick_panel(mode: WindowMode, focused: bool, pinned: bool) -> bool {
-    mode == WindowMode::Quick && !focused && !pinned
+#[derive(Clone, Default)]
+struct OnboardingWindowActive(Arc<AtomicBool>);
+
+impl OnboardingWindowActive {
+    fn get(&self) -> bool {
+        self.0.load(Ordering::Relaxed)
+    }
+
+    fn set(&self, active: bool) {
+        self.0.store(active, Ordering::Relaxed);
+    }
+}
+
+fn should_auto_hide_quick_panel(
+    mode: WindowMode,
+    focused: bool,
+    pinned: bool,
+    onboarding_active: bool,
+) -> bool {
+    mode == WindowMode::Quick && !focused && !pinned && !onboarding_active
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2194,6 +2212,19 @@ fn set_quick_panel_pinned(enabled: bool, pinned: State<'_, QuickPanelPinned>) {
     pinned.0.store(enabled, Ordering::Relaxed);
 }
 
+#[tauri::command]
+fn set_onboarding_window_active(
+    enabled: bool,
+    app: AppHandle,
+    onboarding: State<'_, OnboardingWindowActive>,
+) -> Result<(), String> {
+    onboarding.set(enabled);
+    if enabled {
+        present_onboarding_window(&app)?;
+    }
+    Ok(())
+}
+
 fn quick_panel_ack_matches_current_session(
     current_session: &CurrentQuickPanelSession,
     session_id: u64,
@@ -3814,6 +3845,16 @@ fn present_main_window(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+fn present_onboarding_window(app: &AppHandle) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "找不到主窗口".to_owned())?;
+    if let Err(error) = window.center() {
+        log::warn!("首次引导窗口居中失败，将继续显示当前窗口: {error}");
+    }
+    present_main_window(app)
+}
+
 fn current_quick_panel_session_id(app: &AppHandle) -> u64 {
     app.try_state::<CurrentQuickPanelSession>()
         .map(|session| session.current())
@@ -3827,6 +3868,16 @@ fn clear_paste_target_and_notify(app: &AppHandle, target: &PasteTarget) {
 }
 
 fn activate_quick_panel_from_foreground(app: &AppHandle, sample_started_at: Option<Instant>) {
+    if app
+        .try_state::<OnboardingWindowActive>()
+        .is_some_and(|active| active.get())
+    {
+        if let Err(error) = present_onboarding_window(app) {
+            log::warn!("无法重新显示首次引导: {error}");
+        }
+        return;
+    }
+
     let (visible, minimized) = app
         .get_webview_window("main")
         .map(|window| {
@@ -4073,6 +4124,9 @@ const HISTORY_RUNTIME_UNAVAILABLE: &str = "历史运行时暂时不可用";
 const HISTORY_RUNTIME_WORKER_FAILED: &str = "历史后台操作异常结束";
 
 #[derive(Clone)]
+struct HistoryDataDirectory(PathBuf);
+
+#[derive(Clone)]
 struct HistoryRuntimeState {
     runtime: Arc<Mutex<history::HistoryRuntime>>,
     maintenance_started: Arc<AtomicBool>,
@@ -4110,8 +4164,23 @@ impl HistoryRuntimeState {
     }
 }
 
+fn resolve_history_data_directory(
+    acceptance_profile: Option<&Path>,
+    executable_path: &Path,
+) -> Result<PathBuf, String> {
+    if let Some(profile) = acceptance_profile {
+        return Ok(profile.to_path_buf());
+    }
+    let executable_directory = executable_path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| "无法确定程序所在目录".to_owned())?;
+    Ok(executable_directory.join("data"))
+}
+
 fn initialize_history_runtime(data_directory: PathBuf) -> Result<HistoryRuntimeState, String> {
-    fs::create_dir_all(&data_directory).map_err(|_| "无法初始化历史数据目录".to_owned())?;
+    fs::create_dir_all(&data_directory)
+        .map_err(|_| "无法在程序目录创建数据文件夹，请确认 QuickPaste 所在目录可写".to_owned())?;
     history::HistoryRuntime::open(data_directory).map(HistoryRuntimeState::new)
 }
 
@@ -4259,6 +4328,14 @@ async fn get_storage_stats(
         runtime.with_connection(|connection| history::get_storage_stats(connection))
     })
     .await
+}
+
+#[tauri::command]
+async fn open_history_data_directory(
+    directory: State<'_, HistoryDataDirectory>,
+) -> Result<bool, String> {
+    let path = directory.0.to_string_lossy().into_owned();
+    system_actions::open_file_path(path).await
 }
 
 #[tauri::command]
@@ -4982,13 +5059,14 @@ pub fn run() {
     let current_window_mode = CurrentWindowMode::default();
     let current_quick_panel_session = CurrentQuickPanelSession::default();
     let quick_panel_pinned = QuickPanelPinned::default();
+    let onboarding_window_active = OnboardingWindowActive::default();
     let paste_target = PasteTarget::default();
     let open_shortcut = parse_configured_shortcut(DEFAULT_GLOBAL_SHORTCUT)
         .expect("default global shortcut must remain valid");
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            show_main_window(app);
+            activate_quick_panel_from_foreground(app, Some(Instant::now()));
         }))
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
@@ -5006,6 +5084,7 @@ pub fn run() {
         .manage(current_window_mode)
         .manage(current_quick_panel_session)
         .manage(quick_panel_pinned)
+        .manage(onboarding_window_active)
         .manage(paste_target)
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
@@ -5026,15 +5105,18 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            let history_data_directory = match &acceptance_profile {
-                Some(profile) => profile.clone(),
-                None => app.path().app_data_dir()?,
-            };
+            let executable_path = std::env::current_exe()?;
+            let history_data_directory =
+                resolve_history_data_directory(acceptance_profile.as_deref(), &executable_path)
+                    .map_err(std::io::Error::other)?;
             let metrics_state = if acceptance_mode && acceptance_profile.is_some() {
                 AcceptanceMetricsState::enabled(&history_data_directory)
             } else {
                 AcceptanceMetricsState::default()
             };
+            if !app.manage(HistoryDataDirectory(history_data_directory.clone())) {
+                return Err(std::io::Error::other("历史数据目录被重复注册").into());
+            }
             if !app.manage(metrics_state.clone()) {
                 return Err(std::io::Error::other("验收指标运行时被重复注册").into());
             }
@@ -5130,7 +5212,8 @@ pub fn run() {
                     .state::<QuickPanelPinned>()
                     .0
                     .load(Ordering::Relaxed);
-                if should_auto_hide_quick_panel(mode, *focused, pinned) {
+                let onboarding_active = window.app_handle().state::<OnboardingWindowActive>().get();
+                if should_auto_hide_quick_panel(mode, *focused, pinned, onboarding_active) {
                     let _ = window.hide();
                 }
             }
@@ -5143,6 +5226,7 @@ pub fn run() {
             set_global_shortcut,
             set_window_mode,
             set_quick_panel_pinned,
+            set_onboarding_window_active,
             record_quick_panel_first_frame,
             get_launch_at_startup,
             set_launch_at_startup,
@@ -5164,6 +5248,7 @@ pub fn run() {
             get_clip_payload,
             get_clip_thumbnail,
             get_storage_stats,
+            open_history_data_directory,
             compact_history_database,
             create_history_backup,
             prepare_history_restore,
@@ -5193,6 +5278,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_data_directory_is_portable_and_keeps_acceptance_profiles_isolated() {
+        let executable = Path::new(r"C:\Apps\QuickPaste\QuickPaste.exe");
+        assert_eq!(
+            resolve_history_data_directory(None, executable).expect("portable data directory"),
+            PathBuf::from(r"C:\Apps\QuickPaste\data")
+        );
+
+        let acceptance_profile = Path::new(r"C:\Temp\quickpaste-acceptance");
+        assert_eq!(
+            resolve_history_data_directory(Some(acceptance_profile), executable)
+                .expect("isolated acceptance profile"),
+            acceptance_profile
+        );
+    }
+
+    #[test]
+    fn portable_history_data_directory_requires_an_executable_parent() {
+        assert!(resolve_history_data_directory(None, Path::new("QuickPaste.exe")).is_err());
+    }
 
     fn temporary_history_lane_directory(name: &str) -> PathBuf {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -6711,22 +6817,32 @@ mod tests {
         assert!(should_auto_hide_quick_panel(
             WindowMode::Quick,
             false,
+            false,
             false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Quick,
             false,
-            true
+            true,
+            false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Quick,
             true,
+            false,
             false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Library,
             false,
+            false,
             false
+        ));
+        assert!(!should_auto_hide_quick_panel(
+            WindowMode::Quick,
+            false,
+            false,
+            true
         ));
     }
 
@@ -6770,8 +6886,15 @@ mod tests {
     }
 
     #[test]
-    fn tray_click_and_shortcut_share_the_foreground_activation_path() {
+    fn tray_click_shortcut_and_second_launch_share_the_foreground_activation_path() {
         let source = include_str!("lib.rs");
+        let single_instance_handler = source
+            .split_once(".plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {")
+            .expect("single instance handler")
+            .1
+            .split_once("        }))")
+            .expect("single instance handler end")
+            .0;
         let shortcut_handler = source
             .split_once(".with_handler(move |app, _shortcut, event| {")
             .expect("shortcut handler")
@@ -6787,6 +6910,8 @@ mod tests {
             .expect("tray handler end")
             .0;
 
+        assert!(single_instance_handler.contains("activate_quick_panel_from_foreground("));
+        assert!(!single_instance_handler.contains("show_main_window("));
         assert!(shortcut_handler.contains("activate_quick_panel_from_foreground("));
         assert!(tray_handler.contains("activate_quick_panel_from_foreground("));
         assert!(!tray_handler.contains("show_main_window("));

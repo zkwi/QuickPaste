@@ -34,7 +34,7 @@ QuickPaste 采用 Windows 优先的 Tauri 模块化单体：Vue 负责交互，R
 
 ## 持久化边界
 
-- 原生桌面运行时：SQLite 历史是唯一真值。`application_id` 与逐版 `user_version` 迁移在事务中推进；写入只 upsert/delete 受影响记录，读取失败期间 UI 保持只读，不能以空数组覆盖数据库。
+- 原生桌面运行时：SQLite 历史是唯一真值。数据库、WAL 与 SHM 固定在 `QuickPaste.exe` 同级的 `data` 文件夹，安装版和绿色版使用同一规则；验收模式仍以显式临时 profile 覆盖该路径。`application_id` 与逐版 `user_version` 迁移在事务中推进；写入只 upsert/delete 受影响记录，读取失败期间 UI 保持只读，不能以空数组覆盖数据库。
 - 浏览器演示运行时：构造历史和 UI 设置使用 localStorage；损坏 JSON 或不符合 schema 的历史会被拒绝并回退到安全演示数据。
 - UI 设置：主题、语言、数量/图片字节/期限容量、OCR 开关和快捷键等轻量偏好使用 localStorage；原生相关设置通过 platform 层同步到 Windows/Tauri 能力。
 - 普通历史按记录数、图片逻辑字节数和期限稳定裁剪；固定项与永久片段不参与自动裁剪。数据库、WAL 和 SHM 的物理占用单独统计，不与逻辑容量混淆。

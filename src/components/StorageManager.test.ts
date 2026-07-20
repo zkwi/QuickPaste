@@ -44,6 +44,17 @@ describe('StorageManager', () => {
     expect(wrapper.find('[data-testid="storage-policy"]').exists()).toBe(false)
   })
 
+  it('explains the portable data folder and lets the user open it directly', async () => {
+    const wrapper = mount(StorageManager, { props: baseProps })
+
+    const location = wrapper.get('[data-testid="storage-data-location"]')
+    expect(location.text()).toContain('data folder next to QuickPaste.exe')
+    expect(location.text()).toContain('exit QuickPaste completely')
+
+    await wrapper.get('[data-testid="storage-open-directory"]').trigger('click')
+    expect(wrapper.emitted('open-data-directory')).toHaveLength(1)
+  })
+
   it('keeps backup details quiet and delegates file selection to native operations', async () => {
     const wrapper = mount(StorageManager, { props: baseProps })
 

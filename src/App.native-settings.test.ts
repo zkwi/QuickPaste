@@ -25,12 +25,11 @@ const desktopMocks = vi.hoisted(() => ({
 }))
 
 const windowMocks = vi.hoisted(() => ({
-  centerCurrentWindow: vi.fn().mockResolvedValue(true),
   observeWindowMaximizedState: vi.fn().mockResolvedValue(() => undefined),
   runWindowAction: vi.fn().mockResolvedValue(true),
+  setOnboardingWindowActive: vi.fn().mockResolvedValue(true),
   setQuickPanelPinned: vi.fn().mockResolvedValue(true),
   setWindowMode: vi.fn().mockResolvedValue(true),
-  startWindowDragging: vi.fn().mockResolvedValue(true),
 }))
 
 const historyMocks = vi.hoisted(() => ({
@@ -48,6 +47,7 @@ const historyMocks = vi.hoisted(() => ({
   loadNativeClipThumbnail: vi.fn(),
   loadNativeClipPayload: vi.fn(),
   loadNativeHistory: vi.fn(),
+  openNativeHistoryDataDirectory: vi.fn(),
   prepareNativeHistoryRestore: vi.fn(),
   queryNativeHistory: vi.fn(),
   renameNativeHistoryCollection: vi.fn(),
@@ -181,11 +181,10 @@ describe('native setting reliability', () => {
     desktopMocks.exitNativeApp.mockResolvedValue(true)
     desktopMocks.getNativeCaptureAvailability.mockResolvedValue({ available: true, initialized: true })
     windowMocks.setQuickPanelPinned.mockReset().mockResolvedValue(true)
-    windowMocks.centerCurrentWindow.mockReset().mockResolvedValue(true)
     windowMocks.observeWindowMaximizedState.mockReset().mockResolvedValue(() => undefined)
     windowMocks.runWindowAction.mockReset().mockResolvedValue(true)
+    windowMocks.setOnboardingWindowActive.mockReset().mockResolvedValue(true)
     windowMocks.setWindowMode.mockReset().mockResolvedValue(true)
-    windowMocks.startWindowDragging.mockReset().mockResolvedValue(true)
     historyMocks.loadNativeHistory.mockReset().mockResolvedValue([])
     historyMocks.queryNativeHistory.mockReset().mockImplementation(async (query) => {
       if (legacyHistory === null) {
@@ -244,6 +243,7 @@ describe('native setting reliability', () => {
     historyMocks.getNativeHistoryHealth.mockReset().mockResolvedValue({ status: 'healthy' })
     historyMocks.getNativeStorageStats.mockReset().mockResolvedValue({ ...defaultStorageStats })
     historyMocks.loadNativeClipThumbnail.mockReset().mockResolvedValue(null)
+    historyMocks.openNativeHistoryDataDirectory.mockReset().mockResolvedValue(true)
     historyMocks.prepareNativeHistoryRestore.mockReset().mockResolvedValue({ status: 'cancelled' })
     ocrMocks.markNativeClipOcrFailed.mockReset().mockResolvedValue({
       status: 'applied', ocrStatus: 'failed',
@@ -269,26 +269,28 @@ describe('native setting reliability', () => {
     updaterMocks.installDownloadedUpdate.mockReset().mockResolvedValue(null)
   })
 
-  it('centers first-run onboarding and drags the title bar only from non-interactive space', async () => {
+  it('actively presents first-run onboarding and exposes native drag regions above every overlay', async () => {
     localStorage.clear()
     const wrapper = mount(App, { attachTo: document.body })
     await flushPromises()
 
-    expect(windowMocks.centerCurrentWindow).toHaveBeenCalledOnce()
+    expect(windowMocks.setOnboardingWindowActive).toHaveBeenCalledWith(true)
     const titlebar = wrapper.get('.panel-chrome')
-    await titlebar.trigger('pointerdown', { button: 0, isPrimary: true })
-    expect(windowMocks.startWindowDragging).toHaveBeenCalledOnce()
+    const onboardingTitlebar = wrapper.get('.onboarding-header')
+    expect(titlebar.attributes('data-tauri-drag-region')).toBe('deep')
+    expect(onboardingTitlebar.attributes('data-tauri-drag-region')).toBe('deep')
+    expect(titlebar.get('[data-testid="window-minimize"]').attributes('data-tauri-drag-region')).toBeUndefined()
 
-    await titlebar.get('[data-testid="window-minimize"]').trigger('pointerdown', { button: 0, isPrimary: true })
-    expect(windowMocks.startWindowDragging).toHaveBeenCalledOnce()
+    await onboardingTitlebar.get('.skip-button').trigger('click')
+    expect(windowMocks.setOnboardingWindowActive).toHaveBeenLastCalledWith(false)
   })
 
-  it('does not recenter the quick panel after onboarding is complete', async () => {
+  it('does not activate onboarding after onboarding is complete', async () => {
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
     mount(App)
     await flushPromises()
 
-    expect(windowMocks.centerCurrentWindow).not.toHaveBeenCalled()
+    expect(windowMocks.setOnboardingWindowActive).not.toHaveBeenCalled()
   })
 
   it('optionally inserts one onboarding record without replacing history or touching the system clipboard', async () => {
@@ -2289,6 +2291,25 @@ describe('native setting reliability', () => {
     expect(wrapper.find('[data-testid="storage-manager"]').exists()).toBe(true)
     expect(historyMocks.getNativeHistoryHealth).toHaveBeenCalled()
     expect(historyMocks.getNativeStorageStats).toHaveBeenCalled()
+  })
+
+  it('opens the executable-local data folder from storage settings and reports failures', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="storage-open-directory"]').trigger('click')
+    await flushPromises()
+    expect(historyMocks.openNativeHistoryDataDirectory).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('已打开数据目录')
+
+    historyMocks.openNativeHistoryDataDirectory.mockResolvedValueOnce(false)
+    await wrapper.get('[data-testid="storage-open-directory"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('无法打开数据目录')
   })
 
   it('lets a custom native retention policy change to forever without keeping the hidden custom value', async () => {
