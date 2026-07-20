@@ -238,7 +238,10 @@ describe('ManagerBulkToolbar', () => {
   })
 
   it('has dedicated compact, dark-theme, modal, focus, and forced-color presentation', () => {
-    expect(styles).toMatch(/\.manager-bulk-toolbar\s*\{[\s\S]*?grid-template-columns:/)
+    expect(styles).toMatch(/\.manager-bulk-toolbar\s*\{[\s\S]*?display:\s*flex/)
+    expect(styles).toMatch(/\.manager-bulk-toolbar\s*\{[\s\S]*?flex-wrap:\s*wrap/)
+    expect(styles).toMatch(/\.manager-bulk-summary\s*\{[\s\S]*?display:\s*flex/)
+    expect(styles).toMatch(/\.manager-bulk-actions\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-wrap:\s*wrap/)
     expect(styles).toMatch(/:root\[data-theme="dark"\]\s+\.manager-bulk-toolbar/)
     expect(styles).toMatch(/\.manager-bulk-confirmation-backdrop\s*\{[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*0/)
     expect(styles).toMatch(/\.manager-bulk-toolbar[\s\S]*?:focus-visible/)

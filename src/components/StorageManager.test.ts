@@ -146,13 +146,10 @@ describe('StorageManager', () => {
     }
   })
 
-  it('warns that backups are unencrypted and delegates file selection to native operations', async () => {
+  it('keeps backup details quiet and delegates file selection to native operations', async () => {
     const wrapper = mount(StorageManager, { props: baseProps })
 
-    const warning = wrapper.get('[data-testid="storage-backup-warning"]').text()
-    expect(warning).toContain('not encrypted')
-    expect(warning).toContain('sensitive clipboard text, images, and file paths')
-    expect(warning).toContain('where to store')
+    expect(wrapper.find('[data-testid="storage-backup-warning"]').exists()).toBe(false)
     expect(wrapper.find('input[type="file"]').exists()).toBe(false)
 
     await wrapper.get('[data-testid="storage-backup"]').trigger('click')

@@ -72,8 +72,21 @@ describe('quick-panel density contract', () => {
   it('adapts settings columns to available content width without stretching short cards', () => {
     expect(styles).toMatch(/\.settings-content\s*\{\s*display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(360px,\s*1fr\)\)/)
     expect(cssRule('.setting-group')).toMatch(/align-self:\s*start/)
-    expect(cssRule('.shortcut-card,\n.update-card,\n.settings-loading')).toMatch(/grid-column:\s*1\s*\/\s*-1/)
+    expect(cssRule('.settings-primary-actions,\n.update-card,\n.settings-loading')).toMatch(/grid-column:\s*1\s*\/\s*-1/)
+    expect(cssRule('.settings-primary-actions')).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+    expect(cssRule('.settings-primary-card')).toMatch(/display:\s*grid/)
     expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.settings-content\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  })
+
+  it('keeps settings copy readable without flattening its visual hierarchy', () => {
+    expect(cssRule('.settings-primary-copy strong')).toMatch(/font-size:\s*12px/)
+    expect(cssRule('.settings-primary-copy small,\n.settings-primary-link')).toMatch(/font-size:\s*10px/)
+    expect(cssRule('.setting-heading h2')).toMatch(/font-size:\s*13px/)
+    expect(cssRule('.setting-heading p,\n.setting-row small')).toMatch(/font-size:\s*10px/)
+    expect(cssRule('.setting-row strong')).toMatch(/font-size:\s*11\.5px/)
+    expect(cssRule('.storage-manager-header p,\n.storage-panel header p,\n.storage-health-notice p,\n.storage-operation-card p,\n.storage-operation-card small')).toMatch(/font-size:\s*10px/)
+    expect(cssRule('.storage-action-button,\n.storage-refresh-button,\n.storage-cancel-button,\n.storage-danger-button')).toMatch(/font-size:\s*9\.5px/)
+    expect(cssRule('.update-copy p')).toMatch(/font-size:\s*10\.5px/)
   })
 
   it('keeps collection management readable and independently scrollable in compact manager windows', () => {
@@ -111,6 +124,9 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/flex:\s*1\s+1\s+auto/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*0/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/max-height:\s*none/)
+    expect(cssRule('.image-preview-heading')).toMatch(/min-height:\s*0/)
+    expect(cssRule('.image-preview-heading')).toMatch(/margin-bottom:\s*6px/)
+    expect(cssRule('.image-preview-heading .kind-icon')).toMatch(/display:\s*none/)
   })
 
   it('reserves visible title space for degraded multi-file availability badges', () => {

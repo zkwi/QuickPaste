@@ -20,9 +20,8 @@ import {
   Monitor,
   Moon,
   Minus,
-  Pause,
   Pin,
-  Play,
+  Plus,
   RefreshCw,
   Search,
   Settings2,
@@ -3553,19 +3552,6 @@ onBeforeUnmount(() => {
           </div>
           <div class="chrome-actions">
             <button
-              data-testid="capture-toggle"
-              class="icon-button"
-              type="button"
-              :disabled="captureAvailability !== 'available'"
-              :aria-label="capturePaused ? t('resumeCapture') : t('pauseCapture')"
-              :title="capturePaused ? t('resumeCapture') : t('pauseCapture')"
-              aria-keyshortcuts="Control+P"
-              @click="capturePaused = !capturePaused"
-            >
-              <Play v-if="capturePaused" :size="16" />
-              <Pause v-else :size="16" />
-            </button>
-            <button
               data-testid="pin-quick-panel"
               class="icon-button"
               :class="{ active: quickPanelPinned }"
@@ -3663,7 +3649,7 @@ onBeforeUnmount(() => {
                 <span class="preview-type">{{ kindLabel(previewClip.kind) }}</span>
               </div>
               <div class="preview-body" :class="{ 'image-preview-body': previewClip.kind === 'image' }">
-                <div class="preview-heading">
+                <div class="preview-heading" :class="{ 'image-preview-heading': previewClip.kind === 'image' }">
                   <span class="kind-icon large" :style="{ '--source-color': previewClip.color }">
                     <component :is="kindIcon(previewClip.kind)" :size="20" />
                   </span>
@@ -3672,7 +3658,7 @@ onBeforeUnmount(() => {
                     <p>{{ previewClip.sourceApp }} · {{ formatRelativeTime(previewClip.copiedAt, relativeTimeNow, locale) }}</p>
                   </div>
                 </div>
-                <div v-if="previewClip.formats?.length" class="format-badges" :aria-label="previewClip.formats.join(', ')">
+                <div v-if="previewClip.kind !== 'image' && previewClip.formats?.length" class="format-badges" :aria-label="previewClip.formats.join(', ')">
                   <span v-for="format in previewClip.formats" :key="format" class="format-badge">{{ format.toUpperCase() }}</span>
                 </div>
                 <p v-if="previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
@@ -3914,7 +3900,7 @@ onBeforeUnmount(() => {
                 <button v-if="managerQuery" data-testid="clear-manager-search" class="manager-search-clear" type="button" :aria-label="t('clearSearch')" @mousedown.prevent @click="clearManagerSearch"><X :size="13" /></button>
               </div>
               <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
-              <button v-if="nativeRuntime" data-testid="new-snippet" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet">{{ t('managerNewSnippet') }}</button>
+              <button v-if="nativeRuntime" data-testid="new-snippet" class="manager-primary-action" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet"><Plus :size="14" />{{ t('managerNewSnippet') }}</button>
               <button
                 v-if="librarySection === 'all' && !nativeRuntime"
                 ref="clearHistoryTrigger"
@@ -4005,6 +3991,20 @@ onBeforeUnmount(() => {
 
           <section v-else class="settings-content" :aria-busy="nativeRuntime && !nativeSettingsReady">
             <p v-if="nativeRuntime && !nativeSettingsReady" class="settings-loading" role="status">{{ t('settingsLoading') }}</p>
+            <section class="settings-primary-actions" data-testid="settings-primary-actions" :aria-label="t('settingsPrimaryActions')">
+              <button data-testid="settings-open-clipboard" class="settings-primary-card settings-clipboard-card" type="button" :aria-label="t('manageClipboard')" @click="selectLibrarySection('all')">
+                <span class="settings-primary-icon" aria-hidden="true"><LayoutList :size="19" /></span>
+                <span class="settings-primary-copy"><strong>{{ t('manageClipboard') }}</strong><small>{{ t('settingsClipboardEntryDescription') }}</small></span>
+                <span class="settings-primary-link">{{ t('manageClipboardShort') }}</span>
+              </button>
+              <article class="shortcut-card" :class="{ recording: shortcutRecording, unavailable: !globalShortcutAvailable }">
+                <span class="settings-primary-icon" aria-hidden="true"><Keyboard :size="19" /></span>
+                <div><strong>{{ t('openQuickPaste') }}</strong><p>{{ shortcutRecording ? t('shortcutRecordingHint') : t('globalShortcutDescription') }}</p><small v-if="!globalShortcutAvailable" id="shortcut-status" data-testid="shortcut-status">{{ t('shortcutInactive') }}</small></div>
+                <button data-testid="shortcut-recorder" class="shortcut-recorder" type="button" :disabled="shortcutApplyInFlight || (nativeRuntime && !nativeSettingsReady)" :aria-label="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :aria-invalid="!globalShortcutAvailable ? 'true' : undefined" :aria-describedby="!globalShortcutAvailable ? 'shortcut-status' : undefined" @click="startShortcutRecording" @blur="cancelShortcutRecording()">
+                  <kbd>{{ shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) }}</kbd>
+                </button>
+              </article>
+            </section>
             <article class="setting-group">
               <div class="setting-heading"><Monitor :size="18" /><div><h2>{{ t('startupAppearance') }}</h2><p>{{ t('startupAppearanceDescription') }}</p></div></div>
               <label class="setting-row"><span><strong>{{ t('launchAtStartup') }}</strong><small>{{ t('launchAtStartupDescription') }}</small></span><input v-model="launchAtStartup" data-testid="launch-at-startup-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
@@ -4050,13 +4050,6 @@ onBeforeUnmount(() => {
                 <button data-testid="check-update" class="select-button" type="button" :disabled="!nativeRuntime || updateBusy" @click="runUpdateCheck(true)"><RefreshCw :size="14" />{{ t('checkUpdates') }}</button>
                 <button v-if="updateStatus?.updateAvailable && updateStatus.automaticInstallAvailable" data-testid="install-update" class="select-button primary" type="button" :disabled="updateBusy" @click="installAvailableUpdate"><Download :size="14" />{{ t('downloadInstall') }}</button>
               </div>
-            </article>
-            <article class="shortcut-card" :class="{ recording: shortcutRecording, unavailable: !globalShortcutAvailable }">
-              <Keyboard :size="18" />
-              <div><strong>{{ t('openQuickPaste') }}</strong><p>{{ shortcutRecording ? t('shortcutRecordingHint') : t('globalShortcutDescription') }}</p><small v-if="!globalShortcutAvailable" id="shortcut-status" data-testid="shortcut-status">{{ t('shortcutInactive') }}</small></div>
-              <button data-testid="shortcut-recorder" class="shortcut-recorder" type="button" :disabled="shortcutApplyInFlight || (nativeRuntime && !nativeSettingsReady)" :aria-label="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :aria-invalid="!globalShortcutAvailable ? 'true' : undefined" :aria-describedby="!globalShortcutAvailable ? 'shortcut-status' : undefined" @click="startShortcutRecording" @blur="cancelShortcutRecording()">
-                <kbd>{{ shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) }}</kbd>
-              </button>
             </article>
           </section>
         </main>
@@ -4225,7 +4218,6 @@ onBeforeUnmount(() => {
             <div v-else class="privacy-visual">
               <span class="privacy-orbit"><ShieldCheck :size="32" /></span>
               <div class="privacy-pill"><span><span class="state-dot"></span>{{ t('localStorage') }}</span><strong>{{ t('enabled') }}</strong></div>
-              <div class="privacy-pill"><span><Pause :size="13" />{{ t('pauseAnytime') }}</span><strong>Ctrl P</strong></div>
             </div>
           </div>
 

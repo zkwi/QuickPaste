@@ -241,6 +241,8 @@ describe('quick panel high-frequency interaction', () => {
 
     const preview = wrapper.get('[data-testid="preview-panel"]')
     expect(preview.get('.preview-body').classes()).toContain('image-preview-body')
+    expect(preview.get('.preview-heading').classes()).toContain('image-preview-heading')
+    expect(preview.find('.format-badge').exists()).toBe(false)
     expect(preview.get('[data-testid="preview-ocr-text"]').text()).toContain('Invoice number 2026-001')
   })
 
@@ -595,14 +597,12 @@ describe('quick panel high-frequency interaction', () => {
     expect(document.activeElement).toBe(all.element)
   })
 
-  it('toggles capture with the Ctrl+P shortcut advertised during onboarding', async () => {
-    const toggle = wrapper.get('[data-testid="capture-toggle"]')
-    expect(toggle.attributes('aria-keyshortcuts')).toBe('Control+P')
+  it('keeps capture pause available by keyboard without occupying the main chrome', async () => {
+    expect(wrapper.find('[data-testid="capture-toggle"]').exists()).toBe(false)
 
     dispatchKey(wrapper.get('[data-testid="search-input"]').element, 'p', { ctrlKey: true })
     await wrapper.vm.$nextTick()
 
-    expect(toggle.attributes('aria-label')).toBe('恢复记录')
     expect(wrapper.get('.privacy-banner').text()).toContain('已暂停记录')
   })
 

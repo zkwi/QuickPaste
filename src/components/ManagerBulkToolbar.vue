@@ -104,74 +104,38 @@ function handleConfirmationKeydown(event: KeyboardEvent) {
     :aria-label="t('managerBulkActions')"
     :aria-busy="busy"
   >
-    <label class="manager-bulk-selection">
-      <input
-        data-testid="manager-select-all"
-        type="checkbox"
-        :checked="selectionState === 'all'"
-        :indeterminate="selectionState === 'mixed'"
-        :aria-checked="selectionState === 'mixed' ? 'mixed' : selectionState === 'all' ? 'true' : 'false'"
-        :disabled="busy"
-        @change="toggleAll"
-      />
-      <span>{{ t('managerSelectAll') }}</span>
-    </label>
-    <p
-      data-testid="manager-selected-count"
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    >
-      {{ t('managerSelectedCount', { count: selectedCount }) }}
-    </p>
-    <label class="manager-bulk-move">
-      <span>{{ t('managerMoveTo') }}</span>
-      <select
-        v-model="moveTarget"
-        data-testid="manager-move-target"
-        :disabled="busy || selectedCount === 0"
-      >
-        <option value="">{{ t('managerChooseCollection') }}</option>
-        <option value="unfiled">{{ t('managerUnfiled') }}</option>
-        <option v-for="collection in collections" :key="collection.id" :value="`collection:${collection.id}`">
-          {{ collection.name }}
-        </option>
-      </select>
-    </label>
-    <button
-      data-testid="manager-apply-move"
-      type="button"
-      :disabled="busy || selectedCount === 0 || !moveTarget"
-      @click="applyMove"
-    >
-      {{ t('managerApplyMove') }}
-    </button>
-    <button
-      data-testid="manager-pin"
-      type="button"
-      :disabled="busy || selectedCount === 0"
-      @click="setPinned(true)"
-    >
-      {{ t('managerPinSelected') }}
-    </button>
-    <button
-      data-testid="manager-unpin"
-      type="button"
-      :disabled="busy || selectedCount === 0"
-      @click="setPinned(false)"
-    >
-      {{ t('managerUnpinSelected') }}
-    </button>
-    <button
-      ref="deleteButton"
-      class="manager-bulk-delete"
-      data-testid="manager-delete"
-      type="button"
-      :disabled="busy || selectedCount === 0"
-      @click="openDeleteConfirmation"
-    >
-      {{ t('managerDeleteSelected') }}
-    </button>
+    <div class="manager-bulk-summary">
+      <label class="manager-bulk-selection">
+        <input
+          data-testid="manager-select-all"
+          type="checkbox"
+          :checked="selectionState === 'all'"
+          :indeterminate="selectionState === 'mixed'"
+          :aria-label="t('managerSelectAll')"
+          :aria-checked="selectionState === 'mixed' ? 'mixed' : selectionState === 'all' ? 'true' : 'false'"
+          :disabled="busy"
+          @change="toggleAll"
+        />
+        <span>{{ t('managerSelectAllShort') }}</span>
+      </label>
+      <p data-testid="manager-selected-count" role="status" aria-live="polite" aria-atomic="true">
+        {{ t('managerSelectedCount', { count: selectedCount }) }}
+      </p>
+    </div>
+    <div class="manager-bulk-actions">
+      <label class="manager-bulk-move">
+        <span>{{ t('managerMoveTo') }}</span>
+        <select v-model="moveTarget" data-testid="manager-move-target" :disabled="busy || selectedCount === 0">
+          <option value="">{{ t('managerChooseCollection') }}</option>
+          <option value="unfiled">{{ t('managerUnfiled') }}</option>
+          <option v-for="collection in collections" :key="collection.id" :value="`collection:${collection.id}`">{{ collection.name }}</option>
+        </select>
+      </label>
+      <button data-testid="manager-apply-move" type="button" :disabled="busy || selectedCount === 0 || !moveTarget" @click="applyMove">{{ t('managerApplyMove') }}</button>
+      <button data-testid="manager-pin" type="button" :aria-label="t('managerPinSelected')" :disabled="busy || selectedCount === 0" @click="setPinned(true)">{{ t('pinClip') }}</button>
+      <button data-testid="manager-unpin" type="button" :aria-label="t('managerUnpinSelected')" :disabled="busy || selectedCount === 0" @click="setPinned(false)">{{ t('unpin') }}</button>
+      <button ref="deleteButton" class="manager-bulk-delete" data-testid="manager-delete" type="button" :aria-label="t('managerDeleteSelected')" :disabled="busy || selectedCount === 0" @click="openDeleteConfirmation">{{ t('deleteClip') }}</button>
+    </div>
 
     <div
       v-if="deleteConfirmationOpen"

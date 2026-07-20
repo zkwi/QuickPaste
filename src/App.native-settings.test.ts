@@ -1,5 +1,7 @@
-import { flushPromises, mount } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import App from './App.vue'
+
+enableAutoUnmount(afterEach)
 
 const settingsMocks = vi.hoisted(() => ({
   getLaunchAtStartup: vi.fn(),
@@ -500,6 +502,7 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="manager-ocr-status-ocr-image"]').text()).toContain('已完成')
+    expect(wrapper.get('[data-testid="manager-search-input"]').attributes('placeholder')).toContain('OCR 文字')
 
     const { imageUrl: _imageUrl, ocrText: _ocrText, ...summary } = {
       ...image,
@@ -530,6 +533,7 @@ describe('native setting reliability', () => {
       totalCount: 1,
     })
     await wrapper.get('[data-testid="library-view"] .back-button').trigger('click')
+    expect(wrapper.get('[data-testid="search-input"]').attributes('placeholder')).toContain('OCR 文字')
     await wrapper.get('[data-testid="search-input"]').setValue('secret')
     await flushPromises()
     expect(wrapper.get('.ocr-match').text()).toContain('OCR 命中')
@@ -602,6 +606,8 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="check-update"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="update-status"]').text()).toContain('0.2.0')
+    expect(wrapper.get('.update-card').text()).not.toContain('未进行代码签名')
+    expect(wrapper.get('[data-testid="install-update"]').text()).toBe('下载安装')
 
     await wrapper.get('[data-testid="install-update"]').trigger('click')
     await flushPromises()
@@ -1493,14 +1499,14 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('设置未能应用')
   })
 
-  it('shows native capture initialization failure and disables the pause control', async () => {
+  it('shows native capture initialization failure without adding a pause control to the chrome', async () => {
     desktopMocks.getNativeCaptureAvailability.mockResolvedValueOnce({ available: false, initialized: true })
 
     const wrapper = mount(App)
     await flushPromises()
 
     expect(wrapper.get('.capture-state').text()).toContain('记录不可用')
-    expect(wrapper.get('[data-testid="capture-toggle"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.find('[data-testid="capture-toggle"]').exists()).toBe(false)
     expect(wrapper.get('[role="status"]').text()).toContain('无法监听系统剪贴板')
   })
 
@@ -1511,7 +1517,7 @@ describe('native setting reliability', () => {
     await flushPromises()
 
     expect(wrapper.get('.capture-state').text()).toContain('记录不可用')
-    expect(wrapper.get('[data-testid="capture-toggle"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.find('[data-testid="capture-toggle"]').exists()).toBe(false)
   })
 
   it('exposes capture-health event subscription failure', async () => {
@@ -1521,7 +1527,7 @@ describe('native setting reliability', () => {
     await flushPromises()
 
     expect(wrapper.get('.capture-state').text()).toContain('记录不可用')
-    expect(wrapper.get('[data-testid="capture-toggle"]').attributes()).toHaveProperty('disabled')
+    expect(wrapper.find('[data-testid="capture-toggle"]').exists()).toBe(false)
   })
 
   it('removes an image-byte-pruned row and clears quick preview and context state', async () => {
@@ -2569,6 +2575,7 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await flushPromises()
     expect(wrapper.get('[data-testid="manager-collections"]').text()).toContain('工作')
+    expect(wrapper.get('[data-testid="new-snippet"]').classes()).toContain('manager-primary-action')
 
     await wrapper.get('[data-testid="manager-collection-collection-work"]').trigger('click')
     await flushPromises()

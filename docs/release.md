@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.7.0` 是当前未签名 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.7.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须醒目标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
+`0.8.0` 是当前 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.8.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
 
 ## 版本定级
 
@@ -15,7 +15,7 @@
 - `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 使用相同版本。
 - 已选定公开源码许可证，或明确以 `UNLICENSED`/保留全部权利方式公开源码；未选择许可证时不得对外宣称开源。
 - `SECURITY.md` 已提供真实、可验证的私密漏洞报告渠道和响应时间。
-- 当前个人项目阶段明确发布未签名的 GitHub Pre-release，并在下载页、安装提示和更新界面清楚标注；不得把 SHA-256 描述为发布者签名。
+- 更新界面和 GitHub Release 只突出版本、功能与 SHA-256 完整性校验，不把代码签名状态作为面向用户的重点提示。
 - 已运行 `npm run check:privacy`，确认当前候选文件不包含真实用户路径、邮箱、剪贴板数据、数据库、日志、截图、Token、证书或构建产物。
 - `THIRD_PARTY_NOTICES.md`、npm/Rust/native 三份完整许可证清单与两个锁文件一致，并由 `npm run check:licenses` 验证均已配置为 Tauri bundle resources；完整 NSIS 归档仍按产物核验步骤独立检查。
 
@@ -65,9 +65,9 @@ src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\
 - 在网络不可用时验证错误可理解且不会留下错误的“安装成功”状态。
 - 若要声明离线安装支持，必须改用并验收 Evergreen Standalone 或其他明确方案。参见 [Microsoft WebView2 分发文档](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution)。
 
-## 4. 完整性和未签名状态校验
+## 4. 产物完整性校验
 
-当前方案不配置 Authenticode。构建后确认产物确实为未签名状态，并记录安装包 SHA-256、大小和版本，避免误以为已签名：
+构建后记录主程序与安装包的 SHA-256、大小和版本；代码签名状态只作为内部产物追溯信息，不写入面向用户的 Release 摘要：
 
 ```powershell
 $releaseExe = Resolve-Path -LiteralPath 'src-tauri\target\x86_64-pc-windows-msvc\release\quickpaste.exe'
@@ -120,7 +120,7 @@ node scripts/acceptance/acceptance.mjs validate-result --file '<run-root>\result
 - 推送、合并、版本标签和上传产物必须由维护者明确发起。
 - 先验证候选产物与隐私扫描，再创建不可变版本标签；标签应指向产生该产物的提交。
 - 不提交 `dist`、`target`、`output`、日志、数据库、WAL/SHM 或签名材料。
-- 发布后从下载入口重新获取安装包，再次核对 SHA-256、大小和未签名状态，避免上传过程选错文件。
+- 发布后从下载入口重新获取安装包，再次核对 SHA-256、大小和版本，避免上传过程选错文件。
 
 ## 7. GitHub Actions 异步复核
 

@@ -242,7 +242,7 @@ fn parse_sha256_digest(value: &str) -> Option<[u8; 32]> {
 }
 
 fn nsis_update_args() -> [&'static str; 2] {
-    ["/P", "/R"]
+    ["/S", "/R"]
 }
 
 #[cfg(test)]
@@ -728,8 +728,8 @@ mod tests {
     }
 
     #[test]
-    fn passive_nsis_update_shows_progress_and_reopens_the_app() {
-        assert_eq!(nsis_update_args(), ["/P", "/R"]);
+    fn silent_nsis_update_installs_and_reopens_the_app() {
+        assert_eq!(nsis_update_args(), ["/S", "/R"]);
     }
 
     #[test]

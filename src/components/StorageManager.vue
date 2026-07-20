@@ -512,10 +512,6 @@ function handlePolicyConfirmationKeydown(event: KeyboardEvent) {
           </button>
         </article>
 
-        <p class="storage-privacy-warning" data-testid="storage-backup-warning">
-          {{ t('storageBackupWarning') }}
-        </p>
-
         <article class="storage-operation-card">
           <div>
             <h4>{{ t('storageRestore') }}</h4>

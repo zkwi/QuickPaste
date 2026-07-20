@@ -1,5 +1,7 @@
-import { mount } from '@vue/test-utils'
+import { enableAutoUnmount, mount } from '@vue/test-utils'
 import App from './App.vue'
+
+enableAutoUnmount(afterEach)
 
 describe('QuickPaste quick panel', () => {
   beforeEach(() => {
@@ -16,6 +18,7 @@ describe('QuickPaste quick panel', () => {
     expect(wrapper.get('[data-testid="onboarding-dialog"]').text()).toContain('搜索、预览、直接粘贴')
     await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
     expect(wrapper.get('[data-testid="onboarding-dialog"]').text()).toContain('隐私由你掌控')
+    expect(wrapper.get('[data-testid="onboarding-dialog"]').text()).not.toContain('随时暂停')
     await wrapper.get('[data-testid="onboarding-finish"]').trigger('click')
 
     expect(wrapper.find('[data-testid="onboarding-dialog"]').exists()).toBe(false)
@@ -137,7 +140,7 @@ describe('QuickPaste quick panel', () => {
   it('uses the Windows Ctrl+K hint and focuses search with that shortcut', async () => {
     const wrapper = mount(App, { attachTo: document.body })
     const search = wrapper.get('[data-testid="search-input"]')
-    ;(wrapper.get('[data-testid="capture-toggle"]').element as HTMLElement).focus()
+    ;(wrapper.get('[data-testid="pin-quick-panel"]').element as HTMLElement).focus()
 
     expect(wrapper.get('.search-hint').text()).toContain('Ctrl')
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', ctrlKey: true }))
@@ -157,17 +160,20 @@ describe('QuickPaste quick panel', () => {
     expect(pinButton.attributes('aria-pressed')).toBe('true')
   })
 
-  it('shows a visible privacy banner when capture is paused', async () => {
+  it('keeps the pause action out of the main chrome while retaining its keyboard shortcut', async () => {
     const wrapper = mount(App)
 
-    await wrapper.get('[data-testid="capture-toggle"]').trigger('click')
+    expect(wrapper.find('[data-testid="capture-toggle"]').exists()).toBe(false)
+    window.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'p' }))
+    await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[role="status"]').text()).toContain('已暂停记录')
   })
 
   it('restores the paused capture state after the interface restarts', async () => {
     const wrapper = mount(App)
-    await wrapper.get('[data-testid="capture-toggle"]').trigger('click')
+    window.dispatchEvent(new KeyboardEvent('keydown', { ctrlKey: true, key: 'p' }))
+    await wrapper.vm.$nextTick()
 
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
       capturePaused: true,
@@ -176,6 +182,20 @@ describe('QuickPaste quick panel', () => {
 
     const restarted = mount(App)
     expect(restarted.get('[role="status"]').text()).toContain('已暂停记录')
+  })
+
+  it('puts clipboard management and the global shortcut first in settings', async () => {
+    const wrapper = mount(App)
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+
+    const actions = wrapper.get('[data-testid="settings-primary-actions"]')
+    const clipboardEntry = actions.get('[data-testid="settings-open-clipboard"]')
+    expect(clipboardEntry.text()).toContain('管理剪贴板')
+    expect(clipboardEntry.attributes('aria-label')).toBe('管理剪贴板')
+    expect(actions.find('[data-testid="shortcut-recorder"]').exists()).toBe(true)
+
+    await clipboardEntry.trigger('click')
+    expect(wrapper.get('[data-testid="library-section-all"]').attributes('aria-current')).toBe('page')
   })
 
   it('sanitizes damaged persisted booleans and excluded app names', async () => {

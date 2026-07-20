@@ -5,7 +5,7 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
 SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：[`0.7.0` 未签名 GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.7.0)。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从该 Release 下载严格命名的 NSIS 安装包。
+> 当前版本：[`0.8.0` GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.8.0)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包。
 
 ## 当前能力
 
@@ -15,7 +15,7 @@ SQLite 中；没有云同步或远程遥测。
 - SQLite FTS5 支持中文子串、拼音/首字母、OCR、文件名及正文搜索，并可组合类型、来源、集合和固定状态筛选；结果使用稳定游标分页。
 - 固定、删除和撤销；单层集合、可编辑永久文本/代码片段，以及管理页跨页批量固定、移动和删除。
 - 按记录数量、图片逻辑字节数和保留期限共同裁剪普通历史；固定项与永久片段不参与自动裁剪。
-- 管理页显示数据库、WAL/SHM 的真实磁盘占用，支持安全压缩、未加密 SQLite 备份、原子恢复及损坏数据库隔离恢复。
+- 管理页显示数据库、WAL/SHM 的真实磁盘占用，支持安全压缩、SQLite 备份、原子恢复及损坏数据库隔离恢复。
 - 对已进入历史的剪贴板图片默认启用 Windows 本地 OCR，可随时关闭；只使用系统已安装语言，不下载或捆绑模型，也不上传图片或识别文字。
 - 代码预览按需加载 `highlight.js` core 与命中的语言模块；失败或超限时回退为转义纯文本，不向快速面板加入代码工具箱。
 - 默认使用 `Ctrl + Shift + V` 唤起；快速面板优先靠近文本插入点右下方，并受当前显示器工作区约束。
@@ -26,7 +26,7 @@ SQLite 中；没有云同步或远程遥测。
 - 简体中文为默认语言，主要界面可即时切换英文。
 - SQLite 是桌面历史的唯一真值；增量 CRUD 避免每次变化重写全库，大载荷只在预览或粘贴时按需读取。
 - 入站载荷采用明确硬边界：plain text、HTML 和 RTF 单格式最多 8 MiB；图片源及持久化图片最多 64 MiB、单边最多 8192 像素且不超过 4000 万像素。超限的附加格式会被明确省略，异常持久化正文会在复制进内存前被拒绝。
-- 在设置页或托盘检查 GitHub Release，经用户确认后下载严格命名的 NSIS 安装包；下载会核对 GitHub SHA-256 摘要，但这不是发布者签名。
+- 在设置页或托盘检查 GitHub Release；点击“下载安装”后自动下载、核对 GitHub SHA-256 摘要并静默启动 NSIS 安装。
 - 关闭隐藏到系统托盘、托盘暂停/恢复、单实例唤回和开机静默启动。
 - 敏感应用排除，以及可选的屏幕捕获保护；默认允许截图，用户开启保护后才在 Windows 支持的捕获路径中尽力隐藏闪电剪贴板窗口。
 - 轻量级、当前用户范围的 NSIS 安装包；项目不生成 MSI。
@@ -79,7 +79,7 @@ npm run build:windows
 - [docs/release.md](docs/release.md)：Windows 发布清单。
 - [SECURITY.md](SECURITY.md)：数据生命周期、安全边界和报告策略。
 - [CHANGELOG.md](CHANGELOG.md)：版本历史与用户可感知变化。
-- [docs/releases/v0.7.0.md](docs/releases/v0.7.0.md)：v0.7.0 修复内容、隐私边界和验收证据状态。
+- [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md)：v0.8.0 体验改进、隐私边界和验收证据状态。
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方声明总索引、锁文件指纹和 MPL 源码入口。
 - [THIRD_PARTY_LICENSES_NPM.md](THIRD_PARTY_LICENSES_NPM.md)：npm production 依赖及许可证原文。
 - [THIRD_PARTY_LICENSES_RUST.md](THIRD_PARTY_LICENSES_RUST.md)：Windows Rust 依赖及许可证原文。

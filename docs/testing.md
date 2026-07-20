@@ -39,7 +39,7 @@
 | IPC、窗口、快捷键 | platform 测试 + Rust 定向测试 | 真实 Tauri 窗口、多显示器、DPI |
 | SQLite、历史迁移 | domain/platform + Rust 数据库测试 | 重启恢复、损坏数据只读保护 |
 | 管理员粘贴 | Rust 安全授权测试 | 普通目标、管理员目标、UAC 取消 |
-| 安装配置 | `npm run check` + `npm run build:windows` | 安装、升级、卸载、SHA-256、未签名提示与 WebView2 |
+| 安装配置 | `npm run check` + `npm run build:windows` | 安装、升级、卸载、SHA-256 与 WebView2 |
 
 ## Windows 人工矩阵
 
