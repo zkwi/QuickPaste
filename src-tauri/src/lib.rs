@@ -223,8 +223,27 @@ fn should_auto_hide_quick_panel(
     focused: bool,
     pinned: bool,
     onboarding_active: bool,
+    native_window_foreground: bool,
 ) -> bool {
-    mode == WindowMode::Quick && !focused && !pinned && !onboarding_active
+    mode == WindowMode::Quick
+        && !focused
+        && !pinned
+        && !onboarding_active
+        && !native_window_foreground
+}
+
+#[cfg(target_os = "windows")]
+fn native_window_is_foreground<R: tauri::Runtime>(window: &tauri::Window<R>) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+
+    window
+        .hwnd()
+        .is_ok_and(|handle| unsafe { GetForegroundWindow() } == handle)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn native_window_is_foreground<R: tauri::Runtime>(_window: &tauri::Window<R>) -> bool {
+    false
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5213,7 +5232,14 @@ pub fn run() {
                     .0
                     .load(Ordering::Relaxed);
                 let onboarding_active = window.app_handle().state::<OnboardingWindowActive>().get();
-                if should_auto_hide_quick_panel(mode, *focused, pinned, onboarding_active) {
+                let native_window_foreground = native_window_is_foreground(window);
+                if should_auto_hide_quick_panel(
+                    mode,
+                    *focused,
+                    pinned,
+                    onboarding_active,
+                    native_window_foreground,
+                ) {
                     let _ = window.hide();
                 }
             }
@@ -6813,22 +6839,25 @@ mod tests {
     }
 
     #[test]
-    fn quick_panel_auto_hide_policy_respects_mode_focus_and_pin_state() {
+    fn quick_panel_auto_hide_policy_respects_webview_and_native_window_focus() {
         assert!(should_auto_hide_quick_panel(
             WindowMode::Quick,
             false,
             false,
+            false,
             false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Quick,
             false,
             true,
+            false,
             false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Quick,
             true,
+            false,
             false,
             false
         ));
@@ -6836,14 +6865,37 @@ mod tests {
             WindowMode::Library,
             false,
             false,
+            false,
             false
         ));
         assert!(!should_auto_hide_quick_panel(
             WindowMode::Quick,
             false,
             false,
+            true,
+            false
+        ));
+        assert!(!should_auto_hide_quick_panel(
+            WindowMode::Quick,
+            false,
+            false,
+            false,
             true
         ));
+    }
+
+    #[test]
+    fn quick_panel_focus_loss_checks_the_native_foreground_window_before_hiding() {
+        let source = include_str!("lib.rs");
+        let window_event_handler = source
+            .split_once(".on_window_event(|window, event| {")
+            .expect("window event handler")
+            .1
+            .split_once("        .invoke_handler(")
+            .expect("window event handler end")
+            .0;
+
+        assert!(window_event_handler.contains("native_window_is_foreground(window)"));
     }
 
     #[test]

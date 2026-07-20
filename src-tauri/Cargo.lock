@@ -2850,7 +2850,7 @@ dependencies = [
 
 [[package]]
 name = "quickpaste"
-version = "0.14.0"
+version = "0.14.1"
 dependencies = [
  "arboard",
  "base64 0.22.1",
