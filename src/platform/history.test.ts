@@ -1,4 +1,4 @@
-import type { ClipboardItem, LoadedClipboardItem } from '../domain/clipboard'
+import type { ClipboardItem, ClipboardItemSummary, LoadedClipboardItem } from '../domain/clipboard'
 import {
   applyNativeHistoryMutation,
   applyNativeHistoryBatch,
@@ -12,6 +12,7 @@ import {
   discardNativeHistoryRestore,
   getNativeHistoryHealth,
   getNativeStorageStats,
+  loadNativeClipThumbnail,
   loadNativeClipPayload,
   loadNativeHistory,
   listNativeHistoryCollections,
@@ -376,6 +377,37 @@ describe('native clipboard history storage', () => {
     expect(page).toEqual(rawPage)
     rawPage.items[0].searchTerms.push('mutated-after-parse')
     expect(page?.items[0].searchTerms).toEqual([])
+  })
+
+  it('preserves a validated cached application icon in native summaries', async () => {
+    const sourceAppIcon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3voZ8QAAAABJRU5ErkJggg=='
+    const invoke: HistoryInvoke = vi.fn().mockResolvedValue({
+      items: [{ ...nativeSummary, sourceAppIcon }],
+      totalCount: 1,
+    })
+
+    await expect(queryNativeHistory(nativeQuery, invoke)).resolves.toMatchObject({
+      items: [{ sourceAppIcon }],
+    })
+  })
+
+  it('loads only a bounded PNG thumbnail for an image row', async () => {
+    const thumbnail = 'data:image/png;base64,AA=='
+    const invoke: HistoryInvoke = vi.fn().mockResolvedValue(thumbnail)
+
+    await expect(loadNativeClipThumbnail('image-summary', invoke)).resolves.toBe(thumbnail)
+    expect(invoke).toHaveBeenCalledWith('get_clip_thumbnail', { id: 'image-summary' })
+  })
+
+  it('rejects invalid thumbnail ids and malformed native thumbnail responses', async () => {
+    const invoke: HistoryInvoke = vi.fn()
+      .mockResolvedValueOnce('data:image/jpeg;base64,AA==')
+      .mockResolvedValueOnce('data:image/png;base64,not base64')
+
+    await expect(loadNativeClipThumbnail(' bad id', invoke)).resolves.toBeNull()
+    await expect(loadNativeClipThumbnail('image-summary', invoke)).resolves.toBeNull()
+    await expect(loadNativeClipThumbnail('image-summary', invoke)).resolves.toBeNull()
+    expect(invoke).toHaveBeenCalledTimes(2)
   })
 
   it('accepts strict OCR identity/status in summaries and full payloads', async () => {
@@ -926,6 +958,36 @@ describe('native clipboard history storage', () => {
 
     await expect(persistence.flush()).resolves.toBe(true)
     expect(apply).toHaveBeenCalledWith({ upserts: [pinned[0]], deleteIds: [], policy })
+  })
+
+  it('keeps summary app icons in memory but excludes them from native mutations', async () => {
+    const sourceAppIcon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3voZ8QAAAABJRU5ErkJggg=='
+    const summary: ClipboardItemSummary = {
+      id: nativeSummary.id,
+      kind: nativeSummary.kind,
+      title: nativeSummary.title,
+      content: nativeSummary.content,
+      sourceApp: nativeSummary.sourceApp,
+      sourceAppIcon,
+      copiedAt: nativeSummary.copiedAt,
+      updatedAt: nativeSummary.updatedAt,
+      pinned: nativeSummary.pinned,
+      permanent: nativeSummary.permanent,
+      formats: ['text'],
+      files: [],
+      searchTerms: [],
+      payloadLoaded: false,
+      matchSource: 'none',
+    }
+    const pinned: ClipboardItemSummary = { ...summary, pinned: true }
+    const apply = vi.fn().mockResolvedValue({ prunedIds: [] })
+    const persistence = createIncrementalHistoryPersistence(apply)
+    persistence.reset([summary], policy)
+    persistence.schedule([summary], [pinned], policy)
+
+    await expect(persistence.flush()).resolves.toBe(true)
+    expect(apply.mock.calls[0][0].upserts[0]).not.toHaveProperty('sourceAppIcon')
+    expect(summary.sourceAppIcon).toBe(sourceAppIcon)
   })
 
   it('sends only a removed id as a delete', async () => {

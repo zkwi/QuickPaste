@@ -5,7 +5,7 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
 SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：[`0.6.0` 未签名 GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.6.0)。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从该 Release 下载严格命名的 NSIS 安装包。
+> 当前版本：[`0.7.0` 未签名 GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.7.0)。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从该 Release 下载严格命名的 NSIS 安装包。
 
 ## 当前能力
 
@@ -79,7 +79,7 @@ npm run build:windows
 - [docs/release.md](docs/release.md)：Windows 发布清单。
 - [SECURITY.md](SECURITY.md)：数据生命周期、安全边界和报告策略。
 - [CHANGELOG.md](CHANGELOG.md)：版本历史与用户可感知变化。
-- [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md)：v0.6.0 能力、隐私边界和验收证据状态。
+- [docs/releases/v0.7.0.md](docs/releases/v0.7.0.md)：v0.7.0 修复内容、隐私边界和验收证据状态。
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方声明总索引、锁文件指纹和 MPL 源码入口。
 - [THIRD_PARTY_LICENSES_NPM.md](THIRD_PARTY_LICENSES_NPM.md)：npm production 依赖及许可证原文。
 - [THIRD_PARTY_LICENSES_RUST.md](THIRD_PARTY_LICENSES_RUST.md)：Windows Rust 依赖及许可证原文。

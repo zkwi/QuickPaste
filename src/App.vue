@@ -152,6 +152,7 @@ import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } fr
 import { observeWindowMaximizedState, runWindowAction, setQuickPanelPinned, setWindowMode, type WindowAction } from './platform/window'
 import { checkForUpdate, connectUpdateCheckRequested, downloadUpdate, getCurrentVersion, installDownloadedUpdate, type UpdateProgress, type UpdateStatus } from './platform/updater'
 import ClipContextMenu from './components/ClipContextMenu.vue'
+import ClipImageThumbnail from './components/ClipImageThumbnail.vue'
 import ManagerFilters from './components/ManagerFilters.vue'
 import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
 import SnippetEditor from './components/SnippetEditor.vue'
@@ -3661,7 +3662,7 @@ onBeforeUnmount(() => {
                 </button>
                 <span class="preview-type">{{ kindLabel(previewClip.kind) }}</span>
               </div>
-              <div class="preview-body">
+              <div class="preview-body" :class="{ 'image-preview-body': previewClip.kind === 'image' }">
                 <div class="preview-heading">
                   <span class="kind-icon large" :style="{ '--source-color': previewClip.color }">
                     <component :is="kindIcon(previewClip.kind)" :size="20" />
@@ -3678,6 +3679,9 @@ onBeforeUnmount(() => {
                   {{ t('omittedFormatsWarning', { formats: previewClip.omittedFormats.map((format) => format.toUpperCase()).join(', ') }) }}
                 </p>
                 <img v-if="previewClip.kind === 'image'" class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
+                <p v-if="previewClip.kind === 'image' && previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
+                  <strong>{{ t('ocrRecognizedText') }}</strong><span>{{ previewClip.ocrText }}</span>
+                </p>
                 <CodePreview
                   v-else-if="previewClip.kind === 'code'"
                   class="preview-code"
@@ -3748,7 +3752,7 @@ onBeforeUnmount(() => {
                   >
                     <span v-if="index < DIRECT_PASTE_ITEM_COUNT" class="quick-number" aria-hidden="true">{{ directPasteLabel(index) }}</span>
                     <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                      <img v-if="clip.kind === 'image' && clip.imageUrl" :src="clip.imageUrl" alt="" />
+                      <ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" />
                       <component v-else :is="kindIcon(clip.kind)" :size="18" />
                     </span>
                     <span class="clip-copy">
@@ -3760,6 +3764,7 @@ onBeforeUnmount(() => {
                           </template>
                         </span>
                         <span v-if="isOcrOnlyMatch(clip)" class="ocr-match">{{ t('ocrMatch') }}</span>
+                        <span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span>
                         <span v-else-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span>
                         <span v-if="hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span>
                       </span>
@@ -3970,7 +3975,7 @@ onBeforeUnmount(() => {
                 @keydown="handleManagerRowKeydown($event, index, clip.id)"
               >
                 <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                  <img v-if="clip.kind === 'image' && clip.imageUrl" :src="clip.imageUrl" alt="" />
+                  <ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" />
                   <component v-else :is="kindIcon(clip.kind)" :size="17" />
                 </span>
                 <div>

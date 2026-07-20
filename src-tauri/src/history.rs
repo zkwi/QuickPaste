@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
-    io::Write,
+    io::{Cursor, Write},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
@@ -9,7 +9,7 @@ use std::{
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use chrono::{Duration as ChronoDuration, Utc};
-use image::ImageFormat;
+use image::{ImageFormat, ImageReader};
 use rusqlite::{
     params, params_from_iter, types::Value, Connection, OpenFlags, OptionalExtension, Transaction,
     TransactionBehavior,
@@ -33,6 +33,9 @@ const HISTORY_ENTITY_ID_ATTEMPTS: usize = 16;
 const MAX_BATCH_TARGET_IDS: usize = 10_000;
 const OCR_STORED_PNG_MAX_BYTES: i64 = 64 * 1024 * 1024;
 const HISTORY_IMAGE_BLOB_MAX_BYTES: usize = 64 * 1024 * 1024;
+const HISTORY_THUMBNAIL_MAX_DIMENSION: u32 = 96;
+const HISTORY_IMAGE_MAX_DIMENSION: u32 = 8_192;
+const HISTORY_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 static HISTORY_TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
 const RESTORE_TOKEN_TTL: Duration = Duration::from_secs(15 * 60);
 pub(crate) const HISTORY_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30);
@@ -1506,6 +1509,9 @@ fn apply_history_mutation_in_transaction(
     for raw_item in mutation.upserts {
         let item = normalize_history_item(raw_item)?;
         validate_history_item(&item)?;
+        if !item.payload_loaded && item.source_app_icon.is_some() {
+            return Err("摘要写入不能携带来源应用图标".into());
+        }
         if delete_ids.contains(&item.id) {
             return Err("同一记录不能同时删除和更新".into());
         }
@@ -2325,8 +2331,7 @@ fn validate_history_item(item: &HistoryItem) -> Result<(), String> {
         return Err("永久片段必须是纯文本 text/code 记录".to_owned());
     }
     if !item.payload_loaded {
-        if item.source_app_icon.is_some()
-            || item.html.is_some()
+        if item.html.is_some()
             || item.rtf_base64.is_some()
             || item.image_url.is_some()
             || item.ocr_text.is_some()
@@ -2939,6 +2944,62 @@ pub(crate) fn get_clip_payload(
     Ok(Some(item))
 }
 
+pub(crate) fn get_clip_thumbnail(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<String>, String> {
+    if !history_id_is_cursor_safe(id) {
+        return Ok(None);
+    }
+    let stored = connection
+        .query_row(
+            "SELECT length(clip_formats.data), clip_formats.data
+             FROM clips
+             JOIN clip_formats ON clip_formats.clip_id = clips.id
+             WHERE clips.id = ?1 AND clips.kind = 'image'
+               AND clip_formats.format = 'image' AND clip_formats.mime = 'image/png'",
+            [id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<i64>>(0)?,
+                    row.get::<_, Option<Vec<u8>>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((Some(length), Some(png))) = stored else {
+        return Ok(None);
+    };
+    if !(1..=HISTORY_IMAGE_BLOB_MAX_BYTES as i64).contains(&length)
+        || usize::try_from(length).ok() != Some(png.len())
+    {
+        return Err("图片缩略图源数据超过安全边界".to_owned());
+    }
+
+    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(HISTORY_IMAGE_MAX_DIMENSION);
+    limits.max_image_height = Some(HISTORY_IMAGE_MAX_DIMENSION);
+    limits.max_alloc = Some(HISTORY_IMAGE_DECODE_MAX_ALLOC_BYTES);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|_| "无法解码历史图片缩略图".to_owned())?;
+    let thumbnail = image.thumbnail(
+        HISTORY_THUMBNAIL_MAX_DIMENSION,
+        HISTORY_THUMBNAIL_MAX_DIMENSION,
+    );
+    let mut output = Cursor::new(Vec::new());
+    thumbnail
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|_| "无法生成历史图片缩略图".to_owned())?;
+    Ok(Some(format!(
+        "data:image/png;base64,{}",
+        STANDARD.encode(output.into_inner())
+    )))
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StoredOcrImage {
     Ready(Vec<u8>),
@@ -3119,6 +3180,20 @@ fn history_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryIte
         image_url: None,
         files: Vec::new(),
     })
+}
+
+fn summary_history_item_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<HistoryItem> {
+    let mut item = history_item_from_row(row)?;
+    let source_app_icon = row.get::<_, Option<Vec<u8>>>(17)?;
+    item.source_app_icon = source_app_icon
+        .filter(|icon_png| source_app_icon_png_is_safe(icon_png))
+        .map(|icon_png| {
+            format!(
+                "{SOURCE_APP_ICON_DATA_URL_PREFIX}{}",
+                STANDARD.encode(icon_png)
+            )
+        });
+    Ok(item)
 }
 
 fn stored_omitted_formats(
@@ -3667,7 +3742,8 @@ const HISTORY_SUMMARY_COLUMNS: &str =
     "clips.id, clips.kind, clips.title, substr(clips.plain_text, 1, 512),
      clips.source_app, clips.copied_at, clips.updated_at, clips.pinned,
      clips.permanent, clips.collection_id, '[]', clips.ocr_text, clips.ocr_status,
-     clips.image_hash, clips.color, clips.dimensions, clips.omitted_formats";
+     clips.image_hash, clips.color, clips.dimensions, clips.omitted_formats,
+     source_app_icons.icon_png";
 
 fn history_match_source(query_text: &str, item: &HistoryItem) -> HistoryMatchSource {
     let terms = query_text
@@ -3751,7 +3827,9 @@ where
     list_parameters.push(Value::Integer(i64::from(query.limit) + 1));
     let list_sql = format!(
         "SELECT {HISTORY_SUMMARY_COLUMNS}
-         FROM {from} WHERE {list_predicate}
+         FROM {from}
+         LEFT JOIN source_app_icons ON source_app_icons.source_app = clips.source_app
+         WHERE {list_predicate}
          ORDER BY clips.copied_at DESC, clips.id DESC LIMIT ?"
     );
     let mut statement = connection
@@ -3760,7 +3838,7 @@ where
     let mut items = statement
         .query_map(
             params_from_iter(list_parameters.iter()),
-            history_item_from_row,
+            summary_history_item_from_row,
         )
         .map_err(|error| error.to_string())?
         .collect::<Result<Vec<_>, _>>()
@@ -9241,6 +9319,12 @@ mod tests {
             .pop()
             .expect("summary exists");
         assert!(!summary.payload_loaded);
+        assert_eq!(
+            summary.source_app_icon.as_deref(),
+            Some(original_icon.as_str())
+        );
+        // 前端只把可编辑摘要字段回传，来源图标属于只读查询元数据。
+        summary.source_app_icon = None;
         summary.kind = "file".into();
         summary.content = "tampered payload body".into();
         summary.source_app = "Tampered App".into();
@@ -12111,6 +12195,17 @@ mod tests {
             payloads[1].source_app_icon.as_deref(),
             Some(newest_icon.as_str())
         );
+        let summaries = query_history(&database, HistoryQuery::default())
+            .expect("query history summaries")
+            .items;
+        assert_eq!(
+            summaries[0].source_app_icon.as_deref(),
+            Some(newest_icon.as_str())
+        );
+        assert_eq!(
+            summaries[1].source_app_icon.as_deref(),
+            Some(newest_icon.as_str())
+        );
         assert!(
             database
                 .query_row(
@@ -12156,6 +12251,52 @@ mod tests {
             Some("data:image/png;base64,TWFu")
         );
         assert_eq!(loaded.source_app_icon.as_deref(), Some(icon.as_str()));
+    }
+
+    #[test]
+    fn image_thumbnail_is_bounded_and_missing_rows_return_none() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        let source = rgba_icon_data_url([77, 111, 206, 255]);
+        let bytes = STANDARD
+            .decode(
+                source
+                    .strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)
+                    .expect("PNG data URL"),
+            )
+            .expect("decode fixture PNG");
+        apply_history_mutation(
+            &mut database,
+            mutation(
+                vec![image_item(
+                    "thumbnail-image",
+                    "2026-07-01T00:00:00.000Z",
+                    &bytes,
+                )],
+                CapacityPolicy::default(),
+            ),
+        )
+        .expect("store image");
+
+        let thumbnail = get_clip_thumbnail(&database, "thumbnail-image")
+            .expect("generate thumbnail")
+            .expect("image has thumbnail");
+        assert!(thumbnail.starts_with("data:image/png;base64,"));
+        let thumbnail_bytes = STANDARD
+            .decode(
+                thumbnail
+                    .strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)
+                    .expect("thumbnail data URL"),
+            )
+            .expect("decode thumbnail");
+        let thumbnail_image =
+            image::load_from_memory_with_format(&thumbnail_bytes, ImageFormat::Png)
+                .expect("decode thumbnail PNG");
+        assert!(thumbnail_image.width() <= HISTORY_THUMBNAIL_MAX_DIMENSION);
+        assert!(thumbnail_image.height() <= HISTORY_THUMBNAIL_MAX_DIMENSION);
+        assert_eq!(
+            get_clip_thumbnail(&database, "missing").expect("missing row"),
+            None
+        );
     }
 
     #[test]
@@ -12982,6 +13123,7 @@ mod tests {
             "dimensions",
             "omittedFormats",
             "matchSource",
+            "sourceAppIcon",
         ];
         assert_eq!(
             serialized_object_keys(&summaries["rich-shape"]),
@@ -12997,11 +13139,12 @@ mod tests {
                 "color",
                 "dimensions",
                 "omittedFormats",
+                "sourceAppIcon",
             ])
         );
-        assert!(summaries
-            .values()
-            .all(|item| item.source_app_icon.is_none()));
+        assert!(summaries["minimal-shape"].source_app_icon.is_none());
+        assert!(summaries["rich-shape"].source_app_icon.is_some());
+        assert!(summaries["image-shape"].source_app_icon.is_some());
 
         let minimal_full = get_clip_payload(&database, "minimal-shape")
             .expect("minimal payload")

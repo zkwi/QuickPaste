@@ -41,6 +41,7 @@ const historyMocks = vi.hoisted(() => ({
   getNativeHistoryHealth: vi.fn(),
   getNativeStorageStats: vi.fn(),
   listNativeHistoryCollections: vi.fn(),
+  loadNativeClipThumbnail: vi.fn(),
   loadNativeClipPayload: vi.fn(),
   loadNativeHistory: vi.fn(),
   prepareNativeHistoryRestore: vi.fn(),
@@ -236,6 +237,7 @@ describe('native setting reliability', () => {
     historyMocks.discardNativeHistoryRestore.mockReset().mockResolvedValue({ status: 'discarded' })
     historyMocks.getNativeHistoryHealth.mockReset().mockResolvedValue({ status: 'healthy' })
     historyMocks.getNativeStorageStats.mockReset().mockResolvedValue({ ...defaultStorageStats })
+    historyMocks.loadNativeClipThumbnail.mockReset().mockResolvedValue(null)
     historyMocks.prepareNativeHistoryRestore.mockReset().mockResolvedValue({ status: 'cancelled' })
     ocrMocks.markNativeClipOcrFailed.mockReset().mockResolvedValue({
       status: 'applied', ocrStatus: 'failed',
@@ -403,6 +405,20 @@ describe('native setting reliability', () => {
       'c'.repeat(64),
     )
     expect(ocrMocks.recognizeNativeClipImage.mock.calls[0]).toHaveLength(2)
+    wrapper.unmount()
+  })
+
+  it('restores native image thumbnails without hydrating full clipboard payloads', async () => {
+    const thumbnail = 'data:image/png;base64,dGh1bWJuYWls'
+    legacyHistory = [pendingOcrImage('thumbnail-image', 'd'.repeat(64))]
+    historyMocks.loadNativeClipThumbnail.mockResolvedValueOnce(thumbnail)
+
+    const wrapper = mount(App)
+    await flushPromises()
+
+    expect(historyMocks.loadNativeClipThumbnail).toHaveBeenCalledWith('thumbnail-image')
+    expect(wrapper.get('[data-clip-id="thumbnail-image"] .kind-icon img').attributes('src')).toBe(thumbnail)
+    expect(historyMocks.loadNativeClipPayload).not.toHaveBeenCalled()
     wrapper.unmount()
   })
 

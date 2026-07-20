@@ -226,6 +226,24 @@ describe('quick panel high-frequency interaction', () => {
     expect(preview.text()).toContain('<img data-probe="live" src="x"> visible text')
   })
 
+  it('shows local OCR progress in the list and recognized text in an image preview', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'ocr-visible', kind: 'image', title: 'Invoice', content: 'clipboard image', sourceApp: 'Snipping Tool',
+      copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [], formats: ['image'],
+      imageUrl: 'data:image/png;base64,AA==', imageHash: 'a'.repeat(64),
+      ocrStatus: 'completed', ocrText: 'Invoice number 2026-001',
+    }]))
+    wrapper = mount(App, { attachTo: document.body })
+
+    expect(wrapper.get('[data-clip-id="ocr-visible"] .ocr-status').text()).toContain('OCR 已完成')
+    await wrapper.get('[data-testid="preview-clip-ocr-visible"]').trigger('click')
+
+    const preview = wrapper.get('[data-testid="preview-panel"]')
+    expect(preview.get('.preview-body').classes()).toContain('image-preview-body')
+    expect(preview.get('[data-testid="preview-ocr-text"]').text()).toContain('Invoice number 2026-001')
+  })
+
   it('runs manager-only typed system actions without leaving or mutating the manager', async () => {
     wrapper.unmount()
     localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([

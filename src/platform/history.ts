@@ -411,7 +411,7 @@ export function compactNativeHistoryDatabase(invokeAdapter?: HistoryInvoke): Pro
 }
 
 const HISTORY_SUMMARY_KEYS = new Set([
-  'id', 'kind', 'title', 'content', 'sourceApp', 'copiedAt', 'updatedAt', 'pinned',
+  'id', 'kind', 'title', 'content', 'sourceApp', 'sourceAppIcon', 'copiedAt', 'updatedAt', 'pinned',
   'permanent', 'collectionId', 'searchTerms', 'ocrStatus', 'color', 'dimensions', 'formats',
   'omittedFormats', 'payloadLoaded', 'files', 'imageHash', 'matchSource',
 ])
@@ -450,6 +450,8 @@ function parseNativeFullItems(value: unknown): LoadedClipboardItem[] | null {
 
 function parseHistorySummary(value: unknown): ClipboardItemSummary | null {
   if (!hasExactNativeItemShape(value, HISTORY_SUMMARY_KEYS, false)) return null
+  if (Object.hasOwn(value, 'sourceAppIcon')
+    && normalizeSourceAppIcon(value.sourceAppIcon) !== value.sourceAppIcon) return null
   if (typeof value.content !== 'string' || [...value.content].length > 512) return null
   if (!Array.isArray(value.searchTerms) || value.searchTerms.length > 0) return null
   const matchSource = value.matchSource
@@ -465,7 +467,6 @@ function parseHistorySummary(value: unknown): ClipboardItemSummary | null {
   }])?.[0]
   if (!parsed) return null
   const {
-    sourceAppIcon: _sourceAppIcon,
     imageUrl: _imageUrl,
     html: _html,
     rtfBase64: _rtfBase64,
@@ -542,6 +543,31 @@ export async function loadNativeClipPayload(
     return item?.id === id ? { status: 'loaded', item } : { status: 'failed' }
   } catch {
     return { status: 'failed' }
+  }
+}
+
+const THUMBNAIL_DATA_URL_PREFIX = 'data:image/png;base64,'
+const THUMBNAIL_MAX_DATA_URL_LENGTH = 512 * 1024
+
+function isBoundedPngDataUrl(value: unknown): value is string {
+  if (typeof value !== 'string'
+    || value.length <= THUMBNAIL_DATA_URL_PREFIX.length
+    || value.length > THUMBNAIL_MAX_DATA_URL_LENGTH
+    || !value.startsWith(THUMBNAIL_DATA_URL_PREFIX)) return false
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(value.slice(THUMBNAIL_DATA_URL_PREFIX.length))
+}
+
+export async function loadNativeClipThumbnail(
+  id: string,
+  invokeAdapter?: HistoryInvoke,
+): Promise<string | null> {
+  if (!isValidPayloadId(id) || !invokeAdapter && !isTauriRuntime()) return null
+  try {
+    const result = await (invokeAdapter ?? invokeThroughTauri)('get_clip_thumbnail', { id })
+    if (result === null) return null
+    return isBoundedPngDataUrl(result) ? result : null
+  } catch {
+    return null
   }
 }
 
@@ -714,7 +740,8 @@ function cloneItems(items: ClipboardItem[]): ClipboardItem[] {
       ...(item.files ? { files: item.files.map((file) => ({ ...file })) } : {}),
     }
     if (item.payloadLoaded === false) {
-      return { ...item, ...arrays, searchTerms: [], payloadLoaded: false }
+      const { sourceAppIcon: _sourceAppIcon, ...summary } = item
+      return { ...summary, ...arrays, searchTerms: [], payloadLoaded: false }
     }
     return { ...item, ...arrays, searchTerms: [...item.searchTerms] }
   })

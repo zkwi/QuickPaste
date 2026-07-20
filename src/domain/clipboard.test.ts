@@ -78,6 +78,7 @@ describe('clipboard model', () => {
     expectTypeOf<Extract<ClipboardItem, { payloadLoaded: false }>>()
       .toEqualTypeOf<ClipboardItemSummary>()
     expectTypeOf<LoadedClipboardItem['payloadLoaded']>().toEqualTypeOf<true | undefined>()
+    expectTypeOf<ClipboardItemSummary['sourceAppIcon']>().toEqualTypeOf<string | undefined>()
     expectTypeOf<ClipboardItemSummary['imageUrl']>().toEqualTypeOf<undefined>()
     expectTypeOf<ReturnType<typeof parseClipboardItems>>()
       .toEqualTypeOf<LoadedClipboardItem[] | null>()

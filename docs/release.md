@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.6.0` 是当前未签名 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.6.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须醒目标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
+`0.7.0` 是当前未签名 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.7.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须醒目标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
 
 ## 版本定级
 

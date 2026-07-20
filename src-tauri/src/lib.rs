@@ -4108,6 +4108,17 @@ async fn get_clip_payload(
 }
 
 #[tauri::command]
+async fn get_clip_thumbnail(
+    id: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<Option<String>, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::get_clip_thumbnail(connection, &id))
+    })
+    .await
+}
+
+#[tauri::command]
 async fn get_storage_stats(
     history_state: State<'_, HistoryRuntimeState>,
 ) -> Result<history::StorageStats, String> {
@@ -5058,6 +5069,7 @@ pub fn run() {
             query_clipboard_history,
             list_pending_ocr_images,
             get_clip_payload,
+            get_clip_thumbnail,
             get_storage_stats,
             compact_history_database,
             create_history_backup,
@@ -5249,6 +5261,7 @@ mod tests {
             "apply_history_mutation",
             "query_clipboard_history",
             "get_clip_payload",
+            "get_clip_thumbnail",
             "get_storage_stats",
             "compact_history_database",
             "create_history_backup",

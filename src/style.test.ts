@@ -69,8 +69,9 @@ describe('quick-panel density contract', () => {
     expect(styles).toMatch(/@media \(max-width:\s*520px\)[\s\S]*?\.target-admin-label\s*\{[\s\S]*?display:\s*none/)
   })
 
-  it('keeps all settings visible in a compact two-column desktop layout', () => {
-    expect(styles).toMatch(/\.settings-content\s*\{\s*display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+  it('adapts settings columns to available content width without stretching short cards', () => {
+    expect(styles).toMatch(/\.settings-content\s*\{\s*display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(360px,\s*1fr\)\)/)
+    expect(cssRule('.setting-group')).toMatch(/align-self:\s*start/)
     expect(cssRule('.shortcut-card,\n.update-card,\n.settings-loading')).toMatch(/grid-column:\s*1\s*\/\s*-1/)
     expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.settings-content\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   })
@@ -102,6 +103,14 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.format-omission-warning')).toMatch(/overflow-wrap:\s*anywhere/)
     expect(cssRule('.preview-actions')).toMatch(/flex-wrap:\s*wrap/)
     expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.preview-body\s*\{[\s\S]*?padding:\s*12px\s+16px/)
+  })
+
+  it('gives image previews the remaining viewport instead of forcing a detail scroll', () => {
+    expect(cssRule('.preview-body.image-preview-body')).toMatch(/display:\s*flex/)
+    expect(cssRule('.preview-body.image-preview-body')).toMatch(/overflow:\s*hidden/)
+    expect(cssRule('.image-preview-body .preview-image')).toMatch(/flex:\s*1\s+1\s+auto/)
+    expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*0/)
+    expect(cssRule('.image-preview-body .preview-image')).toMatch(/max-height:\s*none/)
   })
 
   it('reserves visible title space for degraded multi-file availability badges', () => {

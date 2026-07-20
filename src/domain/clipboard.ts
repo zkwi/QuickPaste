@@ -53,8 +53,9 @@ export interface ClipboardItemSummary extends ClipboardItemBase {
   payloadLoaded: false
   // native 查询摘要始终提供；可选仅便于非 native/测试调用方构造本地摘要。
   matchSource?: HistoryMatchSource
+  // 应用图标是有上限的列表元数据，不属于需要延迟加载的正文载荷。
+  sourceAppIcon?: string
   // 摘要绝不能携带正文载荷；never 也让联合类型的现有只读访问保持可收窄。
-  sourceAppIcon?: never
   imageUrl?: never
   html?: never
   rtfBase64?: never
