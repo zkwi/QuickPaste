@@ -95,6 +95,11 @@ test('scanCandidatePath rejects local data, screenshots and generated artifacts'
 
   assert.deepEqual(scanCandidatePath('src/domain/clipboard.ts'), [])
   assert.deepEqual(scanCandidatePath('src-tauri/icons/128x128.png'), [])
+  assert.deepEqual(scanCandidatePath('docs/product-preview/quick-panel.png'), [])
+  assert.deepEqual(scanCandidatePath('docs/product-preview/settings.png'), [])
+  assert.deepEqual(scanCandidatePath('docs/product-preview/private-window.png'), [
+    'docs/product-preview/private-window.png 可能是用户截图',
+  ])
   assert.deepEqual(scanCandidatePath('public/quickpaste-mark.svg'), [])
 })
 

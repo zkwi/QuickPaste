@@ -258,8 +258,6 @@ const items = ref<ClipboardItem[]>(pruneExpiredClips(readStoredItems(), storedRe
 const query = ref('')
 const managerQuery = ref('')
 const managerKinds = ref<ClipKind[]>([])
-const managerSourceApp = ref('')
-const managerPinned = ref<boolean | undefined>(undefined)
 const managerCollectionFilter = ref<ManagerCollectionFilter>('any')
 const managerSelectedId = ref(items.value[0]?.id ?? '')
 const managerSelection = ref<ManagerSelection>(emptyManagerSelection())
@@ -339,6 +337,7 @@ const updateStatus = ref<UpdateStatus | null>(null)
 const updateProgress = ref<UpdateProgress | null>(null)
 const updateState = ref<'idle' | 'checking' | 'available' | 'latest' | 'downloading' | 'verifying' | 'installing' | 'error'>('idle')
 const updateError = ref('')
+const updateNoticeVisible = ref(false)
 const quickPanelPinInFlight = ref(false)
 const windowModeTransitioning = ref(false)
 const windowActionInFlight = ref(false)
@@ -370,6 +369,7 @@ let disconnectQuitRequested: (() => void) | undefined
 let disconnectWindowMaximizedState: (() => void) | undefined
 let disconnectUpdateCheckRequested: (() => void) | undefined
 let autoUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined
+let updateNoticeTimer: ReturnType<typeof setTimeout> | undefined
 let appUnmounted = false
 let quitFlushInProgress = false
 let capturedSequence = 0
@@ -599,8 +599,6 @@ const libraryItems = computed(() => {
       : items.value
   const filtered = sectionItems.filter((clip) => (
     (managerKinds.value.length === 0 || managerKinds.value.includes(clip.kind))
-    && (!managerSourceApp.value.trim() || clip.sourceApp === managerSourceApp.value.trim())
-    && (managerPinned.value === undefined || clip.pinned === managerPinned.value)
   ))
   return applyClipFilter(filtered, { query: managerQuery.value, kind: 'all' })
 })
@@ -683,7 +681,7 @@ function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | 
   if (!nativeRuntime || currentView.value === 'library' && librarySection.value === 'settings') return null
 
   let kinds: ClipKind[] = []
-  let sourceApps: string[] = []
+  const sourceApps: string[] = []
   let pinned: boolean | undefined
   let text = query.value
   let collection: HistoryQuery['collection'] = { mode: 'any' }
@@ -695,8 +693,6 @@ function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | 
   } else {
     text = managerQuery.value
     kinds = [...managerKinds.value]
-    sourceApps = managerSourceApp.value.trim() ? [managerSourceApp.value] : []
-    pinned = managerPinned.value
     collection = managerCollectionFilter.value === 'unfiled'
       ? { mode: 'unfiled' }
       : managerCollectionFilter.value.startsWith('collection:')
@@ -1056,7 +1052,7 @@ watch(managerQuery, () => {
     && !managerSearchComposing.value) queueNativeHistoryRefresh()
 })
 
-watch([managerKinds, managerSourceApp, managerPinned, managerCollectionFilter], () => {
+watch([managerKinds, managerCollectionFilter], () => {
   closeClipContextMenu()
   managerSelectedId.value = ''
   if (nativeRuntime && currentView.value === 'library' && librarySection.value !== 'settings') {
@@ -1065,7 +1061,7 @@ watch([managerKinds, managerSourceApp, managerPinned, managerCollectionFilter], 
 }, { deep: true })
 
 watch(
-  [managerQuery, managerKinds, managerSourceApp, managerPinned, managerCollectionFilter, librarySection],
+  [managerQuery, managerKinds, managerCollectionFilter, librarySection],
   () => {
     managerSelection.value = emptyManagerSelection()
     managerRangeAnchorId.value = undefined
@@ -1235,6 +1231,21 @@ function showToast(message: string, urgent = false) {
   }, 2600)
 }
 
+function hideUpdateNotice() {
+  updateNoticeVisible.value = false
+  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
+  updateNoticeTimer = undefined
+}
+
+function showUpdateNotice() {
+  updateNoticeVisible.value = true
+  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
+  updateNoticeTimer = setTimeout(() => {
+    updateNoticeVisible.value = false
+    updateNoticeTimer = undefined
+  }, 12_000)
+}
+
 function writeLastUpdateCheckAt(value: number): void {
   try {
     localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(value))
@@ -1258,9 +1269,8 @@ async function runUpdateCheck(manual: boolean) {
     currentVersion.value = status.currentVersion
     updateStatus.value = status
     updateState.value = status.updateAvailable ? 'available' : 'latest'
-    if (!manual && status.updateAvailable) {
-      showToast(t('updateAvailableVersion', { version: status.latestVersion }))
-    }
+    if (status.updateAvailable) showUpdateNotice()
+    else hideUpdateNotice()
   } catch (error) {
     if (manual) {
       updateError.value = error instanceof Error && error.message.trim()
@@ -1279,6 +1289,9 @@ async function runUpdateCheck(manual: boolean) {
 async function installAvailableUpdate() {
   const status = updateStatus.value
   if (!status?.updateAvailable || !status.automaticInstallAvailable || updateBusy.value) return
+  updateNoticeVisible.value = true
+  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
+  updateNoticeTimer = undefined
   updateState.value = 'downloading'
   updateError.value = ''
   updateProgress.value = null
@@ -1718,53 +1731,6 @@ async function compactHistoryDatabase() {
     }
     storageStats.value = stats
     storageStatusMessage.value = storageStatus('数据库压缩完成，统计已刷新。', 'Database compaction completed and statistics were refreshed.')
-  } finally {
-    await releaseStorageOperationLease(lease)
-  }
-}
-
-async function updateHistoryCapacityPolicy(
-  requested: Pick<CapacityPolicy, 'maxRecords' | 'maxImageBytes'>,
-) {
-  if (!Number.isSafeInteger(requested.maxRecords)
-    || requested.maxRecords < 0
-    || !Number.isSafeInteger(requested.maxImageBytes)
-    || requested.maxImageBytes < 0) return
-  const previousPolicy = currentHistoryPolicy()
-  if (requested.maxRecords === previousPolicy.maxRecords
-    && requested.maxImageBytes === previousPolicy.maxImageBytes) return
-
-  const lease = await acquireStorageOperationLease('policy')
-  if (!lease) return
-  const nextPolicy: CapacityPolicy = {
-    ...previousPolicy,
-    maxRecords: requested.maxRecords,
-    maxImageBytes: requested.maxImageBytes,
-  }
-  try {
-    const result = await applyNativeHistoryMutation({
-      upserts: [],
-      deleteIds: [],
-      policy: nextPolicy,
-    })
-    if (!result) {
-      storageStatusMessage.value = storageStatus(
-        '容量限制未能安全写入，原有限制未改变。',
-        'Capacity limits could not be saved safely. The previous limits were unchanged.',
-      )
-      return
-    }
-
-    const visibleBeforePrune = items.value
-    handleCapacityPruned(result.prunedIds)
-    if (items.value !== visibleBeforePrune) suppressedNativeHistoryItems = items.value
-    historyMaxRecords.value = nextPolicy.maxRecords
-    historyMaxImageBytes.value = nextPolicy.maxImageBytes
-    historyPersistence.reset(items.value, nextPolicy)
-    const refreshed = await refreshStorageState()
-    storageStatusMessage.value = refreshed
-      ? storageStatus('容量限制已更新，存储统计已刷新。', 'Capacity limits updated and storage statistics refreshed.')
-      : storageStatus('容量限制已更新，但存储统计暂时不可用。', 'Capacity limits updated, but storage statistics are temporarily unavailable.')
   } finally {
     await releaseStorageOperationLease(lease)
   }
@@ -3559,6 +3525,7 @@ onBeforeUnmount(() => {
   if (targetExpiryTimer) clearTimeout(targetExpiryTimer)
   if (relativeTimeTimer) clearInterval(relativeTimeTimer)
   if (autoUpdateCheckTimer) clearTimeout(autoUpdateCheckTimer)
+  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
 })
 </script>
 
@@ -3695,10 +3662,12 @@ onBeforeUnmount(() => {
                 <p v-if="previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
                   {{ t('omittedFormatsWarning', { formats: previewClip.omittedFormats.map((format) => format.toUpperCase()).join(', ') }) }}
                 </p>
-                <img v-if="previewClip.kind === 'image'" class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
-                <p v-if="previewClip.kind === 'image' && previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
-                  <strong>{{ t('ocrRecognizedText') }}</strong><span>{{ previewClip.ocrText }}</span>
-                </p>
+                <div v-if="previewClip.kind === 'image'" class="image-preview-content">
+                  <img class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
+                  <p v-if="previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
+                    <strong>{{ t('ocrRecognizedText') }}</strong><span>{{ previewClip.ocrText }}</span>
+                  </p>
+                </div>
                 <CodePreview
                   v-else-if="previewClip.kind === 'code'"
                   class="preview-code"
@@ -3913,17 +3882,16 @@ onBeforeUnmount(() => {
           </header>
 
           <section v-if="librarySection !== 'settings'" ref="libraryContent" class="library-content">
-            <div class="library-stats">
-              <article><Database :size="18" /><div><strong>{{ nativeRuntime ? nativeHistoryTotalCount : items.length }}</strong><span>{{ t('historyItems') }}</span></div></article>
-              <article><Pin :size="18" /><div><strong>{{ pinnedCount }}</strong><span>{{ t('longTermPinned') }}</span></div></article>
-              <article><ShieldCheck :size="18" /><div><strong>{{ t('local') }}</strong><span>{{ t('dataLocation') }}</span></div></article>
-            </div>
             <div class="manager-toolbar">
               <div class="manager-search">
                 <Search :size="14" aria-hidden="true" />
                 <input ref="managerSearchInput" v-model="managerQuery" data-testid="manager-search-input" type="search" autocomplete="off" spellcheck="false" :aria-label="t('searchManager')" :placeholder="t('searchManager')" @keydown.down="handleManagerSearchArrowDown" @compositionstart="startSearchComposition('manager')" @compositionend="finishSearchComposition('manager')" @blur="cancelSearchComposition('manager')" />
                 <button v-if="managerQuery" data-testid="clear-manager-search" class="manager-search-clear" type="button" :aria-label="t('clearSearch')" @mousedown.prevent @click="clearManagerSearch"><X :size="13" /></button>
               </div>
+              <ManagerFilters
+                v-model:kinds="managerKinds"
+                :locale="locale"
+              />
               <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
               <button v-if="nativeRuntime" data-testid="new-snippet" class="manager-primary-action" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet"><Plus :size="14" />{{ t('managerNewSnippet') }}</button>
               <button
@@ -3938,12 +3906,6 @@ onBeforeUnmount(() => {
                 <Trash2 :size="14" />{{ ordinaryClearLabel }}
               </button>
             </div>
-            <ManagerFilters
-              v-model:kinds="managerKinds"
-              v-model:source-app="managerSourceApp"
-              v-model:pinned="managerPinned"
-              :locale="locale"
-            />
             <ManagerBulkToolbar
               v-if="nativeRuntime"
               :key="managerBulkToolbarKey"
@@ -3993,8 +3955,10 @@ onBeforeUnmount(() => {
                   <strong><span class="manager-title-text"><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="isOcrOnlyMatch(clip, true)" class="ocr-match">{{ t('ocrMatch') }}</span><span v-else-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-if="hasMissingFiles(clip)" :data-testid="`manager-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span></strong>
                   <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template><span v-if="clip.kind === 'image' && clip.ocrStatus" :data-testid="`manager-ocr-status-${clip.id}`" class="ocr-status">{{ ocrStatusLabel(clip) }}</span></p>
                 </div>
-                <span class="manager-source"><SourceAppIcon class="manager-app-icon" :source="clip.sourceApp" :icon="clip.sourceAppIcon" :fallback-color="clip.color" /><span><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.sourceApp)" :key="`manager-source-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span></span>
-                <span class="manager-time">{{ formatRelativeTime(clip.copiedAt, relativeTimeNow, locale) }}</span>
+                <div class="manager-meta">
+                  <span class="manager-source"><SourceAppIcon class="manager-app-icon" :source="clip.sourceApp" :icon="clip.sourceAppIcon" :fallback-color="clip.color" /><span><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.sourceApp)" :key="`manager-source-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span></span>
+                  <span class="manager-time">{{ formatRelativeTime(clip.copiedAt, relativeTimeNow, locale) }}</span>
+                </div>
                 <div class="manager-actions">
                   <button v-if="clip.permanent && (clip.kind === 'text' || clip.kind === 'code')" :data-testid="`manager-edit-snippet-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="t('managerEditSnippet', { title: clip.title })" @focus="managerSelectedId = clip.id" @click="openSnippetEditor(clip)">{{ t('managerEdit') }}</button>
                   <button :data-testid="`manager-copy-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${t('copyContent')}: ${clip.title}`" :title="t('copyContent')" @focus="managerSelectedId = clip.id" @click="copyClip(clip)"><Copy :size="15" /></button>
@@ -4051,13 +4015,11 @@ onBeforeUnmount(() => {
               :health="historyHealth"
               :prepared-restore="preparedRestore"
               :busy-operation="busyStorageOperation"
-              :policy-editable="historyState === 'ready' && busyStorageOperation === null"
               :status-message="storageStatusMessage"
               @backup="createHistoryBackup"
               @prepare-restore="prepareHistoryRestore"
               @commit-restore="commitHistoryRestore"
               @discard-restore="discardHistoryRestore"
-              @update-policy="updateHistoryCapacityPolicy"
               @compact="compactHistoryDatabase"
               @refresh="refreshHistoryStorage"
             />
@@ -4197,6 +4159,38 @@ onBeforeUnmount(() => {
       <aside v-if="lastRemoved && !modalOverlayOpen" class="undo-toast" role="status">
         <span><Check :size="16" />{{ t('deletedOne') }}</span>
         <button ref="undoButton" data-testid="undo-delete" type="button" @click="undoDelete">{{ t('undo') }}</button>
+      </aside>
+    </Transition>
+
+    <Transition name="update-notice">
+      <aside
+        v-if="updateNoticeVisible && updateStatus?.updateAvailable && !modalOverlayOpen"
+        data-testid="update-notice"
+        class="update-notice"
+        :class="{ busy: updateBusy, error: updateState === 'error' }"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span class="update-notice-icon" aria-hidden="true"><Download :size="18" /></span>
+        <span class="update-notice-copy">
+          <strong>{{ updateStatusText }}</strong>
+          <small v-if="updateStatus.assetSize">{{ formatUpdateSize(updateStatus.assetSize) }}</small>
+        </span>
+        <span class="update-notice-actions">
+          <button data-testid="update-notice-dismiss" class="update-notice-dismiss" type="button" :aria-label="t('dismissUpdate')" @click="hideUpdateNotice"><X :size="15" /></button>
+          <button
+            v-if="updateStatus.automaticInstallAvailable"
+            data-testid="update-notice-install"
+            class="update-notice-install"
+            type="button"
+            :disabled="updateBusy"
+            @click="installAvailableUpdate"
+          >
+            <Download :size="14" />{{ updateBusy ? updateStatusText : t('downloadInstall') }}
+          </button>
+        </span>
+        <span v-if="updateProgress && updateBusy" class="update-notice-progress" aria-hidden="true"><span :style="{ width: `${updateProgress.percent}%` }"></span></span>
       </aside>
     </Transition>
 

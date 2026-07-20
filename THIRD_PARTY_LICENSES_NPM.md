@@ -2,7 +2,7 @@
 
 本文件由 `node scripts/generate-npm-notices.mjs` 根据 `package-lock.json` 和已安装的 production dependency closure 生成。开发依赖不会进入 Vite/Tauri 运行时包，因此不在表内。
 
-锁文件 SHA-256：`0B4B6C54ACF42E47BD545F4E63C9B64497CC916E8972A3980E8064F2034ADB43`。
+锁文件 SHA-256：`420A85064DAEC35286C23225066E825F7CF1CF0A86384EDA1119EB034EFA9CD9`。
 
 ## 组件清单
 

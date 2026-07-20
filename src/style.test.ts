@@ -51,11 +51,11 @@ describe('quick-panel density contract', () => {
     expect(visibleClipRows(compactVisibleShellHeight, 'compact')).toBeGreaterThanOrEqual(7)
   })
 
-  it('keeps source and time on one compact right-side metadata track', () => {
+  it('stacks source and time in one narrow right-side metadata track', () => {
     expect(cssRule('.clip-meta')).toMatch(/display:\s*flex/)
-    expect(cssRule('.clip-meta')).toMatch(/width:\s*132px/)
+    expect(cssRule('.clip-meta')).toMatch(/width:\s*104px/)
+    expect(cssRule('.clip-meta')).toMatch(/flex-direction:\s*column/)
     expect(cssRule('.source-app')).toMatch(/grid-template-columns:\s*16px\s+minmax\(0,\s*1fr\)/)
-    expect(cssRule('.clip-time')).toMatch(/margin-left:\s*auto/)
     expect(cssRule('.clip-time')).toMatch(/font-variant-numeric:\s*tabular-nums/)
     expect(cssRule('.app-dot')).toMatch(/width:\s*16px/)
     expect(cssRule('.app-dot')).toMatch(/height:\s*16px/)
@@ -123,12 +123,26 @@ describe('quick-panel density contract', () => {
   it('gives image previews the remaining viewport instead of forcing a detail scroll', () => {
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/display:\s*flex/)
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/overflow:\s*hidden/)
-    expect(cssRule('.image-preview-body .preview-image')).toMatch(/flex:\s*1\s+1\s+auto/)
+    expect(cssRule('.image-preview-content')).toMatch(/display:\s*grid/)
+    expect(cssRule('.image-preview-content')).toMatch(/grid-template-columns:\s*minmax\(0,\s*1\.25fr\)\s+minmax\(180px,\s*0\.75fr\)/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*0/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/max-height:\s*none/)
     expect(cssRule('.image-preview-heading')).toMatch(/min-height:\s*0/)
     expect(cssRule('.image-preview-heading')).toMatch(/margin-bottom:\s*6px/)
     expect(cssRule('.image-preview-heading .kind-icon')).toMatch(/display:\s*none/)
+  })
+
+  it('keeps update actions in a dismissible bottom-right notice', () => {
+    expect(cssRule('.update-notice')).toMatch(/position:\s*fixed/)
+    expect(cssRule('.update-notice')).toMatch(/right:\s*16px/)
+    expect(cssRule('.update-notice')).toMatch(/bottom:\s*14px/)
+    expect(cssRule('.update-notice-actions')).toMatch(/display:\s*flex/)
+    expect(cssRule('.update-notice-actions .update-notice-install')).toMatch(/background:\s*var\(--brand\)/)
+  })
+
+  it('uses a two-card storage summary for the only user-facing statistics', () => {
+    expect(cssRule('.storage-summary')).toMatch(/grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+    expect(cssRule('.storage-summary strong')).toMatch(/font-variant-numeric:\s*tabular-nums/)
   })
 
   it('reserves visible title space for degraded multi-file availability badges', () => {

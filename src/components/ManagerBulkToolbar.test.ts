@@ -25,6 +25,7 @@ describe('ManagerBulkToolbar', () => {
     expect(checkbox.element.indeterminate).toBe(false)
     expect(checkbox.attributes('aria-checked')).toBe('false')
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('0 selected')
+    expect(wrapper.find('[data-testid="manager-move-target"]').exists()).toBe(false)
 
     await wrapper.setProps({ selectionState: 'mixed', selectedCount: 3 })
     expect(checkbox.element.checked).toBe(false)
@@ -32,6 +33,7 @@ describe('ManagerBulkToolbar', () => {
     expect(checkbox.attributes('aria-checked')).toBe('mixed')
     expect(wrapper.get('[data-testid="manager-selected-count"]').attributes('aria-live')).toBe('polite')
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('3 selected')
+    expect(wrapper.find('[data-testid="manager-move-target"]').exists()).toBe(true)
 
     await wrapper.setProps({ selectionState: 'all', selectedCount: 8 })
     expect(checkbox.element.checked).toBe(true)

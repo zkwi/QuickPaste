@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { Database, Rows3 } from 'lucide-vue-next'
 import { translate, type Locale } from '../i18n'
 import type {
-  CapacityPolicy,
   HistoryHealth,
   PreparedRestore,
   StorageOperation,
@@ -15,7 +15,6 @@ const props = defineProps<{
   health: HistoryHealth | null
   preparedRestore: PreparedRestore | null
   busyOperation: StorageOperation
-  policyEditable: boolean
   statusMessage: string
 }>()
 
@@ -24,7 +23,6 @@ const emit = defineEmits<{
   'prepare-restore': []
   'commit-restore': [token: string]
   'discard-restore': [token: string]
-  'update-policy': [policy: Pick<CapacityPolicy, 'maxRecords' | 'maxImageBytes'>]
   compact: []
   refresh: []
 }>()
@@ -36,19 +34,8 @@ const restoreComposing = ref(false)
 const lastOperationTrigger = ref<HTMLElement | null>(null)
 const prepareRestoreButton = ref<HTMLButtonElement | null>(null)
 const restoreConfirmButton = ref<HTMLButtonElement | null>(null)
-const policyApplyButton = ref<HTMLButtonElement | null>(null)
-const policyCancelButton = ref<HTMLButtonElement | null>(null)
-const policyConfirmButton = ref<HTMLButtonElement | null>(null)
-const policyComposing = ref(false)
-const maxRecordsDraft = ref('')
-const maxImageBytesDraft = ref('')
-const policyError = ref('')
-const pendingPolicy = ref<Pick<CapacityPolicy, 'maxRecords' | 'maxImageBytes'> | null>(null)
 const isBusy = computed(() => props.busyOperation !== null)
 const isReadOnly = computed(() => props.health?.status === 'readOnlyError')
-const policyControlsDisabled = computed(() => (
-  !props.policyEditable || isBusy.value || isReadOnly.value || props.stats === null
-))
 const busyMessage = computed(() => {
   switch (props.busyOperation) {
     case 'backup': return t('storageBackupBusy')
@@ -103,27 +90,15 @@ watch(
   { flush: 'post' },
 )
 
-watch(
-  () => [props.stats?.maxRecords, props.stats?.maxImageBytes] as const,
-  ([maxRecords, maxImageBytes]) => {
-    maxRecordsDraft.value = maxRecords === undefined ? '' : String(maxRecords)
-    maxImageBytesDraft.value = maxImageBytes === undefined ? '' : String(maxImageBytes)
-    policyError.value = ''
-    pendingPolicy.value = null
-  },
-  { immediate: true },
-)
-
-function formatExactBytes(bytes: number): string {
-  return `${new Intl.NumberFormat(props.locale).format(bytes)} B`
-}
-
-function formatTimestamp(value: string | null): string {
-  if (!value) return t('storageNoTimestamp')
-  return new Intl.DateTimeFormat(props.locale, {
-    dateStyle: 'medium',
-    timeStyle: 'short',
-  }).format(new Date(value))
+function formatStorageSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 MB'
+  const megabytes = bytes / (1024 * 1024)
+  if (megabytes < 0.01) return '< 0.01 MB'
+  const maximumFractionDigits = megabytes >= 100 ? 0 : megabytes >= 10 ? 1 : 2
+  return new Intl.NumberFormat(props.locale, {
+    maximumFractionDigits,
+    minimumFractionDigits: 0,
+  }).format(megabytes) + ' MB'
 }
 
 function commitPreparedRestore() {
@@ -163,71 +138,6 @@ function requestRefresh(event: Event) {
   if (isBusy.value) return
   rememberOperationTrigger(event)
   emit('refresh')
-}
-
-function parseSafeUnsignedInteger(value: string): number | null {
-  if (!/^(0|[1-9]\d*)$/.test(value)) return null
-  const parsed = Number(value)
-  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
-}
-
-async function requestPolicyUpdate() {
-  if (policyControlsDisabled.value || !props.stats) return
-  const maxRecords = parseSafeUnsignedInteger(maxRecordsDraft.value)
-  const maxImageBytes = parseSafeUnsignedInteger(maxImageBytesDraft.value)
-  if (maxRecords === null || maxImageBytes === null) {
-    policyError.value = t('storagePolicyInvalid')
-    return
-  }
-  policyError.value = ''
-  if (maxRecords === props.stats.maxRecords && maxImageBytes === props.stats.maxImageBytes) return
-
-  const policy = { maxRecords, maxImageBytes }
-  const mayPrune = maxRecords < props.stats.maxRecords && props.stats.recordCount > maxRecords
-    || maxImageBytes < props.stats.maxImageBytes && props.stats.imageBytes > maxImageBytes
-  if (!mayPrune) {
-    emit('update-policy', policy)
-    return
-  }
-  pendingPolicy.value = policy
-  await nextTick()
-  policyConfirmButton.value?.focus()
-}
-
-function cancelPolicyUpdate() {
-  pendingPolicy.value = null
-  nextTick(() => policyApplyButton.value?.focus())
-}
-
-function confirmPolicyUpdate() {
-  if (policyControlsDisabled.value || !pendingPolicy.value) return
-  const policy = pendingPolicy.value
-  pendingPolicy.value = null
-  emit('update-policy', policy)
-}
-
-function handlePolicyConfirmationKeydown(event: KeyboardEvent) {
-  if (event.isComposing || policyComposing.value) {
-    if (event.key === 'Enter' || event.key === ' ') {
-      event.preventDefault()
-      event.stopPropagation()
-    }
-    return
-  }
-  if (event.key === 'Escape') {
-    event.preventDefault()
-    event.stopPropagation()
-    cancelPolicyUpdate()
-    return
-  }
-  if (event.key !== 'Tab') return
-  const buttons = [policyCancelButton.value, policyConfirmButton.value]
-    .filter((button): button is HTMLButtonElement => button !== null && !button.disabled)
-  if (buttons.length === 0) return
-  event.preventDefault()
-  const currentIndex = buttons.findIndex((button) => button === document.activeElement)
-  const direction = event.shiftKey ? -1 : 1
-  buttons[(currentIndex + direction + buttons.length) % buttons.length]?.focus()
 }
 </script>
 
@@ -290,159 +200,22 @@ function handlePolicyConfirmationKeydown(event: KeyboardEvent) {
       </dl>
     </aside>
 
-    <template v-if="stats">
-      <section class="storage-panel storage-physical" data-testid="storage-physical">
-        <header>
-          <h3>{{ t('storagePhysicalTitle') }}</h3>
-          <p>{{ t('storagePhysicalDescription') }}</p>
-        </header>
-        <dl class="storage-metrics storage-physical-grid">
-          <div data-testid="storage-database-bytes">
-            <dt>{{ t('storageDatabase') }}</dt>
-            <dd>{{ formatExactBytes(stats.databaseBytes) }}</dd>
-          </div>
-          <div data-testid="storage-wal-bytes">
-            <dt>{{ t('storageWal') }}</dt>
-            <dd>{{ formatExactBytes(stats.walBytes) }}</dd>
-          </div>
-          <div data-testid="storage-shm-bytes">
-            <dt>{{ t('storageShm') }}</dt>
-            <dd>{{ formatExactBytes(stats.shmBytes) }}</dd>
-          </div>
-          <div class="storage-total" data-testid="storage-total-physical-bytes">
-            <dt>{{ t('storagePhysicalTotal') }}</dt>
-            <dd>{{ formatExactBytes(stats.totalPhysicalBytes) }}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="storage-panel storage-logical" data-testid="storage-logical">
-        <header>
-          <h3>{{ t('storageLogicalTitle') }}</h3>
-          <p>{{ t('storageLogicalDescription') }}</p>
-        </header>
-        <p class="storage-record-summary">
-          {{ t('storageRecordSummary', {
-            count: stats.recordCount,
-            pinned: stats.pinnedCount,
-            permanent: stats.permanentCount,
-          }) }}
-        </p>
-        <dl class="storage-metrics">
-          <div>
-            <dt>{{ t('storageImagePayload') }}</dt>
-            <dd>{{ formatExactBytes(stats.imageBytes) }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('storageRichPayload') }}</dt>
-            <dd>{{ formatExactBytes(stats.richFormatBytes) }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('storageFileRecords') }}</dt>
-            <dd>{{ new Intl.NumberFormat(locale).format(stats.fileRecordCount) }}</dd>
-          </div>
-          <div>
-            <dt>{{ t('storageLogicalTotal') }}</dt>
-            <dd>{{ formatExactBytes(stats.logicalBytes) }}</dd>
-          </div>
-        </dl>
-      </section>
-
-      <section class="storage-panel storage-policy" data-testid="storage-policy">
-        <header>
-          <h3>{{ t('storagePolicyTitle') }}</h3>
-          <p>{{ t('storagePolicyDescription') }}</p>
-        </header>
-        <ul class="storage-policy-list">
-          <li>{{ t('storageMaxRecords', { count: new Intl.NumberFormat(locale).format(stats.maxRecords) }) }}</li>
-          <li>{{ t('storageMaxImageBytes', { bytes: formatExactBytes(stats.maxImageBytes) }) }}</li>
-          <li>{{ stats.retentionDays === null
-            ? t('storageRetentionForever')
-            : t('storageRetentionDays', { count: stats.retentionDays }) }}</li>
-        </ul>
-        <form class="storage-policy-editor" data-testid="storage-policy-editor" @submit.prevent="requestPolicyUpdate">
-          <label>
-            <span>{{ t('storagePolicyRecordsLabel') }}</span>
-            <span class="storage-policy-input">
-              <input
-                v-model="maxRecordsDraft"
-                data-testid="storage-max-records"
-                type="number"
-                min="0"
-                :max="Number.MAX_SAFE_INTEGER"
-                step="1"
-                inputmode="numeric"
-                :disabled="policyControlsDisabled"
-                :aria-describedby="policyError ? 'storage-policy-error' : 'storage-policy-range'"
-                @input="policyError = ''"
-              />
-              <span>{{ t('storagePolicyRecordsUnit') }}</span>
-            </span>
-          </label>
-          <label>
-            <span>{{ t('storagePolicyImageBytesLabel') }}</span>
-            <span class="storage-policy-input">
-              <input
-                v-model="maxImageBytesDraft"
-                data-testid="storage-max-image-bytes"
-                type="number"
-                min="0"
-                :max="Number.MAX_SAFE_INTEGER"
-                step="1"
-                inputmode="numeric"
-                :disabled="policyControlsDisabled"
-                :aria-describedby="policyError ? 'storage-policy-error' : 'storage-policy-range'"
-                @input="policyError = ''"
-              />
-              <span>{{ t('storagePolicyBytesUnit') }}</span>
-            </span>
-          </label>
-          <button
-            ref="policyApplyButton"
-            data-testid="storage-apply-policy"
-            type="button"
-            :disabled="policyControlsDisabled"
-            @click="requestPolicyUpdate"
-          >{{ busyOperation === 'policy' ? t('storagePolicyBusy') : t('storagePolicyApply') }}</button>
-          <small id="storage-policy-range">{{ t('storagePolicyRange', { max: new Intl.NumberFormat(locale).format(Number.MAX_SAFE_INTEGER) }) }}</small>
-          <p v-if="policyError" id="storage-policy-error" data-testid="storage-policy-error" role="alert">{{ policyError }}</p>
-        </form>
-        <div class="storage-timeline">
-          <strong>{{ t('storageTimeline') }}</strong>
-          <dl>
-            <div>
-              <dt>{{ t('storageOldest') }}</dt>
-              <dd>{{ formatTimestamp(stats.oldestCopiedAt) }}</dd>
-            </div>
-            <div>
-              <dt>{{ t('storageNewest') }}</dt>
-              <dd>{{ formatTimestamp(stats.newestCopiedAt) }}</dd>
-            </div>
-          </dl>
-        </div>
-      </section>
-    </template>
-
-    <div v-if="pendingPolicy" class="storage-policy-confirmation-backdrop">
-      <section
-        class="storage-policy-confirmation"
-        data-testid="storage-policy-confirmation"
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby="storage-policy-confirmation-title"
-        aria-describedby="storage-policy-confirmation-description"
-        @compositionstart="policyComposing = true"
-        @compositionend="policyComposing = false"
-        @keydown="handlePolicyConfirmationKeydown"
-      >
-        <h3 id="storage-policy-confirmation-title">{{ t('storagePolicyConfirmationTitle') }}</h3>
-        <p id="storage-policy-confirmation-description">{{ t('storagePolicyConfirmationDescription') }}</p>
-        <div>
-          <button ref="policyCancelButton" data-testid="storage-cancel-policy" type="button" @click="cancelPolicyUpdate">{{ t('cancel') }}</button>
-          <button ref="policyConfirmButton" data-testid="storage-confirm-policy" type="button" @click="confirmPolicyUpdate">{{ t('storagePolicyConfirm') }}</button>
-        </div>
-      </section>
-    </div>
+    <section v-if="stats" class="storage-summary" data-testid="storage-summary" :aria-label="t('storageSummary')">
+      <article>
+        <span class="storage-summary-icon" aria-hidden="true"><Database :size="19" /></span>
+        <span>
+          <small>{{ t('storageDatabaseSize') }}</small>
+          <strong data-testid="storage-database-size">{{ formatStorageSize(stats.totalPhysicalBytes) }}</strong>
+        </span>
+      </article>
+      <article>
+        <span class="storage-summary-icon" aria-hidden="true"><Rows3 :size="19" /></span>
+        <span>
+          <small>{{ t('storageRecordCount') }}</small>
+          <strong data-testid="storage-record-count">{{ new Intl.NumberFormat(locale).format(stats.recordCount) }}</strong>
+        </span>
+      </article>
+    </section>
 
     <section
       v-if="preparedRestore"
@@ -478,8 +251,8 @@ function handlePolicyConfirmationKeydown(event: KeyboardEvent) {
           {{ busyOperation === 'discard-restore' ? t('storageDiscardRestoreBusy') : t('cancel') }}
         </button>
         <button
-          class="storage-danger-button"
           ref="restoreConfirmButton"
+          class="storage-danger-button"
           data-testid="storage-commit-restore"
           type="button"
           :disabled="isBusy || isReadOnly || restoreComposing"
@@ -518,8 +291,8 @@ function handlePolicyConfirmationKeydown(event: KeyboardEvent) {
             <p>{{ t('storageRestoreDescription') }}</p>
           </div>
           <button
-            class="storage-action-button"
             ref="prepareRestoreButton"
+            class="storage-action-button"
             data-testid="storage-prepare-restore"
             type="button"
             :disabled="isBusy || isReadOnly"

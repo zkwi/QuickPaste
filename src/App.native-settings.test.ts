@@ -608,8 +608,9 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="update-status"]').text()).toContain('0.2.0')
     expect(wrapper.get('.update-card').text()).not.toContain('未进行代码签名')
     expect(wrapper.get('[data-testid="install-update"]').text()).toBe('下载安装')
+    expect(wrapper.get('[data-testid="update-notice"]').text()).toContain('0.2.0')
 
-    await wrapper.get('[data-testid="install-update"]').trigger('click')
+    await wrapper.get('[data-testid="update-notice-install"]').trigger('click')
     await flushPromises()
     expect(updaterMocks.downloadUpdate).toHaveBeenCalledWith('0.2.0', expect.any(Function))
     expect(updaterMocks.installDownloadedUpdate).toHaveBeenCalledWith('prepared-token')
@@ -2029,8 +2030,6 @@ describe('native setting reliability', () => {
 
     await wrapper.get('[data-testid="manager-kind-code"]').trigger('click')
     await wrapper.get('[data-testid="manager-kind-image"]').trigger('click')
-    await wrapper.get('[data-testid="manager-source-filter"]').setValue('Visual Studio Code')
-    await wrapper.get('[data-testid="manager-pinned-filter"]').setValue('unpinned')
     const originalSearch = '  ＴＡＵＲＩ\u3000插件  '
     await wrapper.get('[data-testid="manager-search-input"]').setValue(originalSearch)
     await flushPromises()
@@ -2039,16 +2038,22 @@ describe('native setting reliability', () => {
     expect(historyMocks.queryNativeHistory).toHaveBeenLastCalledWith({
       text: 'tauri 插件',
       kinds: ['code', 'image'],
-      sourceApps: ['Visual Studio Code'],
+      sourceApps: [],
       collection: { mode: 'any' },
-      pinned: false,
       limit: 50,
     })
 
     historyMocks.queryNativeHistory.mockClear()
     await wrapper.get('[data-testid="library-section-pinned"]').trigger('click')
     await flushPromises()
-    expect(historyMocks.queryNativeHistory).not.toHaveBeenCalled()
+    expect(historyMocks.queryNativeHistory).toHaveBeenLastCalledWith({
+      text: 'tauri 插件',
+      kinds: ['code', 'image'],
+      sourceApps: [],
+      collection: { mode: 'any' },
+      pinned: true,
+      limit: 50,
+    })
     expect(wrapper.findAll('[data-manager-clip-id]')).toHaveLength(0)
   })
 
@@ -2192,79 +2197,6 @@ describe('native setting reliability', () => {
     expect(wrapper.find('[data-testid="storage-manager"]').exists()).toBe(true)
     expect(historyMocks.getNativeHistoryHealth).toHaveBeenCalled()
     expect(historyMocks.getNativeStorageStats).toHaveBeenCalled()
-  })
-
-  it('atomically applies capacity policy before publishing settings and refreshed stats', async () => {
-    const wrapper = mount(App)
-    await flushPromises()
-    await wrapper.get('[data-testid="open-library"]').trigger('click')
-    await flushPromises()
-    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
-    await flushPromises()
-
-    historyMocks.applyNativeHistoryMutation.mockClear()
-    let finishPolicy: ((result: { prunedIds: string[] }) => void) | undefined
-    historyMocks.applyNativeHistoryMutation.mockImplementationOnce(() => new Promise((resolve) => {
-      finishPolicy = resolve
-    }))
-    historyMocks.getNativeStorageStats.mockResolvedValue({
-      ...defaultStorageStats,
-      maxRecords: 750,
-      maxImageBytes: 134_217_728,
-    })
-
-    await wrapper.get('[data-testid="storage-max-records"]').setValue('750')
-    await wrapper.get('[data-testid="storage-max-image-bytes"]').setValue('134217728')
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-    await flushPromises()
-
-    expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith({
-      upserts: [],
-      deleteIds: [],
-      policy: { maxRecords: 750, maxImageBytes: 134_217_728, retentionDays: 30 },
-    })
-    expect(wrapper.get<HTMLButtonElement>('[data-testid="storage-apply-policy"]').element.disabled).toBe(true)
-    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy).toEqual({
-      maxRecords: 500,
-      maxImageBytes: 268_435_456,
-      retentionDays: 30,
-    })
-
-    finishPolicy?.({ prunedIds: [] })
-    await flushPromises()
-
-    expect(wrapper.get<HTMLInputElement>('[data-testid="storage-max-records"]').element.value).toBe('750')
-    expect(wrapper.get<HTMLInputElement>('[data-testid="storage-max-image-bytes"]').element.value).toBe('134217728')
-    expect(wrapper.get<HTMLButtonElement>('[data-testid="storage-apply-policy"]').element.disabled).toBe(false)
-    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy).toEqual({
-      maxRecords: 750,
-      maxImageBytes: 134_217_728,
-      retentionDays: 30,
-    })
-    expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('容量限制已更新')
-  })
-
-  it('keeps the confirmed capacity policy when its atomic write fails', async () => {
-    const wrapper = mount(App)
-    await flushPromises()
-    await wrapper.get('[data-testid="open-library"]').trigger('click')
-    await flushPromises()
-    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
-    await flushPromises()
-
-    historyMocks.applyNativeHistoryMutation.mockClear()
-    historyMocks.applyNativeHistoryMutation.mockResolvedValueOnce(null)
-    await wrapper.get('[data-testid="storage-max-records"]').setValue('750')
-    await wrapper.get('[data-testid="storage-max-image-bytes"]').setValue('134217728')
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-    await flushPromises()
-
-    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy).toEqual({
-      maxRecords: 500,
-      maxImageBytes: 268_435_456,
-      retentionDays: 30,
-    })
-    expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('未改变')
   })
 
   it('lets a custom native retention policy change to forever without keeping the hidden custom value', async () => {
@@ -2429,7 +2361,6 @@ describe('native setting reliability', () => {
     }))
     const stored = JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')
     expect(stored.historyPolicy).toEqual({ maxRecords: 900, maxImageBytes: 536_870_912, retentionDays: 90 })
-    expect(wrapper.text()).toContain('900')
     expect(wrapper.text()).not.toContain('过期查询结果')
     expect(historyMocks.getNativeHistoryHealth).toHaveBeenCalled()
     expect(historyMocks.getNativeStorageStats).toHaveBeenCalled()

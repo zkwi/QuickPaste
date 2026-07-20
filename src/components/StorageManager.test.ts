@@ -29,121 +29,19 @@ const baseProps = {
   health: { status: 'healthy' as const },
   preparedRestore: null,
   busyOperation: null,
-  policyEditable: true,
   statusMessage: '',
 }
 
 describe('StorageManager', () => {
-  it('separates exact on-disk files from logical content and active policy', () => {
+  it('shows only database size and record count as core statistics', () => {
     const wrapper = mount(StorageManager, { props: baseProps })
 
-    expect(wrapper.get('[data-testid="storage-physical"]').text()).toContain('On-disk files')
-    expect(wrapper.get('[data-testid="storage-database-bytes"]').text()).toContain('4,096 B')
-    expect(wrapper.get('[data-testid="storage-wal-bytes"]').text()).toContain('1,024 B')
-    expect(wrapper.get('[data-testid="storage-shm-bytes"]').text()).toContain('512 B')
-    expect(wrapper.get('[data-testid="storage-total-physical-bytes"]').text()).toContain('5,632 B')
-
-    const logical = wrapper.get('[data-testid="storage-logical"]').text()
-    expect(logical).toContain('Logical clipboard data')
-    expect(logical).toContain('8')
-    expect(logical).toContain('2 pinned')
-    expect(logical).toContain('1 permanent')
-    expect(logical).toContain('2,048 B')
-    expect(logical).toContain('768 B')
-    expect(logical).toContain('3')
-
-    const policy = wrapper.get('[data-testid="storage-policy"]').text()
-    expect(policy).toContain('Active limits')
-    expect(policy).toContain('500 records')
-    expect(policy).toContain('268,435,456 B')
-    expect(policy).toContain('30 days')
-    expect(wrapper.text()).toContain('Jun 1, 2026')
-    expect(wrapper.text()).toContain('Jul 19, 2026')
-  })
-
-  it('accepts only explicit safe integers with visible record and byte units', async () => {
-    const wrapper = mount(StorageManager, { props: baseProps })
-    const records = wrapper.get<HTMLInputElement>('[data-testid="storage-max-records"]')
-    const imageBytes = wrapper.get<HTMLInputElement>('[data-testid="storage-max-image-bytes"]')
-
-    expect(records.element.value).toBe('500')
-    expect(records.attributes()).toMatchObject({ min: '0', max: String(Number.MAX_SAFE_INTEGER), step: '1' })
-    expect(imageBytes.element.value).toBe('268435456')
-    expect(imageBytes.attributes()).toMatchObject({ min: '0', max: String(Number.MAX_SAFE_INTEGER), step: '1' })
-    expect(wrapper.get('[data-testid="storage-policy-editor"]').text()).toContain('records')
-    expect(wrapper.get('[data-testid="storage-policy-editor"]').text()).toContain('B')
-
-    await records.setValue('9007199254740992')
-    await imageBytes.setValue('1.5')
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-
-    expect(wrapper.get('[data-testid="storage-policy-error"]').text()).toContain('whole number')
-    expect(wrapper.emitted('update-policy')).toBeUndefined()
-
-    await records.setValue('750')
-    await imageBytes.setValue('134217728')
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-
-    expect(wrapper.emitted('update-policy')?.at(-1)).toEqual([{ maxRecords: 750, maxImageBytes: 134_217_728 }])
-  })
-
-  it('requires confirmation before a lower policy may immediately prune history', async () => {
-    const wrapper = mount(StorageManager, {
-      attachTo: document.body,
-      props: {
-        ...baseProps,
-        stats: { ...stats, recordCount: 800, maxRecords: 1_000 },
-      },
-    })
-
-    await wrapper.get('[data-testid="storage-max-records"]').setValue('100')
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-
-    const confirmation = wrapper.get('[data-testid="storage-policy-confirmation"]')
-    expect(confirmation.attributes('role')).toBe('alertdialog')
-    expect(confirmation.text()).toContain('permanently remove')
-    expect(wrapper.emitted('update-policy')).toBeUndefined()
-    const confirm = wrapper.get<HTMLButtonElement>('[data-testid="storage-confirm-policy"]')
-    expect(document.activeElement).toBe(confirm.element)
-
-    const composingEnter = new KeyboardEvent('keydown', {
-      bubbles: true,
-      cancelable: true,
-      key: 'Enter',
-      isComposing: true,
-    })
-    confirm.element.dispatchEvent(composingEnter)
-    expect(composingEnter.defaultPrevented).toBe(true)
-    expect(wrapper.emitted('update-policy')).toBeUndefined()
-
-    await confirm.trigger('keydown', { key: 'Tab' })
-    expect(document.activeElement).toBe(wrapper.get('[data-testid="storage-cancel-policy"]').element)
-
-    await wrapper.get('[data-testid="storage-cancel-policy"]').trigger('keydown', { key: 'Escape' })
-    expect(wrapper.find('[data-testid="storage-policy-confirmation"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.get('[data-testid="storage-apply-policy"]').element)
-
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-    await wrapper.get('[data-testid="storage-confirm-policy"]').trigger('click')
-    expect(wrapper.emitted('update-policy')?.at(-1)).toEqual([{ maxRecords: 100, maxImageBytes: 268_435_456 }])
-    wrapper.unmount()
-  })
-
-  it('keeps capacity inputs read-only while history or storage operations are unavailable', async () => {
-    const wrapper = mount(StorageManager, {
-      props: { ...baseProps, policyEditable: false },
-    })
-
-    for (const testId of ['storage-max-records', 'storage-max-image-bytes', 'storage-apply-policy']) {
-      expect(wrapper.get<HTMLInputElement | HTMLButtonElement>(`[data-testid="${testId}"]`).element.disabled).toBe(true)
-    }
-    await wrapper.get('[data-testid="storage-apply-policy"]').trigger('click')
-    expect(wrapper.emitted('update-policy')).toBeUndefined()
-
-    await wrapper.setProps({ policyEditable: true, busyOperation: 'compact' })
-    for (const testId of ['storage-max-records', 'storage-max-image-bytes', 'storage-apply-policy']) {
-      expect(wrapper.get<HTMLInputElement | HTMLButtonElement>(`[data-testid="${testId}"]`).element.disabled).toBe(true)
-    }
+    const summary = wrapper.get('[data-testid="storage-summary"]')
+    expect(summary.findAll('article')).toHaveLength(2)
+    expect(wrapper.get('[data-testid="storage-database-size"]').text()).toContain('MB')
+    expect(wrapper.get('[data-testid="storage-record-count"]').text()).toContain('8')
+    expect(wrapper.find('[data-testid="storage-wal-bytes"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="storage-policy"]').exists()).toBe(false)
   })
 
   it('keeps backup details quiet and delegates file selection to native operations', async () => {
@@ -208,7 +106,7 @@ describe('StorageManager', () => {
     await wrapper.setProps({ busyOperation: 'backup' })
     expect(wrapper.get('[data-testid="storage-manager"]').attributes('aria-busy')).toBe('true')
     for (const testId of ['storage-backup', 'storage-prepare-restore', 'storage-compact', 'storage-refresh']) {
-      expect(wrapper.get<HTMLButtonElement>(`[data-testid="${testId}"]`).element.disabled).toBe(true)
+      expect(wrapper.get<HTMLButtonElement>('[data-testid="' + testId + '"]').element.disabled).toBe(true)
     }
 
     await wrapper.setProps({ busyOperation: null, statusMessage: 'Backup cancelled. Existing data was unchanged.' })
@@ -265,8 +163,8 @@ describe('StorageManager', () => {
     })
 
     for (const testId of ['storage-backup', 'storage-prepare-restore', 'storage-compact']) {
-      expect(wrapper.get<HTMLButtonElement>(`[data-testid="${testId}"]`).element.disabled).toBe(true)
-      await wrapper.get(`[data-testid="${testId}"]`).trigger('click')
+      expect(wrapper.get<HTMLButtonElement>('[data-testid="' + testId + '"]').element.disabled).toBe(true)
+      await wrapper.get('[data-testid="' + testId + '"]').trigger('click')
     }
     expect(wrapper.emitted('backup')).toBeUndefined()
     expect(wrapper.emitted('prepare-restore')).toBeUndefined()
@@ -276,9 +174,9 @@ describe('StorageManager', () => {
 
   it('has dedicated light, dark, compact 640px, and forced-color presentation', () => {
     expect(styles).toMatch(/\.storage-manager\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1/)
-    expect(styles).toMatch(/\.storage-panel\s*\{[\s\S]*?background:\s*var\(--surface-raised\)/)
+    expect(styles).toMatch(/\.storage-summary\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
     expect(styles).toMatch(/:root\[data-theme="dark"\]\s+\.storage-manager/)
-    expect(styles).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.storage-physical-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/)
+    expect(styles).toMatch(/@media \(max-width:\s*640px\)[\s\S]*?\.storage-summary\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
     expect(styles).toMatch(/@media \(forced-colors:\s*active\)[\s\S]*?\.storage-panel/)
   })
 

@@ -122,7 +122,7 @@ function handleConfirmationKeydown(event: KeyboardEvent) {
         {{ t('managerSelectedCount', { count: selectedCount }) }}
       </p>
     </div>
-    <div class="manager-bulk-actions">
+    <div v-if="selectedCount > 0" class="manager-bulk-actions">
       <label class="manager-bulk-move">
         <span>{{ t('managerMoveTo') }}</span>
         <select v-model="moveTarget" data-testid="manager-move-target" :disabled="busy || selectedCount === 0">

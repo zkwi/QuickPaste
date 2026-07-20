@@ -2,16 +2,15 @@ import { mount } from '@vue/test-utils'
 import ManagerFilters from './ManagerFilters.vue'
 
 describe('ManagerFilters', () => {
-  it('emits deterministic kind, exact-source, and pinned filters', async () => {
+  it('keeps only the useful kind filters and emits them deterministically', async () => {
     const wrapper = mount(ManagerFilters, {
       props: {
         kinds: [],
-        sourceApp: '',
-        pinned: undefined,
         locale: 'zh-CN',
       },
     })
 
+    expect(wrapper.get('[data-testid="manager-kind-all"]').attributes('aria-pressed')).toBe('true')
     await wrapper.get('[data-testid="manager-kind-text"]').trigger('click')
     expect(wrapper.emitted('update:kinds')?.at(-1)).toEqual([['text']])
 
@@ -19,28 +18,20 @@ describe('ManagerFilters', () => {
     await wrapper.get('[data-testid="manager-kind-image"]').trigger('click')
     expect(wrapper.emitted('update:kinds')?.at(-1)).toEqual([['text', 'image']])
 
-    await wrapper.get('[data-testid="manager-source-filter"]').setValue('Visual Studio Code')
-    expect(wrapper.emitted('update:sourceApp')?.at(-1)).toEqual(['Visual Studio Code'])
-
-    await wrapper.get('[data-testid="manager-pinned-filter"]').setValue('unpinned')
-    expect(wrapper.emitted('update:pinned')?.at(-1)).toEqual([false])
+    await wrapper.get('[data-testid="manager-kind-all"]').trigger('click')
+    expect(wrapper.emitted('update:kinds')?.at(-1)).toEqual([[]])
   })
 
-  it('clears every filter without presenting page-local sources as a complete facet', async () => {
+  it('does not repeat source or pinned filters already covered by search and navigation', () => {
     const wrapper = mount(ManagerFilters, {
       props: {
         kinds: ['code'],
-        sourceApp: 'Terminal',
-        pinned: true,
         locale: 'en-US',
       },
     })
 
-    expect(wrapper.find('select[multiple]').exists()).toBe(false)
-    await wrapper.get('[data-testid="reset-manager-filters"]').trigger('click')
-
-    expect(wrapper.emitted('update:kinds')?.at(-1)).toEqual([[]])
-    expect(wrapper.emitted('update:sourceApp')?.at(-1)).toEqual([''])
-    expect(wrapper.emitted('update:pinned')?.at(-1)).toEqual([undefined])
+    expect(wrapper.find('[data-testid="manager-source-filter"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="manager-pinned-filter"]').exists()).toBe(false)
+    expect(wrapper.findAll('button')).toHaveLength(6)
   })
 })
