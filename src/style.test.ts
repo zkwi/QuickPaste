@@ -75,6 +75,14 @@ describe('quick-panel density contract', () => {
     expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.settings-content\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
   })
 
+  it('keeps collection management readable and independently scrollable in compact manager windows', () => {
+    expect(cssRule('.manager-collections nav')).toMatch(/max-height:\s*190px/)
+    expect(cssRule('.manager-collections nav')).toMatch(/overflow-y:\s*auto/)
+    expect(cssRule('.manager-collection-row')).toMatch(/grid-template-columns:\s*minmax\(0,\s*1fr\)\s+28px\s+28px/)
+    expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.library-shell\s*\{[\s\S]*?grid-template-columns:\s*minmax\(150px,\s*25vw\)\s+minmax\(0,\s*1fr\)/)
+    expect(styles).toMatch(/@media \(max-width:\s*760px\)[\s\S]*?\.manager-collections form\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/)
+  })
+
   it('covers the full maximized window with settings modals', () => {
     expect(cssRule('.app-stage.is-window-maximized .settings-modal-backdrop')).toMatch(/width:\s*100vw/)
     expect(cssRule('.app-stage.is-window-maximized .settings-modal-backdrop')).toMatch(/height:\s*100vh/)
@@ -86,5 +94,30 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.onboarding-dialog')).toMatch(/max-height:\s*100%/)
     expect(cssRule('.onboarding-dialog')).toMatch(/overflow:\s*auto/)
     expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.onboarding-visual\s*\{[\s\S]*?height:\s*148px/)
+  })
+
+  it('keeps format metadata readable without crowding a 640 by 440 preview', () => {
+    expect(cssRule('.format-badges')).toMatch(/display:\s*flex/)
+    expect(cssRule('.format-badges')).toMatch(/flex-wrap:\s*wrap/)
+    expect(cssRule('.format-omission-warning')).toMatch(/overflow-wrap:\s*anywhere/)
+    expect(cssRule('.preview-actions')).toMatch(/flex-wrap:\s*wrap/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.preview-body\s*\{[\s\S]*?padding:\s*12px\s+16px/)
+  })
+
+  it('reserves visible title space for degraded multi-file availability badges', () => {
+    const titleTextRules = cssRule('.clip-title-text,\n.manager-title-text')
+    expect(cssRule('.clip-title')).toMatch(/display:\s*flex/)
+    expect(titleTextRules).toMatch(/min-width:\s*0/)
+    expect(titleTextRules).toMatch(/text-overflow:\s*ellipsis/)
+    expect(cssRule('.manager-row strong')).toMatch(/display:\s*flex/)
+    expect(cssRule('.file-availability')).toMatch(/flex:\s*0\s+0\s+auto/)
+  })
+
+  it('keeps format and omission badges visible in light, dark, and forced-color themes', () => {
+    expect(cssRule('.format-badge')).toMatch(/color:\s*var\(--brand-strong\)/)
+    expect(cssRule('.format-omission-warning')).toMatch(/color:\s*var\(--text-soft\)/)
+    expect(styles).toMatch(/:root\[data-theme="dark"\]/)
+    expect(styles).toMatch(/@media \(forced-colors:\s*active\)[\s\S]*?\.format-badge,[\s\S]*?\.format-omission-warning,[\s\S]*?\{[\s\S]*?border:\s*1px\s+solid\s+CanvasText/)
+    expect(styles).toMatch(/\.ocr-match,[\s\S]*?\.ocr-status\s*\{[\s\S]*?border:\s*1px\s+solid\s+CanvasText/)
   })
 })

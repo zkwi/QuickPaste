@@ -1,0 +1,31 @@
+# Rust 第三方许可证
+
+本文件由 `cargo-about 0.9.1` 根据 `src-tauri/Cargo.lock`、`src-tauri/about.toml` 和 Windows x64 目标生成。它列出 QuickPaste Windows 候选包使用的 Rust normal/build 依赖及对应许可证原文；QuickPaste 自身是私有、不可发布的 `UNLICENSED` 项目，不在表内。
+
+生成命令：
+
+```powershell
+npm run licenses:rust
+```
+
+## 组件清单
+
+| 组件 | 版本 | SPDX 表达式 |
+| --- | --- | --- |
+{{#each crates}}
+| [{{package.name}}]({{#if package.repository}}{{package.repository}}{{else}}https://crates.io/crates/{{package.name}}{{/if}}) | {{package.version}} | `{{license}}` |
+{{/each}}
+
+## 许可证原文
+
+{{#each licenses}}
+<details>
+<summary>{{name}}（{{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}、{{/unless}}{{/each}}）</summary>
+
+<pre>
+{{text}}
+</pre>
+
+</details>
+
+{{/each}}

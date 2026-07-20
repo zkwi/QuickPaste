@@ -1,6 +1,6 @@
-import type { ClipboardItem } from '../domain/clipboard'
+import type { LoadedClipboardItem } from '../domain/clipboard'
 
-export const demoClips: ClipboardItem[] = [
+export const demoClips: LoadedClipboardItem[] = [
   {
     id: 'clip-1',
     kind: 'text',

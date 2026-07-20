@@ -39,6 +39,38 @@ describe('Tauri desktop bridge', () => {
     expect(cleanup).toHaveBeenCalledOnce()
   })
 
+  it('forwards rich text and ordered multi-file payloads without reshaping them', async () => {
+    const handler = vi.fn()
+    const richPayload = {
+      kind: 'text' as const,
+      content: '富文本',
+      capturedAt: '2026-07-19T08:00:00.000Z',
+      formats: ['text', 'html', 'rtf'] as const,
+      html: '<b>富文本</b>',
+      rtfBase64: 'e1xydGYxXGFuc2k=',
+    }
+    const filesPayload = {
+      kind: 'file' as const,
+      content: 'C:\\Fixtures\\first.txt\nC:\\Fixtures\\folder',
+      capturedAt: '2026-07-19T08:01:00.000Z',
+      formats: ['files'] as const,
+      files: [
+        { path: 'C:\\Fixtures\\first.txt', name: 'first.txt', size: 12, directory: false, exists: true },
+        { path: 'C:\\Fixtures\\folder', name: 'folder', directory: true, exists: false },
+      ],
+    }
+    const listen: NativeListen = async (_eventName, callback) => {
+      callback(richPayload)
+      callback(filesPayload)
+      return () => undefined
+    }
+
+    await connectNativeClipboard(handler, listen)
+
+    expect(handler).toHaveBeenNthCalledWith(1, richPayload)
+    expect(handler).toHaveBeenNthCalledWith(2, filesPayload)
+  })
+
   it('exposes a failed clipboard event subscription instead of pretending it is connected', async () => {
     const listen: NativeListen = vi.fn().mockRejectedValue(new Error('event bus unavailable'))
 

@@ -4,8 +4,17 @@ import App from './App.vue'
 const clipboardMocks = vi.hoisted(() => ({
   copyImage: vi.fn().mockResolvedValue(true),
   copyText: vi.fn().mockResolvedValue(true),
+  pasteFiles: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
+  pasteFormats: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
   pasteImage: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
   pasteText: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
+}))
+
+const systemMocks = vi.hoisted(() => ({
+  openExternalLink: vi.fn().mockResolvedValue(true),
+  openFilePath: vi.fn().mockResolvedValue(true),
+  revealFilePath: vi.fn().mockResolvedValue(true),
+  saveClipboardImage: vi.fn().mockResolvedValue('saved'),
 }))
 
 const windowMocks = vi.hoisted(() => ({
@@ -16,6 +25,7 @@ const windowMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('./platform/clipboard', () => clipboardMocks)
+vi.mock('./platform/system', () => systemMocks)
 vi.mock('./platform/window', () => windowMocks)
 
 function dispatchKey(
@@ -103,6 +113,239 @@ describe('quick panel high-frequency interaction', () => {
     await flushPromises()
     expect(clipboardMocks.pasteText).toHaveBeenCalledOnce()
     expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
+  })
+
+  it('keeps quick rows, preview, context menu, and shortcuts free of management actions', async () => {
+    const first = wrapper.get('[data-clip-id="clip-1"]')
+    const primary = first.get('.clip-primary')
+
+    expect(first.find('[data-testid="pin-clip-clip-1"]').exists()).toBe(false)
+    expect(first.find('[data-testid="delete-clip-clip-1"]').exists()).toBe(false)
+
+    dispatchKey(primary.element, 'c', { ctrlKey: true })
+    dispatchKey(primary.element, 'Delete')
+    await flushPromises()
+    expect(clipboardMocks.copyText).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(true)
+
+    dispatchContextMenu(first.element)
+    await wrapper.vm.$nextTick()
+    const menu = wrapper.get('[data-testid="clip-context-menu"]')
+    expect(menu.find('[data-testid="context-copy"]').exists()).toBe(false)
+    expect(menu.find('[data-testid="context-pin"]').exists()).toBe(false)
+    expect(menu.find('[data-testid="context-delete"]').exists()).toBe(false)
+
+    await menu.get('[data-testid="context-preview"]').trigger('click')
+    const preview = wrapper.get('[data-testid="preview-panel"]')
+    expect(preview.find('[data-testid="preview-copy"]').exists()).toBe(false)
+    expect(preview.find('[data-testid="preview-pin"]').exists()).toBe(false)
+    expect(preview.find('a[href]').exists()).toBe(false)
+  })
+
+  it('routes rich preserve/plain and ordered files through their typed paste adapters', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
+      {
+        id: 'rich', kind: 'text', title: 'Rich', content: 'formatted text', sourceApp: 'Word',
+        copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [],
+        formats: ['text', 'html', 'rtf'], html: '<strong>formatted text</strong>', rtfBase64: 'e1xydGYxXGFuc2k=',
+      },
+      {
+        id: 'files', kind: 'file', title: 'Files', content: 'first.txt\nsecond.txt', sourceApp: 'Explorer',
+        copiedAt: '2026-07-19T01:00:00.000Z', pinned: false, searchTerms: [], formats: ['files'],
+        files: [
+          { path: 'C:\\Fixtures\\first.txt', name: 'first.txt', directory: false, exists: true },
+          { path: 'C:\\Fixtures\\second.txt', name: 'second.txt', directory: false, exists: true },
+        ],
+      },
+    ]))
+    wrapper = mount(App, { attachTo: document.body })
+
+    dispatchContextMenu(wrapper.get('[data-clip-id="rich"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-paste-preserve"]').trigger('click')
+    await flushPromises()
+    expect(clipboardMocks.pasteFormats).toHaveBeenCalledWith(
+      'formatted text', '<strong>formatted text</strong>', 'e1xydGYxXGFuc2k=',
+    )
+
+    dispatchContextMenu(wrapper.get('[data-clip-id="rich"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-paste-plain"]').trigger('click')
+    await flushPromises()
+    expect(clipboardMocks.pasteText).toHaveBeenCalledWith('formatted text')
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalledWith(expect.stringContaining('<strong>'))
+
+    await wrapper.get('[data-clip-id="files"] .clip-primary').trigger('dblclick')
+    await flushPromises()
+    expect(clipboardMocks.pasteFiles).toHaveBeenCalledWith([
+      expect.objectContaining({ path: 'C:\\Fixtures\\first.txt' }),
+      expect.objectContaining({ path: 'C:\\Fixtures\\second.txt' }),
+    ])
+  })
+
+  it('blocks every quick paste entry point when a recorded file is missing', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'missing-file', kind: 'file', title: 'Missing', content: 'missing.txt', sourceApp: 'Explorer',
+      copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [], formats: ['files'],
+      files: [{ path: 'C:\\Fixtures\\missing.txt', name: 'missing.txt', directory: false, exists: false }],
+    }]))
+    wrapper = mount(App, { attachTo: document.body })
+    const primary = wrapper.get('[data-clip-id="missing-file"] .clip-primary')
+
+    await primary.trigger('dblclick')
+    dispatchKey(primary.element, 'Enter')
+    dispatchKey(primary.element, '1', { altKey: true })
+    await flushPromises()
+    expect(clipboardMocks.pasteFiles).not.toHaveBeenCalled()
+
+    dispatchContextMenu(primary.element)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="context-paste"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.get('[data-testid="context-preview"]').trigger('click')
+    expect(wrapper.get('[data-testid="preview-paste"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('shows rich format and omission metadata as inert text only', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'rich-warning', kind: 'text', title: 'Untrusted rich text',
+      content: '<img data-probe="live" src="x"> visible text', sourceApp: 'Word',
+      copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [],
+      formats: ['text', 'html'], omittedFormats: ['rtf'], html: '<img data-probe="html" src="x">',
+    }]))
+    wrapper = mount(App, { attachTo: document.body })
+
+    await wrapper.get('[data-testid="preview-clip-rich-warning"]').trigger('click')
+    const preview = wrapper.get('[data-testid="preview-panel"]')
+    expect(preview.find('[data-probe]').exists()).toBe(false)
+    expect(preview.findAll('.format-badge').map((badge) => badge.text())).toEqual(['TEXT', 'HTML'])
+    expect(preview.get('.format-omission-warning').text()).toContain('RTF')
+    expect(preview.text()).toContain('<img data-probe="live" src="x"> visible text')
+  })
+
+  it('runs manager-only typed system actions without leaving or mutating the manager', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
+      {
+        id: 'link', kind: 'link', title: 'Docs', content: 'https://example.com/docs', sourceApp: 'Edge',
+        copiedAt: '2026-07-19T03:00:00.000Z', pinned: false, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'file', kind: 'file', title: 'Reports', content: 'first.txt\nmissing.txt\nsecond.txt', sourceApp: 'Explorer',
+        copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [], formats: ['files'],
+        files: [
+          { path: 'C:\\Fixtures\\first.txt', name: 'first.txt', directory: false, exists: true },
+          { path: 'C:\\Fixtures\\missing.txt', name: 'missing.txt', directory: false, exists: false },
+          { path: 'C:\\Fixtures\\second.txt', name: 'second.txt', directory: false, exists: true },
+        ],
+      },
+      {
+        id: 'image', kind: 'image', title: 'Image', content: 'image', sourceApp: 'Snipping Tool',
+        copiedAt: '2026-07-19T01:00:00.000Z', pinned: false, searchTerms: [], formats: ['image'],
+        imageUrl: 'data:image/png;base64,AA==',
+      },
+    ]))
+    systemMocks.saveClipboardImage.mockResolvedValueOnce('cancelled')
+    wrapper = mount(App, { attachTo: document.body })
+
+    expect(wrapper.get('[data-testid="quick-file-availability-file"]').text()).toContain('2 / 3')
+    await wrapper.get('[data-testid="preview-clip-file"]').trigger('click')
+    expect(wrapper.get('[data-testid="preview-file-list"]').findAll('li').map((entry) => ({
+      text: entry.text(),
+      exists: entry.attributes('data-file-exists'),
+    }))).toEqual([
+      { text: expect.stringContaining('first.txt'), exists: 'true' },
+      { text: expect.stringContaining('missing.txt'), exists: 'false' },
+      { text: expect.stringContaining('second.txt'), exists: 'true' },
+    ])
+    await wrapper.get('[data-testid="close-preview"]').trigger('click')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    expect(wrapper.get('[data-testid="manager-file-availability-file"]').text()).toContain('2 / 3')
+
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="link"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-open-link"]').trigger('click')
+    await flushPromises()
+    expect(systemMocks.openExternalLink).toHaveBeenCalledWith('https://example.com/docs')
+
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="file"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-open-file"]').trigger('click')
+    await flushPromises()
+    expect(systemMocks.openFilePath.mock.calls).toEqual([
+      ['C:\\Fixtures\\first.txt'],
+      ['C:\\Fixtures\\second.txt'],
+    ])
+
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="file"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-reveal-file"]').trigger('click')
+    await flushPromises()
+    expect(systemMocks.revealFilePath.mock.calls).toEqual([
+      ['C:\\Fixtures\\first.txt'],
+      ['C:\\Fixtures\\second.txt'],
+    ])
+
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="image"]').element)
+    await wrapper.vm.$nextTick()
+    const toastCount = wrapper.findAll('.feedback-toast').length
+    await wrapper.get('[data-testid="context-save-image"]').trigger('click')
+    await flushPromises()
+    expect(systemMocks.saveClipboardImage).toHaveBeenCalledWith('data:image/png;base64,AA==')
+    expect(wrapper.find('[data-testid="library-view"]').exists()).toBe(true)
+    expect(wrapper.findAll('.manager-row')).toHaveLength(3)
+    expect(wrapper.findAll('.feedback-toast')).toHaveLength(toastCount)
+  })
+
+  it('drops a stale manager system-action result after returning to quick', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'link', kind: 'link', title: 'Docs', content: 'https://example.com/docs', sourceApp: 'Edge',
+      copiedAt: '2026-07-19T03:00:00.000Z', pinned: false, searchTerms: [], formats: ['text'],
+    }]))
+    let finishOpen: ((result: boolean) => void) | undefined
+    systemMocks.openExternalLink.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      finishOpen = resolve
+    }))
+    wrapper = mount(App, { attachTo: document.body })
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="link"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-open-link"]').trigger('click')
+    await wrapper.get('[data-testid="library-view"] .back-button').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="library-view"]').exists()).toBe(false)
+
+    finishOpen?.(false)
+    await flushPromises()
+    expect(wrapper.find('.feedback-toast').exists()).toBe(false)
+  })
+
+  it('drops a pending manager system-action result after unmount', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'link', kind: 'link', title: 'Docs', content: 'https://example.com/docs', sourceApp: 'Edge',
+      copiedAt: '2026-07-19T03:00:00.000Z', pinned: false, searchTerms: [], formats: ['text'],
+    }]))
+    let finishOpen: ((result: boolean) => void) | undefined
+    systemMocks.openExternalLink.mockImplementationOnce(() => new Promise<boolean>((resolve) => {
+      finishOpen = resolve
+    }))
+    wrapper = mount(App, { attachTo: document.body })
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    dispatchContextMenu(wrapper.get('[data-manager-clip-id="link"]').element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-open-link"]').trigger('click')
+
+    wrapper.unmount()
+    finishOpen?.(false)
+    await flushPromises()
+
+    expect(document.querySelector('.feedback-toast')).toBeNull()
   })
 
   it('ignores repeated paste triggers while one paste is still in flight', async () => {
@@ -253,18 +496,19 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).toHaveBeenCalledTimes(completedPastes)
   })
 
-  it('deletes the focused result with Delete and keeps undo available', async () => {
-    const primary = wrapper.get('[data-clip-id="clip-2"] .clip-primary')
-    await primary.trigger('click')
-    dispatchKey(primary.element, 'Delete')
+  it('deletes a focused manager result with Delete and keeps undo available', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const row = wrapper.get('[data-manager-clip-id="clip-2"]')
+    ;(row.element as HTMLElement).focus()
+    dispatchKey(row.element, 'Delete')
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(false)
+    expect(wrapper.find('[data-manager-clip-id="clip-2"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="undo-delete"]').text()).toContain('撤销')
     expect(wrapper.get('.undo-toast').attributes('role')).toBe('status')
 
     await wrapper.get('[data-testid="undo-delete"]').trigger('click')
-    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(true)
+    expect(wrapper.find('[data-manager-clip-id="clip-2"]').exists()).toBe(true)
   })
 
   it('clears a transient search before Escape hides the panel', async () => {
@@ -369,37 +613,32 @@ describe('quick panel high-frequency interaction', () => {
     expect(event.defaultPrevented).toBe(true)
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     expect(menu.attributes('role')).toBe('menu')
-    expect(menu.findAll('[role="menuitem"]')).toHaveLength(5)
+    expect(menu.findAll('[role="menuitem"]')).toHaveLength(2)
     expect(menu.get('[data-testid="context-paste"]').text()).toContain('粘贴')
-    expect(menu.get('[data-testid="context-copy"]').text()).toContain('复制')
     expect(menu.get('[data-testid="context-preview"]').text()).toContain('预览')
-    expect(menu.get('[data-testid="context-pin"]').text()).toContain('取消固定')
-    expect(menu.get('[data-testid="context-delete"]').text()).toContain('删除')
     expect(document.activeElement).toBe(menu.get('[data-testid="context-paste"]').element)
     expect(row.classes()).toContain('is-selected')
   })
 
-  it('runs a context action and dismisses the menu', async () => {
+  it('runs a quick paste context action and dismisses the menu', async () => {
     dispatchContextMenu(wrapper.get('[data-clip-id="clip-1"]').element)
     await wrapper.vm.$nextTick()
 
-    await wrapper.get('[data-testid="context-copy"]').trigger('click')
+    await wrapper.get('[data-testid="context-paste"]').trigger('click')
     await flushPromises()
 
-    expect(clipboardMocks.copyText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
+    expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
     expect(wrapper.find('[data-testid="clip-context-menu"]').exists()).toBe(false)
   })
 
-  it('deletes the exact context clip while preserving undo and row focus', async () => {
-    dispatchContextMenu(wrapper.get('[data-clip-id="clip-2"]').element)
+  it('does not expose destructive actions from a quick context menu', async () => {
+    const row = wrapper.get('[data-clip-id="clip-2"]')
+    dispatchContextMenu(row.element)
     await wrapper.vm.$nextTick()
 
-    await wrapper.get('[data-testid="context-delete"]').trigger('click')
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="undo-delete"]').exists()).toBe(true)
-    expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-3"] .clip-primary').element)
+    expect(wrapper.find('[data-testid="context-delete"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="context-pin"]').exists()).toBe(false)
+    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(true)
   })
 
   it('keeps native editing commands for inputs and suppresses the WebView menu on blank chrome', async () => {
@@ -430,7 +669,7 @@ describe('quick panel high-frequency interaction', () => {
 
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     expect(menu.find('[data-testid="context-preview"]').exists()).toBe(false)
-    expect(menu.findAll('[role="menuitem"]')).toHaveLength(4)
+    expect(menu.findAll('[role="menuitem"]')).toHaveLength(2)
     expect(row.attributes('aria-current')).toBe('true')
   })
 
@@ -442,7 +681,7 @@ describe('quick panel high-frequency interaction', () => {
 
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     const first = menu.get('[data-testid="context-paste"]')
-    const second = menu.get('[data-testid="context-copy"]')
+    const second = menu.get('[data-testid="context-preview"]')
     expect(document.activeElement).toBe(first.element)
 
     dispatchKey(first.element, 'ArrowDown')
@@ -499,17 +738,15 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
   })
 
-  it('returns to the next result after deleting from a preview context menu', async () => {
+  it('keeps preview context menus paste-only and leaves the clip intact', async () => {
     await wrapper.get('[data-testid="preview-clip-clip-1"]').trigger('click')
     dispatchContextMenu(wrapper.get('[data-testid="preview-panel"]').element)
     await wrapper.vm.$nextTick()
 
-    await wrapper.get('[data-testid="context-delete"]').trigger('click')
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
-    expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-2"] .clip-primary').element)
+    expect(wrapper.find('[data-testid="context-delete"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="context-copy"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="context-paste"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(true)
   })
 
   it('flips an edge menu away from the pointer instead of placing actions under it', async () => {
@@ -523,12 +760,13 @@ describe('quick panel high-frequency interaction', () => {
     const left = Number.parseFloat(style.match(/left:\s*([\d.]+)px/)?.[1] ?? '')
     const top = Number.parseFloat(style.match(/top:\s*([\d.]+)px/)?.[1] ?? '')
     expect(left + 204).toBeLessThan(x)
-    expect(top + 180).toBeLessThan(y)
+    expect(top + 88).toBeLessThan(y)
   })
 
   it('expires a delete undo after a short recovery window', async () => {
     vi.useFakeTimers()
-    await wrapper.get('[data-testid="delete-clip-clip-1"]').trigger('click')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await wrapper.get('[data-testid="manager-delete-clip-1"]').trigger('click')
     expect(wrapper.find('[data-testid="undo-delete"]').exists()).toBe(true)
 
     await vi.advanceTimersByTimeAsync(6_000)
@@ -536,9 +774,9 @@ describe('quick panel high-frequency interaction', () => {
   })
 
   it('keeps deletion recovery visible while showing independent action feedback', async () => {
-    await wrapper.get('[data-testid="delete-clip-clip-1"]').trigger('click')
-    await wrapper.get('[data-testid="preview-clip-clip-2"]').trigger('click')
-    await wrapper.get('[data-testid="preview-panel"] .primary-button').trigger('click')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await wrapper.get('[data-testid="manager-delete-clip-1"]').trigger('click')
+    await wrapper.get('[data-testid="manager-copy-clip-2"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="undo-delete"]').exists()).toBe(true)
@@ -581,13 +819,14 @@ describe('quick panel high-frequency interaction', () => {
     expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-2"] .clip-primary').element)
   })
 
-  it('synchronizes selection when a row action receives focus', async () => {
-    const action = wrapper.get('[data-testid="pin-clip-clip-2"]')
+  it('synchronizes manager selection when a row action receives focus', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const action = wrapper.get('[data-testid="manager-pin-clip-2"]')
     ;(action.element as HTMLElement).focus()
     await action.trigger('focus')
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.get('[data-clip-id="clip-2"]').classes()).toContain('is-selected')
+    expect(wrapper.get('[data-manager-clip-id="clip-2"]').attributes('aria-current')).toBe('true')
   })
 
   it('keeps search focus while exposing its active result to assistive technology', async () => {
@@ -722,7 +961,8 @@ describe('quick panel high-frequency interaction', () => {
   })
 
   it('restores focus to the recovered result after undoing a deletion', async () => {
-    const deleteButton = wrapper.get('[data-testid="delete-clip-clip-1"]')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const deleteButton = wrapper.get('[data-testid="manager-delete-clip-1"]')
     ;(deleteButton.element as HTMLElement).focus()
     await deleteButton.trigger('click')
     const undo = wrapper.get('[data-testid="undo-delete"]')
@@ -731,14 +971,15 @@ describe('quick panel high-frequency interaction', () => {
     await undo.trigger('click')
     await wrapper.vm.$nextTick()
 
-    expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-1"] .clip-primary').element)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-copy-clip-1"]').element)
   })
 
   it('keeps undo feedback out of modals and uses a safe focus fallback', async () => {
-    const deleteButton = wrapper.get('[data-testid="delete-clip-clip-1"]')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const deleteButton = wrapper.get('[data-testid="manager-delete-clip-1"]')
     ;(deleteButton.element as HTMLElement).focus()
     await deleteButton.trigger('click')
-    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
     await wrapper.get('[data-testid="open-sensitive-apps"]').trigger('click')
 
     expect(wrapper.find('[data-testid="undo-delete"]').exists()).toBe(false)
@@ -752,9 +993,10 @@ describe('quick panel high-frequency interaction', () => {
     expect(document.activeElement).toBe(wrapper.get('.back-button').element)
   })
 
-  it('returns focus to search when a focused undo action expires', async () => {
+  it('returns focus to manager search when a focused undo action expires', async () => {
     vi.useFakeTimers()
-    const deleteButton = wrapper.get('[data-testid="delete-clip-clip-1"]')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const deleteButton = wrapper.get('[data-testid="manager-delete-clip-1"]')
     ;(deleteButton.element as HTMLElement).focus()
     await deleteButton.trigger('click')
     const undo = wrapper.get('[data-testid="undo-delete"]')
@@ -764,41 +1006,44 @@ describe('quick panel high-frequency interaction', () => {
     await wrapper.vm.$nextTick()
 
     expect(wrapper.find('[data-testid="undo-delete"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.get('[data-testid="search-input"]').element)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-search-input"]').element)
   })
 
-  it('moves focus to the next result when a focused row action deletes an item', async () => {
-    const deleteButton = wrapper.get('[data-testid="delete-clip-clip-1"]')
+  it('moves focus to the next manager result when a focused row action deletes an item', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const deleteButton = wrapper.get('[data-testid="manager-delete-clip-1"]')
     ;(deleteButton.element as HTMLElement).focus()
 
     await deleteButton.trigger('click')
     await wrapper.vm.$nextTick()
 
-    expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-2"] .clip-primary').element)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-delete-clip-2"]').element)
   })
 
-  it('returns focus to search after deleting the only visible result', async () => {
-    const search = wrapper.get('[data-testid="search-input"]')
+  it('returns focus to manager search after deleting the only visible result', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const search = wrapper.get('[data-testid="manager-search-input"]')
     await search.setValue('周会跟进事项')
-    const onlyResult = wrapper.get('[data-clip-id="clip-1"] .clip-primary')
+    const onlyResult = wrapper.get('[data-manager-clip-id="clip-1"]')
     ;(onlyResult.element as HTMLElement).focus()
 
     dispatchKey(onlyResult.element, 'Delete')
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-testid="no-results"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="manager-empty-state"]').exists()).toBe(true)
     expect(document.activeElement).toBe(search.element)
   })
 
-  it('moves focus safely when unpinning removes a result from the pinned filter', async () => {
-    await wrapper.get('[data-testid="filter-pinned"]').trigger('click')
-    const unpin = wrapper.get('[data-testid="pin-clip-clip-2"]')
+  it('moves focus safely when unpinning removes a manager result from the pinned section', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await wrapper.get('[data-testid="library-section-pinned"]').trigger('click')
+    const unpin = wrapper.get('[data-testid="manager-pin-clip-2"]')
     ;(unpin.element as HTMLElement).focus()
 
     await unpin.trigger('click')
     await wrapper.vm.$nextTick()
 
-    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(false)
-    expect(document.activeElement).toBe(wrapper.get('[data-clip-id="clip-6"] .clip-primary').element)
+    expect(wrapper.find('[data-manager-clip-id="clip-2"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-pin-clip-6"]').element)
   })
 })

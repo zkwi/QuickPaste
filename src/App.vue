@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlignLeft,
   ArrowLeft,
@@ -39,7 +39,6 @@ import {
   clearUnpinnedHistory,
   createClipboardItem,
   formatRelativeTime,
-  limitHistory,
   mergeCapturedClipIntoHistory,
   moveSelection,
   normalizeSourceAppIcon,
@@ -51,12 +50,51 @@ import {
   type ClipboardItem,
   type ClipKind,
   type ClipKindFilter,
+  type LoadedClipboardItem,
   type RemovedClip,
   type RetentionPeriod,
 } from './domain/clipboard'
+import {
+  defaultPasteMode,
+  getClipActions,
+  type ClipAction,
+  type PasteMode,
+} from './domain/clipActions'
+import { inferCodeLanguage } from './domain/codeLanguage'
+import {
+  DEFAULT_HISTORY_POLICY,
+  SETTINGS_SCHEMA_VERSION,
+  defaultStoredSettings,
+  parseStoredSettingsJson,
+  retentionPeriodForPolicy,
+  type StoredSettings,
+  type Theme,
+} from './domain/settings'
 import { createSearchHighlighter } from './domain/searchHighlight'
+import {
+  historyMatchBadge,
+  historyQueryKey,
+  normalizeHistoryQuery,
+  type HistoryPage,
+  type HistoryQuery,
+} from './domain/historyQuery'
+import {
+  createAllMatchingSelection,
+  emptyManagerSelection,
+  isManagerItemSelected,
+  managerSelectedCount as countManagerSelection,
+  managerSelectionState,
+  normalizeCollectionName,
+  selectManagerRange,
+  toBatchTarget,
+  toggleManagerSelection,
+  type BatchAction,
+  type Collection,
+  type ManagerSelection,
+  type SnippetDraft,
+} from './domain/collections'
 import { formatUpdateSize, shouldAutoCheckUpdate } from './domain/update'
-import { copyImage, copyText, pasteImage, pasteText } from './platform/clipboard'
+import { copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText } from './platform/clipboard'
 import {
   cancelNativeQuit,
   connectCaptureAvailability,
@@ -72,16 +110,59 @@ import {
   type CaptureAvailability,
   type PasteTargetInfo,
 } from './platform/desktop'
-import { createHistoryPersistence, loadNativeHistory, saveNativeHistory } from './platform/history'
+import {
+  applyNativeHistoryBatch,
+  applyNativeHistoryMutation,
+  compactNativeHistoryDatabase,
+  commitNativeHistoryRestore,
+  createIncrementalHistoryPersistence,
+  createNativeHistoryCollection,
+  createNativeHistoryBackup,
+  createSerializedHistoryOperationLane,
+  deleteNativeHistoryCollection,
+  discardNativeHistoryRestore,
+  getNativeHistoryHealth,
+  getNativeStorageStats,
+  listNativeHistoryCollections,
+  loadNativeClipPayload,
+  prepareNativeHistoryRestore,
+  queryNativeHistory,
+  renameNativeHistoryCollection,
+  saveNativeHistorySnippet,
+  type CapacityPolicy,
+  type ExternalOcrPatch,
+  type HistoryExclusiveLease,
+  type HistoryHealth,
+  type PreparedRestore,
+  type StorageOperation,
+  type StorageStats,
+} from './platform/history'
+import {
+  createOcrCoordinator,
+  invalidateNativeClipboardOcr,
+  listNativePendingOcrImages,
+  markNativeClipOcrFailed,
+  pumpStoredPendingOcr,
+  recognizeNativeClipImage,
+  setNativeClipboardOcrEnabled,
+} from './platform/ocr'
+import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
 import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setLaunchAtStartup, setScreenCaptureProtection } from './platform/settings'
+import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
 import { observeWindowMaximizedState, runWindowAction, setQuickPanelPinned, setWindowMode, type WindowAction } from './platform/window'
 import { checkForUpdate, connectUpdateCheckRequested, downloadUpdate, getCurrentVersion, installDownloadedUpdate, type UpdateProgress, type UpdateStatus } from './platform/updater'
 import ClipContextMenu from './components/ClipContextMenu.vue'
+import ManagerFilters from './components/ManagerFilters.vue'
+import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
+import SnippetEditor from './components/SnippetEditor.vue'
 import SourceAppIcon from './components/SourceAppIcon.vue'
+import StorageManager from './components/StorageManager.vue'
 
-type Theme = 'light' | 'dark'
+const CodePreview = defineAsyncComponent(() => import('./components/CodePreview.vue'))
+
 type AppView = 'quick' | 'library'
 type LibrarySection = 'all' | 'pinned' | 'images' | 'settings'
+type ManagerCollectionFilter = 'any' | 'unfiled' | `collection:${string}`
 type HistoryState = 'loading' | 'ready' | 'error'
 type ClipFocusSurface = 'quick' | 'manager'
 type ClipContextSurface = ClipFocusSurface | 'preview'
@@ -95,33 +176,27 @@ interface ClipContextMenuState {
   restoreFocus: HTMLElement | null
 }
 
-interface StoredSettings {
-  settingsVersion: number
-  theme: Theme
-  locale: Locale
-  retentionDays: RetentionPeriod
-  launchAtStartup: boolean
-  hideDuringSharing: boolean
-  elevatedPasteEnabled: boolean
-  capturePaused: boolean
-  excludedApps: string[]
-  globalShortcut: string
-  onboardingCompleted: boolean
-  quickPanelPinned: boolean
-  autoCheckUpdates: boolean
-}
-
 interface PendingRetentionChange {
   value: RetentionPeriod
   removedCount: number
+}
+
+interface CollectionEditorState {
+  mode: 'create' | 'rename'
+  id?: string
+  name: string
+}
+
+interface PermanentSnippetDeleteTarget {
+  id: string
+  title: string
 }
 
 // 品牌重命名不改已有持久化 key，避免 WebView/浏览器模式中的设置和演示历史失效。
 const ITEMS_STORAGE_KEY = 'mypaste-demo-items-v1'
 const SETTINGS_STORAGE_KEY = 'mypaste-ui-settings-v1'
 const UPDATE_CHECK_STORAGE_KEY = 'quickpaste-update-check-v1'
-const SETTINGS_SCHEMA_VERSION = 3
-const MAX_HISTORY_ITEMS = 500
+const MAX_HISTORY_ITEMS = DEFAULT_HISTORY_POLICY.maxRecords
 const MAX_PENDING_NATIVE_CAPTURES = MAX_HISTORY_ITEMS
 const HISTORY_RETRY_ATTEMPTS = 3
 const HISTORY_RETRY_DELAY_MS = 200
@@ -132,6 +207,7 @@ const PASTE_TARGET_TTL_MS = 5 * 60 * 1_000
 const EVENT_SUBSCRIPTION_ATTEMPTS = 3
 const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
+const NATIVE_HISTORY_PAGE_SIZE = 50
 const AUTO_UPDATE_CHECK_DELAY_MS = 15_000
 const nativeRuntime = isTauriRuntime()
 
@@ -153,7 +229,10 @@ function readStoredItems(): ClipboardItem[] {
   } catch {
     // 损坏的演示状态不应阻止界面启动。
   }
-  return demoClips.map((clip) => ({ ...clip, searchTerms: [...clip.searchTerms] }))
+  return demoClips.map((clip): LoadedClipboardItem => ({
+    ...clip,
+    searchTerms: [...clip.searchTerms],
+  }))
 }
 
 function readLastUpdateCheckAt(): number | null {
@@ -166,73 +245,38 @@ function readLastUpdateCheckAt(): number | null {
 }
 
 function readStoredSettings(): StoredSettings {
-  const defaults: StoredSettings = {
-    settingsVersion: SETTINGS_SCHEMA_VERSION,
-    theme: 'light',
-    locale: 'zh-CN',
-    retentionDays: '30',
-    launchAtStartup: false,
-    hideDuringSharing: false,
-    elevatedPasteEnabled: true,
-    capturePaused: false,
-    excludedApps: ['1Password', 'Bitwarden'],
-    globalShortcut: DEFAULT_GLOBAL_SHORTCUT,
-    onboardingCompleted: false,
-    quickPanelPinned: false,
-    autoCheckUpdates: true,
-  }
-
   try {
-    const raw = localStorage.getItem(SETTINGS_STORAGE_KEY)
-    if (!raw) return defaults
-    const parsed = JSON.parse(raw) as Partial<StoredSettings>
-    const hasCurrentCaptureProtectionSemantics = typeof parsed.settingsVersion === 'number'
-      && parsed.settingsVersion >= 2
-    const storedBoolean = (value: unknown, fallback: boolean) => (
-      typeof value === 'boolean' ? value : fallback
-    )
-    const normalizedExcludedApps = Array.isArray(parsed.excludedApps)
-      ? parsed.excludedApps.reduce<string[]>((apps, value) => {
-          if (typeof value !== 'string') return apps
-          const app = value.trim()
-          if (!app || apps.some((current) => current.toLocaleLowerCase() === app.toLocaleLowerCase())) return apps
-          apps.push(app)
-          return apps
-        }, [])
-      : defaults.excludedApps
-    return {
-      settingsVersion: SETTINGS_SCHEMA_VERSION,
-      theme: parsed.theme === 'dark' ? 'dark' : 'light',
-      locale: parsed.locale === 'en-US' ? 'en-US' : 'zh-CN',
-      retentionDays: ['7', '30', '90', 'forever'].includes(parsed.retentionDays ?? '')
-        ? parsed.retentionDays as RetentionPeriod
-        : defaults.retentionDays,
-      launchAtStartup: storedBoolean(parsed.launchAtStartup, defaults.launchAtStartup),
-      // v1 会把防截屏默认开启并立即落盘，无法区分用户选择与旧默认值。
-      // 升级时统一恢复为可截图；v2 起仅保留用户明确开启后的值。
-      hideDuringSharing: hasCurrentCaptureProtectionSemantics
-        ? storedBoolean(parsed.hideDuringSharing, defaults.hideDuringSharing)
-        : defaults.hideDuringSharing,
-      elevatedPasteEnabled: storedBoolean(parsed.elevatedPasteEnabled, defaults.elevatedPasteEnabled),
-      capturePaused: storedBoolean(parsed.capturePaused, defaults.capturePaused),
-      excludedApps: normalizedExcludedApps,
-      globalShortcut: typeof parsed.globalShortcut === 'string'
-        ? parsed.globalShortcut
-        : defaults.globalShortcut,
-      onboardingCompleted: storedBoolean(parsed.onboardingCompleted, defaults.onboardingCompleted),
-      quickPanelPinned: storedBoolean(parsed.quickPanelPinned, defaults.quickPanelPinned),
-      autoCheckUpdates: storedBoolean(parsed.autoCheckUpdates, defaults.autoCheckUpdates),
-    }
+    return parseStoredSettingsJson(localStorage.getItem(SETTINGS_STORAGE_KEY))
   } catch {
-    return defaults
+    return defaultStoredSettings()
   }
 }
 
 const storedSettings = readStoredSettings()
-const items = ref<ClipboardItem[]>(pruneExpiredClips(readStoredItems(), storedSettings.retentionDays))
+const storedRetentionPeriod = retentionPeriodForPolicy(storedSettings.historyPolicy)
+const items = ref<ClipboardItem[]>(pruneExpiredClips(readStoredItems(), storedRetentionPeriod))
 const query = ref('')
 const managerQuery = ref('')
+const managerKinds = ref<ClipKind[]>([])
+const managerSourceApp = ref('')
+const managerPinned = ref<boolean | undefined>(undefined)
+const managerCollectionFilter = ref<ManagerCollectionFilter>('any')
 const managerSelectedId = ref(items.value[0]?.id ?? '')
+const managerSelection = ref<ManagerSelection>(emptyManagerSelection())
+const managerRangeAnchorId = ref<string | undefined>(undefined)
+const managerBulkToolbarKey = ref(0)
+const collections = ref<Collection[]>([])
+const collectionEditor = ref<CollectionEditorState | null>(null)
+const collectionDeleteTarget = ref<Collection | null>(null)
+const permanentSnippetDeleteTarget = ref<PermanentSnippetDeleteTarget | null>(null)
+const permanentSnippetDeleteError = ref('')
+const collectionError = ref('')
+const snippetDraft = ref<SnippetDraft | null>(null)
+const snippetEditorKey = ref(0)
+const snippetError = ref('')
+const managerBatchError = ref('')
+const managerOperationBusy = ref(false)
+const snippetLoading = ref(false)
 const activeFilter = ref<ClipKindFilter>('all')
 const selectedId = ref(items.value[0]?.id ?? '')
 const previewId = ref<string | null>(null)
@@ -245,6 +289,8 @@ const captureHealthSubscriptionReady = ref(true)
 const captureStateSubscriptionReady = ref(true)
 const quitSubscriptionReady = ref(true)
 const isComposing = ref(false)
+const quickSearchComposing = ref(false)
+const managerSearchComposing = ref(false)
 const currentView = ref<AppView>('quick')
 const librarySection = ref<LibrarySection>('all')
 const theme = ref<Theme>(storedSettings.theme)
@@ -265,7 +311,10 @@ const onboardingPrimary = ref<HTMLButtonElement | null>(null)
 const onboardingDialog = ref<HTMLElement | null>(null)
 const libraryBackButton = ref<HTMLButtonElement | null>(null)
 const previewPasteButton = ref<HTMLButtonElement | null>(null)
-const retentionDays = ref<RetentionPeriod>(storedSettings.retentionDays)
+const retentionDays = ref<RetentionPeriod>(storedRetentionPeriod)
+const historyMaxRecords = ref(storedSettings.historyPolicy.maxRecords)
+const historyMaxImageBytes = ref(storedSettings.historyPolicy.maxImageBytes)
+const historyRetentionDays = ref<number | null>(storedSettings.historyPolicy.retentionDays)
 const launchAtStartup = ref(storedSettings.launchAtStartup)
 const hideDuringSharing = ref(storedSettings.hideDuringSharing)
 const elevatedPasteEnabled = ref(storedSettings.elevatedPasteEnabled)
@@ -284,6 +333,7 @@ const targetAppIcon = ref<string | null>(null)
 const targetElevated = ref(false)
 const quickPanelPinned = ref(storedSettings.quickPanelPinned)
 const autoCheckUpdates = ref(storedSettings.autoCheckUpdates)
+const ocrEnabled = ref(storedSettings.ocrEnabled)
 const currentVersion = ref('—')
 const updateStatus = ref<UpdateStatus | null>(null)
 const updateProgress = ref<UpdateProgress | null>(null)
@@ -297,6 +347,15 @@ const pasteInFlight = ref(false)
 const shortcutApplyInFlight = ref(false)
 const relativeTimeNow = ref(new Date())
 const historyState = ref<HistoryState>(nativeRuntime ? 'loading' : 'ready')
+const storageStats = ref<StorageStats | null>(null)
+const historyHealth = ref<HistoryHealth | null>(null)
+const preparedRestore = ref<PreparedRestore | null>(null)
+const busyStorageOperation = ref<StorageOperation>(null)
+const storageStatusMessage = ref('')
+const nativeHistoryNextCursor = ref<string | undefined>(undefined)
+const nativeHistoryTotalCount = ref(items.value.length)
+const nativeHistoryPageLoading = ref(false)
+const nativeHistoryRefreshGeneration = ref<number | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let shortcutRecordingToastActive = false
 let undoTimer: ReturnType<typeof setTimeout> | undefined
@@ -315,13 +374,33 @@ let appUnmounted = false
 let quitFlushInProgress = false
 let capturedSequence = 0
 const pendingNativeCaptures: NativeCapturePayload[] = []
-let historyLoadGeneration = 0
-let suppressHistoryPersistenceOnce = false
+const deferredStorageCaptures: NativeCapturePayload[] = []
+let nativeQueryGeneration = 0
+let nativeQueryRefreshQueued = false
+let nativeQueryRefreshForced = false
+let nativeAppliedQueryKey = ''
+let storageRefreshGeneration = 0
+let nativeRefreshAfterExclusive = false
+let nativeRefreshAfterExclusiveForced = false
+let suppressRetentionPolicySync = false
+let previewLoadGeneration = 0
+let suppressedNativeHistoryItems: ClipboardItem[] | null = null
 let quickSessionGeneration = 0
+let systemActionGeneration = 0
+let snippetSessionGeneration = 0
+let collectionDeleteRestoreFocus: HTMLElement | null = null
+let permanentSnippetDeleteRestoreFocus: HTMLElement | null = null
 let windowModeGeneration = 0
 let activeQuickSessionId = 0
+let quickFirstFrameGeneration = 0
+let quickFirstFrameAcknowledgedSessionId = 0
 const nativeSettingsReady = ref(!nativeRuntime)
 let restoreResultFocusAfterPreview = false
+const hydratedPayloads = new Map<string, { generation: number; item: LoadedClipboardItem }>()
+const pendingPayloadLoads = new Map<string, { generation: number; promise: Promise<LoadedClipboardItem | null> }>()
+const pendingNativeUpserts = new Map<string, ClipboardItem>()
+let storedOcrPumpGeneration = 0
+let storedOcrPumpPromise: Promise<void> | null = null
 
 interface NativeBooleanSyncState {
   confirmed: boolean
@@ -337,6 +416,14 @@ const excludedAppsSyncState = {
   running: false,
   suppressNext: false,
 }
+
+const retentionSelectValue = computed(() => (
+  historyRetentionDays.value === null ? 'forever' : String(historyRetentionDays.value)
+))
+const customRetentionDays = computed(() => {
+  const value = historyRetentionDays.value
+  return value !== null && ![7, 30, 90].includes(value) ? value : null
+})
 
 const onboardingSteps = computed(() => [
   {
@@ -358,10 +445,12 @@ const onboardingSteps = computed(() => [
 
 const currentOnboardingStep = computed(() => onboardingSteps.value[onboardingStep.value] ?? onboardingSteps.value[0])
 
-const visibleItems = computed(() => applyClipFilter(items.value, {
-  query: query.value,
-  kind: activeFilter.value,
-}))
+const visibleItems = computed(() => nativeRuntime
+  ? items.value
+  : applyClipFilter(items.value, {
+      query: query.value,
+      kind: activeFilter.value,
+    }))
 
 const directSearchHighlighter = computed(() => createSearchHighlighter(query.value))
 const managerSearchHighlighter = computed(() => createSearchHighlighter(managerQuery.value))
@@ -380,9 +469,38 @@ function hasVisibleSearchMatch(clip: ClipboardItem, manager = false): boolean {
     .some((text) => highlighter.segments(text).some((segment) => segment.matched))
 }
 
+function isOcrOnlyMatch(clip: ClipboardItem, manager = false): boolean {
+  const highlighter = manager ? managerSearchHighlighter.value : directSearchHighlighter.value
+  return nativeRuntime && historyMatchBadge(clip, highlighter.hasTerms) === 'ocr'
+}
+
 function isPhoneticOnlyMatch(clip: ClipboardItem, manager = false): boolean {
   const highlighter = manager ? managerSearchHighlighter.value : directSearchHighlighter.value
-  return highlighter.hasTerms && !hasVisibleSearchMatch(clip, manager)
+  if (nativeRuntime && clip.payloadLoaded === false) {
+    return historyMatchBadge(clip, highlighter.hasTerms) === 'index'
+  }
+  return highlighter.hasTerms
+    && !hasVisibleSearchMatch(clip, manager)
+}
+
+function hasMissingFiles(clip: ClipboardItem): boolean {
+  return clip.kind === 'file' && Boolean(clip.files?.some((file) => !file.exists))
+}
+
+function fileAvailabilityLabel(clip: ClipboardItem): string {
+  const files = clip.files ?? []
+  return t('fileAvailability', {
+    available: files.filter((file) => file.exists).length,
+    total: files.length,
+  })
+}
+
+function ocrStatusLabel(clip: ClipboardItem): string {
+  if (clip.ocrStatus === 'pending') return t('ocrPending')
+  if (clip.ocrStatus === 'completed') return t('ocrCompleted')
+  if (clip.ocrStatus === 'unavailable') return t('ocrUnavailable')
+  if (clip.ocrStatus === 'oversized') return t('ocrOversized')
+  return t('ocrFailed')
 }
 
 function searchPreviewText(text: string): string {
@@ -400,14 +518,33 @@ const selectionAnnouncement = computed(() => {
     source: selectedClip.value.sourceApp,
   })
 })
-const previewClip = computed(() => items.value.find((clip) => clip.id === previewId.value) ?? null)
+const previewClip = computed(() => {
+  const clip = items.value.find((candidate) => candidate.id === previewId.value)
+  return clip ? cachedPayload(clip) : null
+})
+const previewCodeLanguage = computed(() => {
+  const clip = previewClip.value
+  return clip?.kind === 'code' ? inferCodeLanguage(clip.title, clip.content) : undefined
+})
 const contextMenuClip = computed(() => (
   clipContextMenu.value
-    ? items.value.find((clip) => clip.id === clipContextMenu.value?.clipId) ?? null
+    ? (() => {
+        const clip = items.value.find((candidate) => candidate.id === clipContextMenu.value?.clipId)
+        if (!clip) return null
+        return cachedPayload(clip) ?? clip
+      })()
     : null
 ))
 const pinnedCount = computed(() => items.value.filter((clip) => clip.pinned).length)
-const unpinnedCount = computed(() => items.value.length - pinnedCount.value)
+const ordinaryHistoryCount = computed(() => items.value.filter((clip) => (
+  !clip.pinned && clip.permanent !== true
+)).length)
+const ordinaryClearLabel = computed(() => locale.value === 'zh-CN'
+  ? '清除普通记录'
+  : 'Clear ordinary history')
+const ordinaryClearDescription = computed(() => locale.value === 'zh-CN'
+  ? `将删除 ${ordinaryHistoryCount.value} 条普通记录；固定内容会保留，永久片段也会保留。`
+  : `This removes ${ordinaryHistoryCount.value} ordinary records. Pinned items and permanent snippets are kept.`)
 const imageCount = computed(() => items.value.filter((clip) => clip.kind === 'image').length)
 const captureAvailability = computed<'starting' | 'available' | 'unavailable'>(() => {
   if (!nativeRuntime) return 'available'
@@ -423,13 +560,41 @@ const captureStatusText = computed(() => {
   return capturePaused.value ? t('paused') : t('recording')
 })
 const libraryItems = computed(() => {
+  if (nativeRuntime) return items.value
   const sectionItems = librarySection.value === 'pinned'
     ? items.value.filter((clip) => clip.pinned)
     : librarySection.value === 'images'
       ? items.value.filter((clip) => clip.kind === 'image')
       : items.value
-  return applyClipFilter(sectionItems, { query: managerQuery.value, kind: 'all' })
+  const filtered = sectionItems.filter((clip) => (
+    (managerKinds.value.length === 0 || managerKinds.value.includes(clip.kind))
+    && (!managerSourceApp.value.trim() || clip.sourceApp === managerSourceApp.value.trim())
+    && (managerPinned.value === undefined || clip.pinned === managerPinned.value)
+  ))
+  return applyClipFilter(filtered, { query: managerQuery.value, kind: 'all' })
 })
+const managerSelectedCount = computed(() => countManagerSelection(managerSelection.value))
+const managerTotalCount = computed(() => nativeRuntime ? nativeHistoryTotalCount.value : libraryItems.value.length)
+const managerBulkSelectionState = computed(() => {
+  try {
+    return managerSelectionState(managerSelection.value, managerTotalCount.value)
+  } catch {
+    return 'none'
+  }
+})
+const managerSelectionIncludesPinned = computed(() => {
+  const selection = managerSelection.value
+  if (selection.mode === 'allMatching') return true
+  return libraryItems.value.some((clip) => selection.ids.has(clip.id) && clip.pinned)
+})
+const managerSelectionIncludesPermanent = computed(() => {
+  const selection = managerSelection.value
+  if (selection.mode === 'allMatching') return true
+  return libraryItems.value.some((clip) => selection.ids.has(clip.id) && clip.permanent === true)
+})
+const managerSelectionBusy = computed(() => (
+  managerOperationBusy.value || nativeHistoryRefreshGeneration.value !== null
+))
 const managerEmptyState = computed(() => {
   if (managerQuery.value.trim()) {
     return { icon: Search, title: t('noResults'), hint: t('noResultsHint'), canClear: true }
@@ -448,7 +613,12 @@ const canAddSensitiveApp = computed(() => {
     && !excludedApps.value.some((app) => app.toLocaleLowerCase() === candidate.toLocaleLowerCase())
 })
 const modalOverlayOpen = computed(() => (
-  sensitiveAppsOpen.value || clearHistoryOpen.value || pendingRetentionChange.value !== null
+  sensitiveAppsOpen.value
+  || clearHistoryOpen.value
+  || pendingRetentionChange.value !== null
+  || collectionDeleteTarget.value !== null
+  || permanentSnippetDeleteTarget.value !== null
+  || snippetDraft.value !== null
 ))
 const updateBusy = computed(() => ['checking', 'downloading', 'verifying', 'installing'].includes(updateState.value))
 const updateStatusText = computed(() => {
@@ -473,36 +643,308 @@ const filters = computed<Array<{ id: ClipKindFilter; label: string }>>(() => [
   { id: 'pinned', label: t('pinned') },
 ])
 
-const historyPersistence = createHistoryPersistence(saveNativeHistory, {
+interface NativeQueryDescriptor {
+  query: HistoryQuery
+  impossible: boolean
+}
+
+function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | null {
+  if (!nativeRuntime || currentView.value === 'library' && librarySection.value === 'settings') return null
+
+  let kinds: ClipKind[] = []
+  let sourceApps: string[] = []
+  let pinned: boolean | undefined
+  let text = query.value
+  let collection: HistoryQuery['collection'] = { mode: 'any' }
+  let impossible = false
+
+  if (currentView.value === 'quick') {
+    if (activeFilter.value !== 'all' && activeFilter.value !== 'pinned') kinds = [activeFilter.value]
+    if (activeFilter.value === 'pinned') pinned = true
+  } else {
+    text = managerQuery.value
+    kinds = [...managerKinds.value]
+    sourceApps = managerSourceApp.value.trim() ? [managerSourceApp.value] : []
+    pinned = managerPinned.value
+    collection = managerCollectionFilter.value === 'unfiled'
+      ? { mode: 'unfiled' }
+      : managerCollectionFilter.value.startsWith('collection:')
+        ? { mode: 'collection', id: managerCollectionFilter.value.slice('collection:'.length) }
+        : { mode: 'any' }
+    if (librarySection.value === 'images') {
+      impossible = kinds.length > 0 && !kinds.includes('image')
+      kinds = ['image']
+    }
+    if (librarySection.value === 'pinned') {
+      impossible = pinned === false
+      pinned = true
+    }
+  }
+
+  return {
+    query: normalizeHistoryQuery({
+      text,
+      kinds,
+      sourceApps,
+      collection,
+      ...(pinned === undefined ? {} : { pinned }),
+      limit: NATIVE_HISTORY_PAGE_SIZE,
+      ...(cursor ? { cursor } : {}),
+    }),
+    impossible,
+  }
+}
+
+function cachedPayload(clip: ClipboardItem): LoadedClipboardItem | null {
+  if (clip.payloadLoaded !== false) return clip
+  if (!nativeRuntime) return null
+  const cached = hydratedPayloads.get(clip.id)
+  return cached?.generation === nativeQueryGeneration ? cached.item : null
+}
+
+function invalidateNativePayloads() {
+  previewLoadGeneration += 1
+  hydratedPayloads.clear()
+  pendingPayloadLoads.clear()
+}
+
+function currentHistoryPolicy(): CapacityPolicy {
+  return {
+    maxRecords: historyMaxRecords.value,
+    maxImageBytes: historyMaxImageBytes.value,
+    retentionDays: historyRetentionDays.value,
+  }
+}
+
+function nativePersistenceTarget(visible: ClipboardItem[]): ClipboardItem[] {
+  if (pendingNativeUpserts.size === 0) return visible
+  let target = visible
+  for (const clip of pendingNativeUpserts.values()) {
+    target = mergeCapturedClipIntoHistory(
+      target,
+      clip,
+      retentionDays.value,
+      Math.max(historyMaxRecords.value, target.length + 1),
+    )
+  }
+  return target
+}
+
+function handleCapacityPruned(ids: string[]) {
+  const prunedIds = new Set(ids)
+  for (const id of prunedIds) pendingNativeUpserts.delete(id)
+  if (prunedIds.size > 0 && countManagerSelection(managerSelection.value) > 0) {
+    clearManagerSelection()
+    managerBulkToolbarKey.value += 1
+  }
+  if (!items.value.some((clip) => prunedIds.has(clip.id))) return
+
+  const removedVisibleCount = items.value.filter((clip) => prunedIds.has(clip.id)).length
+  items.value = items.value.filter((clip) => !prunedIds.has(clip.id))
+  if (nativeRuntime) nativeHistoryTotalCount.value = Math.max(0, nativeHistoryTotalCount.value - removedVisibleCount)
+  if (!visibleItems.value.some((clip) => clip.id === selectedId.value)) {
+    selectedId.value = visibleItems.value[0]?.id ?? ''
+  }
+  if (!libraryItems.value.some((clip) => clip.id === managerSelectedId.value)) {
+    managerSelectedId.value = libraryItems.value[0]?.id ?? ''
+  }
+  if (previewId.value && prunedIds.has(previewId.value)) {
+    previewId.value = null
+    restoreResultFocusAfterPreview = false
+  }
+  if (clipContextMenu.value && prunedIds.has(clipContextMenu.value.clipId)) {
+    clipContextMenu.value = null
+  }
+  if (lastRemoved.value && prunedIds.has(lastRemoved.value.clip.id)) {
+    lastRemoved.value = null
+    if (undoTimer) clearTimeout(undoTimer)
+    undoTimer = undefined
+  }
+}
+
+const historyPersistence = createIncrementalHistoryPersistence(applyNativeHistoryMutation, {
   onSaveFailed: () => showToast(t('historySaveFailed'), true),
+  onCapacityPruned: handleCapacityPruned,
+})
+const historyOperationLane = createSerializedHistoryOperationLane(historyPersistence)
+
+function currentOcrItem(id: string): ClipboardItem | undefined {
+  return pendingNativeUpserts.get(id) ?? items.value.find((item) => item.id === id)
+}
+
+function withOcrPatch(
+  item: ClipboardItem,
+  id: string,
+  imageHash: string,
+  patch: ExternalOcrPatch,
+): ClipboardItem {
+  if (item.id !== id
+    || item.kind !== 'image'
+    || item.imageHash !== imageHash
+    || item.ocrStatus !== 'pending') return item
+  if (item.payloadLoaded === false) {
+    return { ...item, imageHash, ocrStatus: patch.ocrStatus }
+  }
+  const next: LoadedClipboardItem = { ...item, imageHash, ocrStatus: patch.ocrStatus }
+  if (patch.ocrStatus === 'completed') next.ocrText = patch.ocrText
+  else delete next.ocrText
+  return next
+}
+
+const ocrCoordinator = createOcrCoordinator({
+  enabled: () => nativeRuntime && ocrEnabled.value && !appUnmounted,
+  getItem: currentOcrItem,
+  recognize: recognizeNativeClipImage,
+  fail: markNativeClipOcrFailed,
+  acknowledge: (id, imageHash, patch) => (
+    historyPersistence.acknowledgeExternalOcrPatch(id, imageHash, patch)
+  ),
+  apply: (id, imageHash, patch) => {
+    const pending = pendingNativeUpserts.get(id)
+    if (pending) pendingNativeUpserts.set(id, withOcrPatch(pending, id, imageHash, patch))
+    items.value = items.value.map((item) => withOcrPatch(item, id, imageHash, patch))
+  },
 })
 
-watch(items, (value) => {
+function resumePendingOcr(candidates: readonly ClipboardItem[] = items.value): void {
+  if (!nativeRuntime || !ocrEnabled.value || appUnmounted) return
+  // 新捕获会在持久化后直接入队；恢复路径从 SQLite 游标分页，避免只覆盖当前 UI 页。
+  void candidates
+  if (storedOcrPumpPromise) return
+  const generation = storedOcrPumpGeneration
+  const pump = pumpStoredPendingOcr(ocrCoordinator, {
+    enabled: () => nativeRuntime && ocrEnabled.value && !appUnmounted,
+    current: () => generation === storedOcrPumpGeneration,
+    list: listNativePendingOcrImages,
+  })
+  storedOcrPumpPromise = pump
+  void pump.finally(() => {
+    if (storedOcrPumpPromise === pump) storedOcrPumpPromise = null
+  })
+}
+
+function invalidateStoredOcrPump(): void {
+  storedOcrPumpGeneration += 1
+  storedOcrPumpPromise = null
+}
+
+async function refreshManagerCollections(): Promise<boolean> {
+  if (!nativeRuntime) return false
+  const loaded = await listNativeHistoryCollections()
+  if (appUnmounted || loaded === null) return false
+  collections.value = loaded
+  if (managerCollectionFilter.value.startsWith('collection:')) {
+    const id = managerCollectionFilter.value.slice('collection:'.length)
+    if (!loaded.some((collection) => collection.id === id)) managerCollectionFilter.value = 'unfiled'
+  }
+  return true
+}
+
+async function replayDeferredManagerCaptures(): Promise<void> {
+  const captures = deferredStorageCaptures.splice(0)
+  if (captures.length === 0 || appUnmounted) return
+  const replayed = await mergeNativeCaptures(captures, false)
+  if (replayed) return
+  for (const payload of captures) {
+    pendingNativeCaptures.push(payload)
+    if (pendingNativeCaptures.length > MAX_PENDING_NATIVE_CAPTURES) pendingNativeCaptures.shift()
+  }
+}
+
+async function runSerializedManagerOperation<T>(
+  mutate: () => Promise<T | null>,
+  oldVisualIndex = Math.max(0, libraryItems.value.findIndex((clip) => clip.id === managerSelectedId.value)),
+) {
+  if (!nativeRuntime || managerOperationBusy.value || historyState.value !== 'ready') {
+    return { status: 'failed' as const }
+  }
+  managerOperationBusy.value = true
+  historyOperationLane.invalidate()
+  nativeQueryGeneration += 1
+  invalidateNativePayloads()
+  let refreshedPage: HistoryPage | null = null
+  let refreshedQueryKey = ''
+  try {
+    const result = await historyOperationLane.run({
+      mutate,
+      refresh: async () => {
+        const descriptor = currentNativeQueryDescriptor()
+        if (!descriptor) return null
+        refreshedQueryKey = historyQueryKey(descriptor.query)
+        refreshedPage = descriptor.impossible
+          ? { items: [], totalCount: 0 }
+          : await queryHistoryWithRetry(descriptor.query)
+        if (!refreshedPage) return null
+        const latest = currentNativeQueryDescriptor()
+        if (!latest || historyQueryKey(latest.query) !== refreshedQueryKey) return null
+        return { items: refreshedPage.items, policy: currentHistoryPolicy() }
+      },
+      commit: (snapshot) => {
+        if (!refreshedPage) return
+        pendingNativeUpserts.clear()
+        const nextItems = pruneExpiredClips(snapshot.items, retentionDays.value)
+        suppressedNativeHistoryItems = nextItems
+        items.value = nextItems
+        nativeHistoryNextCursor.value = refreshedPage.nextCursor
+        nativeHistoryTotalCount.value = refreshedPage.totalCount
+        nativeAppliedQueryKey = refreshedQueryKey
+        historyState.value = 'ready'
+        const focusedStillVisible = libraryItems.value.some((clip) => clip.id === managerSelectedId.value)
+        if (!focusedStillVisible) {
+          managerSelectedId.value = libraryItems.value[
+            Math.min(oldVisualIndex, Math.max(0, libraryItems.value.length - 1))
+          ]?.id ?? ''
+        }
+        nextTick(() => {
+          if (suppressedNativeHistoryItems === nextItems) suppressedNativeHistoryItems = null
+        })
+      },
+    })
+    if (result.status === 'committedRefreshFailed' && !appUnmounted) {
+      queueNativeHistoryRefresh(true)
+    }
+    return result
+  } finally {
+    managerOperationBusy.value = false
+    await replayDeferredManagerCaptures()
+  }
+}
+
+watch(items, (value, previous) => {
   if (clipContextMenu.value && !value.some((clip) => clip.id === clipContextMenu.value?.clipId)) {
     closeClipContextMenu()
   }
   if (nativeRuntime) {
-    if (suppressHistoryPersistenceOnce) {
-      suppressHistoryPersistenceOnce = false
+    if (suppressedNativeHistoryItems === value) {
+      suppressedNativeHistoryItems = null
       return
     }
     if (historyState.value !== 'ready') return
-    historyPersistence.schedule(value)
+    historyPersistence.schedule(previous, nativePersistenceTarget(value), currentHistoryPolicy())
   } else {
     writeStoredValue(ITEMS_STORAGE_KEY, value)
   }
 }, { deep: true })
 
+watch(retentionDays, () => {
+  if (!suppressRetentionPolicySync) {
+    historyRetentionDays.value = retentionDays.value === 'forever' ? null : Number(retentionDays.value)
+  }
+  if (!nativeRuntime || historyState.value !== 'ready') return
+  historyPersistence.schedule(items.value, nativePersistenceTarget(items.value), currentHistoryPolicy())
+})
+
 watch(theme, (value) => {
   document.documentElement.dataset.theme = value
 }, { immediate: true })
 
-watch([theme, locale, retentionDays, launchAtStartup, hideDuringSharing, elevatedPasteEnabled, capturePaused, excludedApps, globalShortcut, onboardingCompleted, quickPanelPinned, autoCheckUpdates], () => {
+watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, historyRetentionDays, launchAtStartup, hideDuringSharing, elevatedPasteEnabled, capturePaused, excludedApps, globalShortcut, onboardingCompleted, quickPanelPinned, autoCheckUpdates, ocrEnabled], () => {
   writeStoredValue(SETTINGS_STORAGE_KEY, {
     settingsVersion: SETTINGS_SCHEMA_VERSION,
     theme: theme.value,
     locale: locale.value,
-    retentionDays: retentionDays.value,
+    retentionDays: historyRetentionDays.value === null ? 'forever' : String(historyRetentionDays.value),
+    historyPolicy: currentHistoryPolicy(),
     launchAtStartup: launchAtStartup.value,
     hideDuringSharing: hideDuringSharing.value,
     elevatedPasteEnabled: elevatedPasteEnabled.value,
@@ -512,6 +954,7 @@ watch([theme, locale, retentionDays, launchAtStartup, hideDuringSharing, elevate
     onboardingCompleted: onboardingCompleted.value,
     quickPanelPinned: quickPanelPinned.value,
     autoCheckUpdates: autoCheckUpdates.value,
+    ocrEnabled: ocrEnabled.value,
   } satisfies StoredSettings)
 }, { immediate: true, deep: true })
 
@@ -523,6 +966,25 @@ watch(autoCheckUpdates, () => {
   if (nativeSettingsReady.value) scheduleAutomaticUpdateCheck()
 })
 
+watch(ocrEnabled, (enabled, previous) => {
+  invalidateStoredOcrPump()
+  ocrCoordinator.invalidate()
+  syncNativeBooleanSetting('ocrEnabled', enabled, previous, async (value) => {
+    const applied = await setNativeClipboardOcrEnabled(value)
+    if (applied && value) resumePendingOcr([
+      ...items.value,
+      ...pendingNativeUpserts.values(),
+    ])
+    return applied
+  }, (value) => {
+    ocrEnabled.value = value
+    if (value) resumePendingOcr([
+      ...items.value,
+      ...pendingNativeUpserts.values(),
+    ])
+  })
+})
+
 watch([currentView, librarySection, locale], () => {
   closeClipContextMenu()
   const sectionTitle = currentView.value === 'quick'
@@ -531,6 +993,10 @@ watch([currentView, librarySection, locale], () => {
       ? t('settings')
       : t('manageClipboard')
   document.title = `${t('productName')} · ${sectionTitle}`
+  if (nativeRuntime && nativeSettingsReady.value) {
+    if (currentView.value === 'library' && librarySection.value === 'settings') void refreshStorageState()
+    else queueNativeHistoryRefresh()
+  }
 }, { immediate: true })
 
 watch(visibleItems, (value) => {
@@ -553,6 +1019,37 @@ watch(managerQuery, () => {
     if (list) list.scrollTop = 0
     if (libraryContent.value) libraryContent.value.scrollTop = 0
   })
+  if (nativeRuntime
+    && currentView.value === 'library'
+    && librarySection.value !== 'settings'
+    && !managerSearchComposing.value) queueNativeHistoryRefresh()
+})
+
+watch([managerKinds, managerSourceApp, managerPinned, managerCollectionFilter], () => {
+  closeClipContextMenu()
+  managerSelectedId.value = ''
+  if (nativeRuntime && currentView.value === 'library' && librarySection.value !== 'settings') {
+    queueNativeHistoryRefresh()
+  }
+}, { deep: true })
+
+watch(
+  [managerQuery, managerKinds, managerSourceApp, managerPinned, managerCollectionFilter, librarySection],
+  () => {
+    managerSelection.value = emptyManagerSelection()
+    managerRangeAnchorId.value = undefined
+    managerBatchError.value = ''
+    historyOperationLane.invalidate()
+  },
+  { deep: true, flush: 'sync' },
+)
+
+watch(currentView, (view) => {
+  historyOperationLane.invalidate()
+  if (view === 'library') return
+  managerSelection.value = emptyManagerSelection()
+  managerRangeAnchorId.value = undefined
+  managerBatchError.value = ''
 })
 
 watch([query, activeFilter], () => {
@@ -563,6 +1060,9 @@ watch([query, activeFilter], () => {
     const list = document.querySelector<HTMLElement>('.clip-list')
     if (list) list.scrollTop = 0
   })
+  if (nativeRuntime && currentView.value === 'quick' && !quickSearchComposing.value) {
+    queueNativeHistoryRefresh()
+  }
 })
 
 function syncNativeBooleanSetting(
@@ -670,6 +1170,7 @@ function kindLabel(kind: ClipKind): string {
     code: t('code'),
     link: t('link'),
     image: t('image'),
+    file: '文件',
   }[kind]
 }
 
@@ -683,6 +1184,7 @@ function kindIcon(kind: ClipKind) {
     code: Code2,
     link: Link2,
     image: ImageIcon,
+    file: LayoutList,
   }[kind]
 }
 
@@ -800,13 +1302,13 @@ function waitForHistoryRetry(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, HISTORY_RETRY_DELAY_MS))
 }
 
-async function loadHistoryWithRetry(): Promise<ClipboardItem[] | null> {
+async function queryHistoryWithRetry(nativeQuery: HistoryQuery): Promise<HistoryPage | null> {
   for (let attempt = 0; attempt < HISTORY_RETRY_ATTEMPTS; attempt += 1) {
     let timeout: ReturnType<typeof setTimeout> | undefined
     const timedOut = new Promise<null>((resolve) => {
       timeout = setTimeout(() => resolve(null), HISTORY_LOAD_TIMEOUT_MS)
     })
-    const loaded = await Promise.race([loadNativeHistory(), timedOut])
+    const loaded = await Promise.race([queryNativeHistory(nativeQuery), timedOut])
     if (timeout) clearTimeout(timeout)
     if (loaded !== null) return loaded
     if (attempt < HISTORY_RETRY_ATTEMPTS - 1) await waitForHistoryRetry()
@@ -814,40 +1316,459 @@ async function loadHistoryWithRetry(): Promise<ClipboardItem[] | null> {
   return null
 }
 
-async function applyLoadedHistory(loaded: ClipboardItem[]) {
-  const normalized = limitHistory(
-    pruneExpiredClips(loaded, retentionDays.value),
-    MAX_HISTORY_ITEMS,
-  )
-  const pending = pendingNativeCaptures.splice(0)
-  const needsPersistence = normalized.length !== loaded.length || pending.length > 0
-  suppressHistoryPersistenceOnce = true
-  items.value = normalized
-  for (const payload of pending) mergeNativeCapture(payload, false)
+async function applyNativeHistoryPage(
+  page: HistoryPage,
+  append: boolean,
+  generation: number,
+  queryKey: string,
+  resolvedUpsertIds: string[],
+): Promise<boolean> {
+  for (const id of resolvedUpsertIds) pendingNativeUpserts.delete(id)
+  const confirmed = append
+    ? [...items.value, ...page.items.filter((item) => !items.value.some((current) => current.id === item.id))]
+    : [...page.items]
+  const nextItems = pruneExpiredClips(confirmed, retentionDays.value)
+  const pending = append ? [] : pendingNativeCaptures.splice(0)
+  for (const payload of pending) {
+    const clip = createClipboardItem(payload, `captured-${Date.now()}-${capturedSequence++}`)
+    pendingNativeUpserts.set(clip.id, clip)
+  }
+
+  if (appUnmounted || generation !== nativeQueryGeneration) return false
+  historyPersistence.reset(confirmed, currentHistoryPolicy())
+  suppressedNativeHistoryItems = nextItems
+  items.value = nextItems
+  nativeHistoryNextCursor.value = page.nextCursor
+  nativeHistoryTotalCount.value = page.totalCount
+  nativeAppliedQueryKey = queryKey
   historyState.value = 'ready'
-  selectedId.value = items.value[0]?.id ?? ''
-  if (needsPersistence) {
-    historyPersistence.schedule(items.value)
-    void historyPersistence.flush()
+  if (currentView.value === 'quick') {
+    if (!append || !items.value.some((clip) => clip.id === selectedId.value)) {
+      selectedId.value = items.value[0]?.id ?? ''
+    }
+  } else if (!append || !items.value.some((clip) => clip.id === managerSelectedId.value)) {
+    managerSelectedId.value = items.value[0]?.id ?? ''
+  }
+
+  const persistenceTarget = nativePersistenceTarget(nextItems)
+  const hasLocalDelta = nextItems.length !== confirmed.length || pendingNativeUpserts.size > 0
+  if (hasLocalDelta) {
+    historyPersistence.schedule(confirmed, persistenceTarget, currentHistoryPolicy())
+    const saved = await historyPersistence.flush()
+    if (!saved) return false
+    if (appUnmounted || generation !== nativeQueryGeneration) return false
+    if (pending.length > 0) queueNativeHistoryRefresh(true)
   }
   nextTick(() => {
-    suppressHistoryPersistenceOnce = false
+    if (suppressedNativeHistoryItems === nextItems) suppressedNativeHistoryItems = null
   })
+  resumePendingOcr(persistenceTarget)
+  return true
+}
+
+async function runNativeHistoryQuery(append = false, force = false): Promise<boolean> {
+  if (historyPersistence.isFrozen()) {
+    nativeRefreshAfterExclusive = true
+    nativeRefreshAfterExclusiveForced ||= force
+    return false
+  }
+  const cursor = append ? nativeHistoryNextCursor.value : undefined
+  const descriptor = currentNativeQueryDescriptor(cursor)
+  if (!descriptor || append && (!cursor || nativeHistoryPageLoading.value)) return false
+
+  const requestedKey = historyQueryKey(descriptor.query)
+  if (!append && !force && historyState.value === 'ready' && requestedKey === nativeAppliedQueryKey) return true
+  const generation = append ? nativeQueryGeneration : ++nativeQueryGeneration
+  if (!append) {
+    nativeHistoryRefreshGeneration.value = generation
+    invalidateNativePayloads()
+    previewId.value = null
+    nativeHistoryNextCursor.value = undefined
+  } else {
+    nativeHistoryPageLoading.value = true
+  }
+
+  try {
+    // SQLite 必须先观察到当前乐观 UI 的最后一次变更，查询结果才不会把旧元数据带回界面。
+    const flushed = await historyPersistence.flush()
+    if (appUnmounted || generation !== nativeQueryGeneration) return false
+    const latestDescriptor = currentNativeQueryDescriptor()
+    if (!latestDescriptor || historyQueryKey(latestDescriptor.query) !== requestedKey) return false
+    if (!flushed) return false
+    const resolvedUpsertIds = [...pendingNativeUpserts.keys()]
+
+    if (descriptor.impossible) {
+      return applyNativeHistoryPage({ items: [], totalCount: 0 }, false, generation, requestedKey, resolvedUpsertIds)
+    }
+
+    const page = await queryHistoryWithRetry(descriptor.query)
+    if (appUnmounted || generation !== nativeQueryGeneration) return false
+    const currentDescriptor = currentNativeQueryDescriptor()
+    if (!currentDescriptor || historyQueryKey(currentDescriptor.query) !== requestedKey) return false
+    if (!page) {
+      historyState.value = 'error'
+      return false
+    }
+    return applyNativeHistoryPage(page, append, generation, requestedKey, resolvedUpsertIds)
+  } finally {
+    if (append || generation === nativeQueryGeneration) nativeHistoryPageLoading.value = false
+    if (!append && nativeHistoryRefreshGeneration.value === generation) {
+      nativeHistoryRefreshGeneration.value = null
+    }
+  }
+}
+
+function queueNativeHistoryRefresh(force = false) {
+  if (!nativeRuntime
+    || !nativeSettingsReady.value
+    || historyState.value === 'error') return
+  if (currentView.value === 'library' && librarySection.value === 'settings') {
+    nativeRefreshAfterExclusive = true
+    nativeRefreshAfterExclusiveForced ||= force
+    return
+  }
+  if (historyPersistence.isFrozen()) {
+    nativeRefreshAfterExclusive = true
+    nativeRefreshAfterExclusiveForced ||= force
+    return
+  }
+  if (nativeRefreshAfterExclusive) {
+    force ||= nativeRefreshAfterExclusiveForced
+    nativeRefreshAfterExclusive = false
+    nativeRefreshAfterExclusiveForced = false
+  }
+  nativeQueryRefreshForced ||= force
+  if (nativeQueryRefreshQueued) return
+  nativeQueryRefreshQueued = true
+  void nextTick(() => {
+    nativeQueryRefreshQueued = false
+    const shouldForce = nativeQueryRefreshForced
+    nativeQueryRefreshForced = false
+    if (!appUnmounted) void runNativeHistoryQuery(false, shouldForce)
+  })
+}
+
+function storageStatus(zhCN: string, enUS: string): string {
+  return locale.value === 'zh-CN' ? zhCN : enUS
+}
+
+async function refreshStorageState(): Promise<boolean> {
+  if (!nativeRuntime) return false
+  const generation = ++storageRefreshGeneration
+  const [health, stats] = await Promise.all([
+    getNativeHistoryHealth(),
+    getNativeStorageStats(),
+  ])
+  if (appUnmounted || generation !== storageRefreshGeneration) return false
+  if (health) historyHealth.value = health
+  if (stats) storageStats.value = stats
+  return health !== null && stats !== null
+}
+
+async function acquireStorageOperationLease(
+  operation: Exclude<StorageOperation, null | 'refresh'>,
+  allowReadOnly = false,
+): Promise<HistoryExclusiveLease | null> {
+  if (busyStorageOperation.value !== null || !nativeRuntime || historyState.value !== 'ready') return null
+  if (!allowReadOnly && historyHealth.value?.status === 'readOnlyError') {
+    storageStatusMessage.value = storageStatus(
+      '历史数据库处于只读状态，无法执行此操作。',
+      'The history database is read-only, so this operation is unavailable.',
+    )
+    return null
+  }
+
+  busyStorageOperation.value = operation
+  storageStatusMessage.value = ''
+  nativeQueryGeneration += 1
+  invalidateNativePayloads()
+  try {
+    return await historyPersistence.acquireExclusiveLease()
+  } catch {
+    busyStorageOperation.value = null
+    storageStatusMessage.value = storageStatus(
+      '尚有历史记录未能安全写入，本次操作已取消。',
+      'Pending history could not be saved safely, so the operation was cancelled.',
+    )
+    if (nativeRefreshAfterExclusive) queueNativeHistoryRefresh(nativeRefreshAfterExclusiveForced)
+    return null
+  }
+}
+
+async function releaseStorageOperationLease(lease: HistoryExclusiveLease): Promise<void> {
+  lease.release()
+  const captures = deferredStorageCaptures.splice(0)
+  try {
+    if (historyState.value === 'error') {
+      for (const payload of captures) {
+        pendingNativeCaptures.push(payload)
+        if (pendingNativeCaptures.length > MAX_PENDING_NATIVE_CAPTURES) pendingNativeCaptures.shift()
+      }
+    } else if (!appUnmounted && captures.length > 0) {
+      const replayed = await mergeNativeCaptures(captures)
+      if (!replayed) {
+        storageStatusMessage.value = storageStatus(
+          '操作已完成，但恢复期间捕获的内容仍在等待写入。',
+          'The operation completed, but captures received during it are still waiting to be saved.',
+        )
+      }
+    }
+  } catch {
+    for (const payload of captures) {
+      pendingNativeCaptures.push(payload)
+      if (pendingNativeCaptures.length > MAX_PENDING_NATIVE_CAPTURES) pendingNativeCaptures.shift()
+    }
+    storageStatusMessage.value = storageStatus(
+      '操作已完成，但恢复期间捕获的内容需要稍后重试。',
+      'The operation completed, but captures received during it need to be retried later.',
+    )
+  } finally {
+    const shouldRefresh = nativeRefreshAfterExclusive
+    const forceRefresh = nativeRefreshAfterExclusiveForced
+    nativeRefreshAfterExclusive = false
+    nativeRefreshAfterExclusiveForced = false
+    busyStorageOperation.value = null
+    if (shouldRefresh && !appUnmounted) queueNativeHistoryRefresh(forceRefresh)
+  }
+}
+
+async function reloadHistoryAfterRestore(): Promise<boolean> {
+  const query = normalizeHistoryQuery({
+    text: '',
+    kinds: [],
+    sourceApps: [],
+    collection: { mode: 'any' },
+    limit: NATIVE_HISTORY_PAGE_SIZE,
+  })
+  const generation = ++nativeQueryGeneration
+  invalidateNativePayloads()
+  nativeHistoryNextCursor.value = undefined
+  const page = await queryHistoryWithRetry(query)
+  if (!page || appUnmounted || generation !== nativeQueryGeneration) return false
+  const resolvedUpsertIds = [...pendingNativeUpserts.keys()]
+  return applyNativeHistoryPage(
+    page,
+    false,
+    generation,
+    historyQueryKey(query),
+    resolvedUpsertIds,
+  )
+}
+
+async function adoptRestoredHistoryPolicy(policy: CapacityPolicy): Promise<void> {
+  suppressRetentionPolicySync = true
+  historyMaxRecords.value = policy.maxRecords
+  historyMaxImageBytes.value = policy.maxImageBytes
+  historyRetentionDays.value = policy.retentionDays
+  retentionDays.value = retentionPeriodForPolicy(policy)
+  await nextTick()
+  suppressRetentionPolicySync = false
+}
+
+async function createHistoryBackup() {
+  if (preparedRestore.value) return
+  const lease = await acquireStorageOperationLease('backup')
+  if (!lease) return
+  try {
+    const result = await createNativeHistoryBackup()
+    if (!result) {
+      storageStatusMessage.value = storageStatus('备份未能完成，现有历史未改变。', 'Backup failed. Existing history was unchanged.')
+      return
+    }
+    if (result.status === 'cancelled') {
+      storageStatusMessage.value = storageStatus('已取消备份，现有历史未改变。', 'Backup cancelled. Existing history was unchanged.')
+      return
+    }
+    storageStatusMessage.value = storageStatus('备份已安全保存。', 'Backup saved safely.')
+    const stats = await getNativeStorageStats()
+    if (stats && !appUnmounted) storageStats.value = stats
+  } finally {
+    await releaseStorageOperationLease(lease)
+  }
+}
+
+async function prepareHistoryRestore() {
+  if (preparedRestore.value) return
+  const lease = await acquireStorageOperationLease('prepare-restore')
+  if (!lease) return
+  try {
+    const result = await prepareNativeHistoryRestore()
+    if (!result) {
+      storageStatusMessage.value = storageStatus('备份验证失败，当前历史未改变。', 'Backup validation failed. Current history was unchanged.')
+      return
+    }
+    if (result.status === 'cancelled') {
+      storageStatusMessage.value = storageStatus('已取消恢复，当前历史未改变。', 'Restore cancelled. Current history was unchanged.')
+      return
+    }
+    preparedRestore.value = result
+    storageStatusMessage.value = storageStatus('备份验证完成，请确认是否替换当前历史。', 'Backup validated. Confirm whether to replace current history.')
+  } finally {
+    await releaseStorageOperationLease(lease)
+  }
+}
+
+async function commitHistoryRestore(token: string) {
+  if (!preparedRestore.value || preparedRestore.value.token !== token) return
+  const lease = await acquireStorageOperationLease('commit-restore')
+  if (!lease) return
+  try {
+    invalidateStoredOcrPump()
+    ocrCoordinator.invalidate()
+    if (!await invalidateNativeClipboardOcr()) {
+      storageStatusMessage.value = storageStatus(
+        '无法安全停止旧 OCR 任务，历史恢复未开始。',
+        'Old OCR work could not be invalidated safely, so restore did not start.',
+      )
+      return
+    }
+    const result = await commitNativeHistoryRestore(token)
+    if (!result) {
+      preparedRestore.value = null
+      storageStatusMessage.value = storageStatus(
+        '恢复未提交，可能因为验证后历史已发生变化；当前历史保持不变。',
+        'Restore was not committed, possibly because history changed after validation. Current history was preserved.',
+      )
+      return
+    }
+
+    preparedRestore.value = null
+    storageRefreshGeneration += 1
+    storageStats.value = result.stats
+    await adoptRestoredHistoryPolicy(result.policy)
+    historyState.value = 'loading'
+    const reloaded = await reloadHistoryAfterRestore()
+    if (!reloaded) {
+      historyState.value = 'error'
+      storageStatusMessage.value = storageStatus(
+        '历史已恢复，但重新读取失败；请重启应用后再操作。',
+        'History was restored, but reloading failed. Restart the app before making changes.',
+      )
+      return
+    }
+    await refreshManagerCollections()
+    await refreshStorageState()
+    storageStatusMessage.value = storageStatus(
+      `已恢复 ${result.importedCount} 条历史记录。`,
+      `Restored ${result.importedCount} history records.`,
+    )
+  } finally {
+    await releaseStorageOperationLease(lease)
+    if (!appUnmounted && ocrEnabled.value) resumePendingOcr()
+  }
+}
+
+async function discardHistoryRestore(token: string) {
+  if (!preparedRestore.value || preparedRestore.value.token !== token) return
+  const lease = await acquireStorageOperationLease('discard-restore', true)
+  if (!lease) return
+  try {
+    const result = await discardNativeHistoryRestore(token)
+    if (!result) {
+      storageStatusMessage.value = storageStatus('无法清理待恢复文件，请重试。', 'The staged restore could not be discarded. Try again.')
+      return
+    }
+    preparedRestore.value = null
+    storageStatusMessage.value = storageStatus('已取消恢复，当前历史未改变。', 'Restore cancelled. Current history was unchanged.')
+  } finally {
+    await releaseStorageOperationLease(lease)
+  }
+}
+
+async function compactHistoryDatabase() {
+  if (preparedRestore.value) return
+  const lease = await acquireStorageOperationLease('compact')
+  if (!lease) return
+  try {
+    const stats = await compactNativeHistoryDatabase()
+    if (!stats) {
+      storageStatusMessage.value = storageStatus('数据库压缩未能完成。', 'Database compaction failed.')
+      return
+    }
+    storageStats.value = stats
+    storageStatusMessage.value = storageStatus('数据库压缩完成，统计已刷新。', 'Database compaction completed and statistics were refreshed.')
+  } finally {
+    await releaseStorageOperationLease(lease)
+  }
+}
+
+async function updateHistoryCapacityPolicy(
+  requested: Pick<CapacityPolicy, 'maxRecords' | 'maxImageBytes'>,
+) {
+  if (!Number.isSafeInteger(requested.maxRecords)
+    || requested.maxRecords < 0
+    || !Number.isSafeInteger(requested.maxImageBytes)
+    || requested.maxImageBytes < 0) return
+  const previousPolicy = currentHistoryPolicy()
+  if (requested.maxRecords === previousPolicy.maxRecords
+    && requested.maxImageBytes === previousPolicy.maxImageBytes) return
+
+  const lease = await acquireStorageOperationLease('policy')
+  if (!lease) return
+  const nextPolicy: CapacityPolicy = {
+    ...previousPolicy,
+    maxRecords: requested.maxRecords,
+    maxImageBytes: requested.maxImageBytes,
+  }
+  try {
+    const result = await applyNativeHistoryMutation({
+      upserts: [],
+      deleteIds: [],
+      policy: nextPolicy,
+    })
+    if (!result) {
+      storageStatusMessage.value = storageStatus(
+        '容量限制未能安全写入，原有限制未改变。',
+        'Capacity limits could not be saved safely. The previous limits were unchanged.',
+      )
+      return
+    }
+
+    const visibleBeforePrune = items.value
+    handleCapacityPruned(result.prunedIds)
+    if (items.value !== visibleBeforePrune) suppressedNativeHistoryItems = items.value
+    historyMaxRecords.value = nextPolicy.maxRecords
+    historyMaxImageBytes.value = nextPolicy.maxImageBytes
+    historyPersistence.reset(items.value, nextPolicy)
+    const refreshed = await refreshStorageState()
+    storageStatusMessage.value = refreshed
+      ? storageStatus('容量限制已更新，存储统计已刷新。', 'Capacity limits updated and storage statistics refreshed.')
+      : storageStatus('容量限制已更新，但存储统计暂时不可用。', 'Capacity limits updated, but storage statistics are temporarily unavailable.')
+  } finally {
+    await releaseStorageOperationLease(lease)
+  }
+}
+
+async function refreshHistoryStorage() {
+  if (busyStorageOperation.value !== null) return
+  busyStorageOperation.value = 'refresh'
+  storageStatusMessage.value = ''
+  try {
+    const refreshed = await refreshStorageState()
+    storageStatusMessage.value = refreshed
+      ? storageStatus('存储统计已刷新。', 'Storage statistics refreshed.')
+      : storageStatus('存储统计暂时不可用。', 'Storage statistics are temporarily unavailable.')
+  } finally {
+    busyStorageOperation.value = null
+  }
+}
+
+function loadMoreNativeHistory() {
+  if (!nativeRuntime) return
+  void runNativeHistoryQuery(true)
 }
 
 async function retryHistoryLoad() {
   if (!nativeRuntime || historyState.value === 'loading') return
   const retryView = currentView.value
-  const generation = ++historyLoadGeneration
   historyState.value = 'loading'
-  const loaded = await loadHistoryWithRetry()
-  if (appUnmounted || generation !== historyLoadGeneration) return
-  if (loaded === null) {
+  const loaded = await runNativeHistoryQuery(false)
+  if (appUnmounted) return
+  if (!loaded) {
     historyState.value = 'error'
     nextTick(() => document.querySelector<HTMLElement>('[data-testid="history-retry"]')?.focus())
     return
   }
-  await applyLoadedHistory(loaded)
   if (retryView === currentView.value) nextTick(focusCurrentSurfaceFallback)
 }
 
@@ -873,6 +1794,9 @@ function pinClip(id: string, focusSurface?: ClipFocusSurface) {
     : surfaceItems[changedIndex + 1]?.id ?? surfaceItems[changedIndex - 1]?.id ?? null
 
   items.value = togglePinned(items.value, id)
+  if (nativeRuntime && currentNativeQueryDescriptor()?.query.pinned !== undefined) {
+    queueNativeHistoryRefresh(true)
+  }
   const remainsVisible = focusSurface === 'manager'
     ? libraryItems.value.some((clip) => clip.id === id)
     : visibleItems.value.some((clip) => clip.id === id)
@@ -900,6 +1824,23 @@ function pinClip(id: string, focusSurface?: ClipFocusSurface) {
 }
 
 function deleteClip(id: string, focusSurface?: ClipFocusSurface) {
+  const clip = items.value.find((item) => item.id === id)
+  if (clip?.permanent === true) {
+    if (managerOperationBusy.value || permanentSnippetDeleteTarget.value) return
+    permanentSnippetDeleteRestoreFocus = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    permanentSnippetDeleteTarget.value = { id: clip.id, title: clip.title }
+    permanentSnippetDeleteError.value = ''
+    nextTick(() => {
+      document.querySelector<HTMLButtonElement>('[data-testid="manager-cancel-delete-permanent"]')?.focus()
+    })
+    return
+  }
+  deleteClipImmediately(id, focusSurface)
+}
+
+function deleteClipImmediately(id: string, focusSurface?: ClipFocusSurface) {
   const activeElement = document.activeElement instanceof HTMLElement ? document.activeElement : null
   const focusedRow = focusSurface === 'quick'
     ? activeElement?.closest<HTMLElement>('.clip-row')
@@ -921,6 +1862,11 @@ function deleteClip(id: string, focusSurface?: ClipFocusSurface) {
   const result = removeClip(items.value, id)
   if (!result.undo) return
   items.value = result.items
+  if (focusSurface === 'manager') {
+    clearManagerSelection()
+    managerBulkToolbarKey.value += 1
+  }
+  if (nativeRuntime) nativeHistoryTotalCount.value = Math.max(0, nativeHistoryTotalCount.value - 1)
   lastRemoved.value = result.undo
   if (previewId.value === id) previewId.value = null
   if (undoTimer) clearTimeout(undoTimer)
@@ -949,19 +1895,6 @@ function deleteClip(id: string, focusSurface?: ClipFocusSurface) {
       ? document.querySelector<HTMLElement>(managerSelector)
       : null
     ;(nextManagerAction ?? managerSearchInput.value)?.focus()
-  })
-}
-
-function deleteSelectedClip() {
-  const clip = selectedClip.value
-  if (!clip) return
-  const removedIndex = selectedIndex.value
-  deleteClip(clip.id)
-  const nextIndex = Math.min(Math.max(removedIndex, 0), visibleItems.value.length - 1)
-  selectedId.value = visibleItems.value[nextIndex]?.id ?? ''
-  nextTick(() => {
-    const nextResult = document.querySelector<HTMLElement>(`[data-clip-id="${selectedId.value}"] .clip-primary`)
-    ;(nextResult ?? searchInput.value)?.focus()
   })
 }
 
@@ -1037,6 +1970,11 @@ function isEditableContextTarget(target: Element): boolean {
   return Boolean(target.closest('textarea, [contenteditable]:not([contenteditable="false"])'))
 }
 
+function preservesNativeManagerSelectionKeys(target: EventTarget | null): boolean {
+  return target instanceof Element
+    && (isEditableContextTarget(target) || Boolean(target.closest('select')))
+}
+
 function handleContextMenu(event: MouseEvent) {
   const target = event.target instanceof Element ? event.target : null
   if (!target) return
@@ -1087,20 +2025,6 @@ function openKeyboardContextMenu(target: Element): boolean {
   return true
 }
 
-function runContextPaste() {
-  const clip = contextMenuClip.value
-  if (!clip) return
-  closeClipContextMenu(true)
-  void pasteClip(clip)
-}
-
-function runContextCopy() {
-  const clip = contextMenuClip.value
-  if (!clip) return
-  closeClipContextMenu(true)
-  void copyClip(clip)
-}
-
 function runContextPreview() {
   const clip = contextMenuClip.value
   if (!clip) return
@@ -1108,27 +2032,75 @@ function runContextPreview() {
   openPreview(clip.id)
 }
 
-async function runContextPin() {
-  const menu = clipContextMenu.value
-  if (!menu) return
-  const focusSurface: ClipFocusSurface = menu.surface === 'manager' ? 'manager' : 'quick'
+async function runContextAction(action: ClipAction) {
+  const clip = contextMenuClip.value
+  if (!clip || action.disabled) return
+  const actionSurface = clipContextMenu.value?.surface === 'manager' ? 'manager' : 'quick'
   closeClipContextMenu(true)
-  await nextTick()
-  pinClip(menu.clipId, focusSurface)
-}
-
-async function runContextDelete() {
-  const menu = clipContextMenu.value
-  if (!menu) return
-  if (menu.surface === 'preview') {
-    closeClipContextMenu()
-    deleteSelectedClip()
+  if (action.pasteMode) {
+    await pasteClip(clip, action.pasteMode)
     return
   }
-  const focusSurface: ClipFocusSurface = menu.surface === 'manager' ? 'manager' : 'quick'
-  closeClipContextMenu(true)
-  await nextTick()
-  deleteClip(menu.clipId, focusSurface)
+  if (action.id === 'copy') {
+    await copyClip(clip)
+    return
+  }
+
+  const generation = ++systemActionGeneration
+  const sessionGeneration = quickSessionGeneration
+  const actionView = currentView.value
+  const isCurrentAction = () => !appUnmounted
+    && generation === systemActionGeneration
+    && sessionGeneration === quickSessionGeneration
+    && actionView === currentView.value
+    && items.value.some((item) => item.id === clip.id)
+  const actionClip = await resolveClipPayload(clip)
+  if (!actionClip || !isCurrentAction()) {
+    if (!actionClip && isCurrentAction()) showToast(t('historyUnavailable'), true)
+    return
+  }
+  const resolvedAction = getClipActions(actionClip, actionSurface)
+    .find((candidate) => candidate.id === action.id)
+  let succeeded = false
+  let succeededFileActions = 0
+  let attemptedFileActions = 0
+  if (!resolvedAction || resolvedAction.disabled) {
+    succeeded = false
+  } else if (action.id === 'open-link') {
+    succeeded = await openExternalLink(actionClip.content)
+  } else if (action.id === 'open-file' || action.id === 'reveal-file') {
+    const availableFiles = actionClip.files?.filter((file) => file.exists) ?? []
+    attemptedFileActions = availableFiles.length
+    for (const file of availableFiles) {
+      const completed = action.id === 'open-file'
+        ? await openFilePath(file.path)
+        : await revealFilePath(file.path)
+      if (completed) succeededFileActions += 1
+      if (!isCurrentAction()) return
+    }
+    succeeded = attemptedFileActions > 0 && succeededFileActions === attemptedFileActions
+  } else if (action.id === 'save-image' && actionClip.imageUrl) {
+    const result = await saveClipboardImage(actionClip.imageUrl)
+    if (!isCurrentAction()) return
+    if (result === 'cancelled') return
+    succeeded = result === 'saved'
+  }
+
+  if (!isCurrentAction()) return
+  if (succeededFileActions > 0 && succeededFileActions < attemptedFileActions) {
+    showToast(t('systemActionPartiallyCompleted', {
+      succeeded: succeededFileActions,
+      total: attemptedFileActions,
+    }), true)
+  } else if (!succeeded) {
+    showToast(t('systemActionFailed'), true)
+  } else if (action.id === 'reveal-file') {
+    showToast(t('revealedInExplorer'))
+  } else if (action.id === 'save-image') {
+    showToast(t('imageSaved'))
+  } else {
+    showToast(t('openedWithSystem'))
+  }
 }
 
 function openSensitiveApps() {
@@ -1144,7 +2116,7 @@ function closeSensitiveApps() {
 }
 
 function requestClearHistory() {
-  if (unpinnedCount.value <= 0) return
+  if (ordinaryHistoryCount.value <= 0) return
   clearHistoryOpen.value = true
   nextTick(() => clearHistoryCancel.value?.focus())
 }
@@ -1158,19 +2130,30 @@ function retentionPeriodLabel(value: RetentionPeriod): string {
   return value === 'forever' ? t('forever') : t('daysOption', { count: value })
 }
 
+function applyRetentionPeriod(value: RetentionPeriod) {
+  const controlChanged = retentionDays.value !== value
+  historyRetentionDays.value = value === 'forever' ? null : Number(value)
+  retentionDays.value = value
+  if (!controlChanged && nativeRuntime && historyState.value === 'ready') {
+    historyPersistence.schedule(items.value, nativePersistenceTarget(items.value), currentHistoryPolicy())
+  }
+}
+
 function requestRetentionChange(event: Event) {
   const select = event.target as HTMLSelectElement
   if (historyState.value !== 'ready') {
-    select.value = retentionDays.value
+    select.value = retentionSelectValue.value
     return
   }
   const value = select.value as RetentionPeriod
-  if (!['7', '30', '90', 'forever'].includes(value) || value === retentionDays.value) return
+  if (!['7', '30', '90', 'forever'].includes(value)) return
+  const numericValue = value === 'forever' ? null : Number(value)
+  if (numericValue === historyRetentionDays.value) return
 
   const nextItems = pruneExpiredClips(items.value, value)
   const removedCount = items.value.length - nextItems.length
   if (removedCount === 0) {
-    retentionDays.value = value
+    applyRetentionPeriod(value)
     items.value = nextItems
     showToast(t('retentionUpdated', { period: retentionPeriodLabel(value) }))
     return
@@ -1188,7 +2171,7 @@ function closeRetentionChange() {
 function confirmRetentionChange() {
   const pending = pendingRetentionChange.value
   if (!pending) return
-  retentionDays.value = pending.value
+  applyRetentionPeriod(pending.value)
   items.value = pruneExpiredClips(items.value, pending.value)
   pendingRetentionChange.value = null
   if (!items.value.some((clip) => clip.id === selectedId.value)) {
@@ -1221,19 +2204,24 @@ function trapModalFocus(event: KeyboardEvent) {
 function confirmClearHistory() {
   const result = clearUnpinnedHistory(items.value)
   items.value = result.items
+  if (nativeRuntime) nativeHistoryTotalCount.value = Math.max(0, nativeHistoryTotalCount.value - result.removedCount)
   clearHistoryOpen.value = false
   lastRemoved.value = null
   if (undoTimer) clearTimeout(undoTimer)
   undoTimer = undefined
   previewId.value = null
   selectedId.value = items.value[0]?.id ?? ''
-  showToast(t('historyCleared', { count: result.removedCount }))
+  showToast(managerText(
+    `已清除 ${result.removedCount} 条普通记录，固定内容和永久片段均已保留。`,
+    `Cleared ${result.removedCount} ordinary records. Pinned items and permanent snippets were kept.`,
+  ))
   nextTick(() => managerSearchInput.value?.focus())
 }
 
 function undoDelete() {
   const restoredId = lastRemoved.value?.clip.id ?? null
   items.value = restoreClip(items.value, lastRemoved.value)
+  if (nativeRuntime && restoredId) nativeHistoryTotalCount.value += 1
   if (restoredId) selectedId.value = restoredId
   lastRemoved.value = null
   if (undoTimer) clearTimeout(undoTimer)
@@ -1285,6 +2273,29 @@ function clearManagerSearch() {
   nextTick(() => managerSearchInput.value?.focus())
 }
 
+function startSearchComposition(surface: ClipFocusSurface) {
+  isComposing.value = true
+  if (surface === 'quick') quickSearchComposing.value = true
+  else managerSearchComposing.value = true
+}
+
+function finishSearchComposition(surface: ClipFocusSurface) {
+  isComposing.value = false
+  if (surface === 'quick') quickSearchComposing.value = false
+  else managerSearchComposing.value = false
+  if (nativeRuntime
+    && (surface === 'quick' && currentView.value === 'quick'
+      || surface === 'manager' && currentView.value === 'library' && librarySection.value !== 'settings')) {
+    queueNativeHistoryRefresh()
+  }
+}
+
+function cancelSearchComposition(surface: ClipFocusSurface) {
+  isComposing.value = false
+  if (surface === 'quick') quickSearchComposing.value = false
+  else managerSearchComposing.value = false
+}
+
 function resetQuickSession(focusSearch = true) {
   quickSessionGeneration += 1
   closeClipContextMenu()
@@ -1304,8 +2315,21 @@ function resetQuickSession(focusSearch = true) {
   sensitiveAppDraft.value = ''
   clearHistoryOpen.value = false
   pendingRetentionChange.value = null
+  collectionEditor.value = null
+  collectionDeleteTarget.value = null
+  permanentSnippetDeleteTarget.value = null
+  permanentSnippetDeleteError.value = ''
+  permanentSnippetDeleteRestoreFocus = null
+  collectionDeleteRestoreFocus = null
+  collectionError.value = ''
+  snippetSessionGeneration += 1
+  snippetDraft.value = null
+  snippetError.value = ''
+  clearManagerSelection()
   shortcutRecording.value = false
   isComposing.value = false
+  quickSearchComposing.value = false
+  managerSearchComposing.value = false
   restoreResultFocusAfterPreview = false
   selectedId.value = items.value[0]?.id ?? ''
   nextTick(() => {
@@ -1332,13 +2356,59 @@ async function toggleQuickPanelPinned() {
   }
 }
 
-function openPreview(id: string) {
+async function resolveClipPayload(clip: ClipboardItem): Promise<LoadedClipboardItem | null> {
+  const available = cachedPayload(clip)
+  if (available) return available
+
+  const generation = nativeQueryGeneration
+  const pending = pendingPayloadLoads.get(clip.id)
+  if (pending?.generation === generation) return pending.promise
+
+  const promise = (async () => {
+    const result = await loadNativeClipPayload(clip.id)
+    if (appUnmounted
+      || generation !== nativeQueryGeneration
+      || !items.value.some((candidate) => candidate.id === clip.id)) return null
+    if (result.status !== 'loaded') return null
+    hydratedPayloads.set(clip.id, { generation, item: result.item })
+    return result.item
+  })()
+  pendingPayloadLoads.set(clip.id, { generation, promise })
+  try {
+    return await promise
+  } finally {
+    const current = pendingPayloadLoads.get(clip.id)
+    if (current?.promise === promise) pendingPayloadLoads.delete(clip.id)
+  }
+}
+
+async function openPreview(id: string) {
   selectedId.value = id
+  const clip = items.value.find((candidate) => candidate.id === id)
+  if (!clip) return
+  if (cachedPayload(clip)) {
+    previewId.value = id
+    restoreResultFocusAfterPreview = false
+    return
+  }
+  const generation = ++previewLoadGeneration
+  const payload = await resolveClipPayload(clip)
+  if (!payload
+    || appUnmounted
+    || generation !== previewLoadGeneration
+    || selectedId.value !== id
+    || !items.value.some((candidate) => candidate.id === id)) {
+    if (!payload && generation === previewLoadGeneration && items.value.some((candidate) => candidate.id === id)) {
+      showToast(t('historyUnavailable'), true)
+    }
+    return
+  }
   previewId.value = id
   restoreResultFocusAfterPreview = false
 }
 
 function closePreview() {
+  previewLoadGeneration += 1
   restoreResultFocusAfterPreview = true
   previewId.value = null
 }
@@ -1361,15 +2431,26 @@ function focusCurrentQuickContent() {
   })
 }
 
-async function pasteClip(clip: ClipboardItem) {
+async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode(clip)) {
   if (pasteInFlight.value) return
   const sessionGeneration = quickSessionGeneration
   const pasteTargetLabel = targetApp.value ?? t('currentApp')
   pasteInFlight.value = true
   try {
-    const result = clip.kind === 'image' && clip.imageUrl
-      ? await pasteImage(clip.imageUrl)
-      : await pasteText(clip.content)
+    const payload = await resolveClipPayload(clip)
+    if (!payload || sessionGeneration !== quickSessionGeneration) {
+      if (!payload && sessionGeneration === quickSessionGeneration) showToast(t('historyUnavailable'), true)
+      return
+    }
+    const action = getClipActions(payload, 'quick').find((candidate) => candidate.pasteMode === mode)
+    if (!action || action.disabled) return
+    const result = mode === 'files'
+      ? await pasteFiles(payload.files ?? [])
+      : mode === 'preserve'
+        ? await pasteFormats(payload.content, payload.html, payload.rtfBase64)
+        : mode === 'image' && payload.imageUrl
+          ? await pasteImage(payload.imageUrl)
+          : await pasteText(payload.content)
     if (sessionGeneration !== quickSessionGeneration) return
     showToast(result.requiresElevation
       ? t('elevatedPasteApprovalRequired')
@@ -1385,27 +2466,60 @@ async function pasteClip(clip: ClipboardItem) {
 
 async function copyClip(clip: ClipboardItem) {
   const sessionGeneration = quickSessionGeneration
-  const copied = clip.kind === 'image' && clip.imageUrl
-    ? await copyImage(clip.imageUrl)
-    : await copyText(clip.content)
+  const payload = await resolveClipPayload(clip)
+  if (!payload || sessionGeneration !== quickSessionGeneration) {
+    if (!payload && sessionGeneration === quickSessionGeneration) showToast(t('historyUnavailable'), true)
+    return
+  }
+  const copied = payload.kind === 'image' && payload.imageUrl
+    ? await copyImage(payload.imageUrl)
+    : await copyText(payload.content)
   if (sessionGeneration !== quickSessionGeneration) return
-  showToast(copied ? t('copiedFrom', { source: clip.sourceApp }) : t('clipboardUnavailable'), !copied)
+  showToast(copied ? t('copiedFrom', { source: payload.sourceApp }) : t('clipboardUnavailable'), !copied)
 }
 
-function mergeNativeCapture(payload: NativeCapturePayload, announce = true) {
-  const clip = createClipboardItem(payload, `captured-${Date.now()}-${capturedSequence++}`)
-  items.value = mergeCapturedClipIntoHistory(
-    items.value,
-    clip,
-    retentionDays.value,
-    MAX_HISTORY_ITEMS,
-  )
-  selectedId.value = clip.id
-  if (announce) showToast(clip.kind === 'image' ? t('capturedImage') : t('capturedContent'))
+async function mergeNativeCaptures(payloads: NativeCapturePayload[], announce = true): Promise<boolean> {
+  if (payloads.length === 0) return true
+  const clips = payloads.map((payload) => (
+    createClipboardItem(payload, `captured-${Date.now()}-${capturedSequence++}`)
+  ))
+  if (!nativeRuntime) {
+    for (const clip of clips) {
+      items.value = mergeCapturedClipIntoHistory(items.value, clip, retentionDays.value, MAX_HISTORY_ITEMS)
+    }
+    const latest = clips.at(-1)!
+    selectedId.value = latest.id
+    if (announce) showToast(latest.kind === 'image' ? t('capturedImage') : t('capturedContent'))
+    return true
+  }
+
+  for (const clip of clips) pendingNativeUpserts.set(clip.id, clip)
+  const persistenceTarget = nativePersistenceTarget(items.value)
+  historyPersistence.schedule(items.value, persistenceTarget, currentHistoryPolicy())
+  const saved = await historyPersistence.flush()
+  if (!saved || appUnmounted) return false
+  for (const clip of clips) {
+    const persisted = persistenceTarget.find((candidate) => candidate.id === clip.id)
+    // 批量回放也逐个接纳；队列溢出的失败写回必须完成后再处理下一条。
+    if (persisted) await ocrCoordinator.enqueue(persisted)
+  }
+  const latest = clips.at(-1)!
+  if (announce) showToast(latest.kind === 'image' ? t('capturedImage') : t('capturedContent'))
+  queueNativeHistoryRefresh(true)
+  return true
+}
+
+async function mergeNativeCapture(payload: NativeCapturePayload, announce = true): Promise<boolean> {
+  return mergeNativeCaptures([payload], announce)
 }
 
 function acceptNativeCapture(payload: NativeCapturePayload) {
   if (capturePaused.value) return
+  if (nativeRuntime && historyPersistence.isFrozen()) {
+    deferredStorageCaptures.push(payload)
+    if (deferredStorageCaptures.length > MAX_PENDING_NATIVE_CAPTURES) deferredStorageCaptures.shift()
+    return
+  }
   if (nativeRuntime && historyState.value !== 'ready') {
     pendingNativeCaptures.push(payload)
     if (pendingNativeCaptures.length > MAX_PENDING_NATIVE_CAPTURES) pendingNativeCaptures.shift()
@@ -1413,7 +2527,7 @@ function acceptNativeCapture(payload: NativeCapturePayload) {
     return
   }
 
-  mergeNativeCapture(payload)
+  void mergeNativeCapture(payload)
 }
 
 function clipResultId(id: string): string {
@@ -1460,6 +2574,348 @@ function focusManagerIndex(index: number) {
   })
 }
 
+function managerText(zhCN: string, enUS: string): string {
+  return locale.value === 'zh-CN' ? zhCN : enUS
+}
+
+function clearManagerSelection() {
+  managerSelection.value = emptyManagerSelection()
+  managerRangeAnchorId.value = undefined
+  managerBatchError.value = ''
+}
+
+function selectManagerCollection(filter: ManagerCollectionFilter) {
+  managerCollectionFilter.value = filter
+  if (librarySection.value === 'settings') selectLibrarySection('all')
+}
+
+function managerClipCoordinate(clip: ClipboardItem) {
+  return { id: clip.id, copiedAt: clip.copiedAt }
+}
+
+function managerClipSelected(clip: ClipboardItem): boolean {
+  return isManagerItemSelected(managerSelection.value, managerClipCoordinate(clip))
+}
+
+function toggleManagerClipSelection(clip: ClipboardItem, contiguous = false) {
+  if (managerSelectionBusy.value) return
+  try {
+    managerSelection.value = contiguous
+      ? selectManagerRange(
+          managerSelection.value,
+          libraryItems.value.map((item) => item.id),
+          clip.id,
+          managerRangeAnchorId.value,
+        )
+      : toggleManagerSelection(managerSelection.value, managerClipCoordinate(clip))
+    if (!contiguous || managerRangeAnchorId.value === undefined) managerRangeAnchorId.value = clip.id
+    managerBatchError.value = ''
+  } catch {
+    managerBatchError.value = t('managerSelectionUpdateFailed')
+  }
+}
+
+function selectAllManagerMatches() {
+  if (managerSelectionBusy.value) return
+  if (managerBulkSelectionState.value === 'all') {
+    clearManagerSelection()
+    return
+  }
+  const descriptor = currentNativeQueryDescriptor()
+  const upperBoundClip = libraryItems.value[0]
+  if (!descriptor || descriptor.impossible || !upperBoundClip || managerTotalCount.value === 0) {
+    clearManagerSelection()
+    return
+  }
+  try {
+    managerSelection.value = createAllMatchingSelection(
+      descriptor.query,
+      managerClipCoordinate(upperBoundClip),
+      managerTotalCount.value,
+    )
+    managerRangeAnchorId.value = managerSelectedId.value || upperBoundClip.id
+    managerBatchError.value = ''
+  } catch {
+    managerBatchError.value = t('managerSelectAllFailed')
+  }
+}
+
+function handleManagerRowClick(event: MouseEvent, clip: ClipboardItem) {
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest('button, a, input, textarea, select, [contenteditable]:not([contenteditable="false"])')) return
+  managerSelectedId.value = clip.id
+  toggleManagerClipSelection(clip, event.shiftKey)
+}
+
+function focusCurrentManagerRow() {
+  nextTick(() => {
+    const row = managerSelectedId.value
+      ? libraryContent.value?.querySelector<HTMLElement>(`[data-manager-clip-id="${managerSelectedId.value}"]`)
+      : null
+    ;(row ?? managerSearchInput.value)?.focus()
+  })
+}
+
+async function applyManagerBatch(action: BatchAction) {
+  if (managerSelectedCount.value === 0 || managerSelectionBusy.value) return
+  const descriptor = currentNativeQueryDescriptor()
+  if (!descriptor) return
+  let target
+  try {
+    target = toBatchTarget(managerSelection.value, descriptor.query)
+  } catch {
+    managerBatchError.value = t('managerSelectionStale')
+    return
+  }
+  const oldVisualIndex = Math.max(0, libraryItems.value.findIndex((clip) => clip.id === managerSelectedId.value))
+  const focusBeforeOperation = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null
+  managerBatchError.value = ''
+  const result = await runSerializedManagerOperation(
+    () => applyNativeHistoryBatch(target, action),
+    oldVisualIndex,
+  )
+  if (result.status === 'failed') {
+    managerBatchError.value = t('managerBatchFailed')
+    await nextTick()
+    if (action.type === 'delete' && focusBeforeOperation?.isConnected) {
+      focusBeforeOperation.focus()
+    } else {
+      const row = managerSelectedId.value
+        ? libraryContent.value?.querySelector<HTMLElement>(`[data-manager-clip-id="${managerSelectedId.value}"]`)
+        : null
+      ;(row ?? managerSearchInput.value)?.focus()
+    }
+    return
+  }
+  clearManagerSelection()
+  managerBulkToolbarKey.value += 1
+  if (action.type === 'delete') {
+    lastRemoved.value = null
+    if (undoTimer) clearTimeout(undoTimer)
+    undoTimer = undefined
+  }
+  focusCurrentManagerRow()
+}
+
+function beginCreateCollection() {
+  if (managerOperationBusy.value) return
+  collectionEditor.value = { mode: 'create', name: '' }
+  collectionError.value = ''
+  nextTick(() => document.querySelector<HTMLInputElement>('[data-testid="manager-collection-name"]')?.focus())
+}
+
+function beginRenameCollection(collection: Collection) {
+  if (managerOperationBusy.value) return
+  collectionEditor.value = { mode: 'rename', id: collection.id, name: collection.name }
+  collectionError.value = ''
+  nextTick(() => document.querySelector<HTMLInputElement>('[data-testid="manager-collection-name"]')?.focus())
+}
+
+function closeCollectionEditor() {
+  if (managerOperationBusy.value) return
+  collectionEditor.value = null
+  collectionError.value = ''
+}
+
+function updateCollectionEditorName(event: Event) {
+  if (!collectionEditor.value) return
+  collectionEditor.value = {
+    ...collectionEditor.value,
+    name: (event.target as HTMLInputElement).value,
+  }
+}
+
+async function saveCollectionEditor() {
+  const editor = collectionEditor.value
+  if (!editor || managerOperationBusy.value) return
+  let name: string
+  try {
+    name = normalizeCollectionName(editor.name, collections.value, editor.id)
+  } catch {
+    collectionError.value = t('managerCollectionNameInvalid')
+    return
+  }
+  collectionError.value = ''
+  const result = await runSerializedManagerOperation(() => editor.mode === 'create'
+    ? createNativeHistoryCollection(name)
+    : renameNativeHistoryCollection(editor.id!, name))
+  if (result.status === 'failed') {
+    collectionError.value = t('managerCollectionSaveFailed')
+    return
+  }
+  const saved = result.value
+  collections.value = editor.mode === 'create'
+    ? [...collections.value, saved].sort((left, right) => left.sortOrder - right.sortOrder)
+    : collections.value.map((collection) => collection.id === saved.id ? saved : collection)
+  collectionEditor.value = null
+}
+
+function requestDeleteCollection(collection: Collection, event?: Event) {
+  if (managerOperationBusy.value) return
+  collectionDeleteRestoreFocus = event?.currentTarget instanceof HTMLElement
+    ? event.currentTarget
+    : document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+  collectionDeleteTarget.value = collection
+  collectionError.value = ''
+  nextTick(() => document.querySelector<HTMLButtonElement>('[data-testid="manager-confirm-delete-collection"]')?.focus())
+}
+
+function closeDeleteCollection() {
+  if (managerOperationBusy.value) return
+  collectionDeleteTarget.value = null
+  const restoreTarget = collectionDeleteRestoreFocus
+  collectionDeleteRestoreFocus = null
+  nextTick(() => {
+    if (restoreTarget?.isConnected) restoreTarget.focus()
+  })
+}
+
+async function confirmDeleteCollection() {
+  const collection = collectionDeleteTarget.value
+  if (!collection || managerOperationBusy.value) return
+  const result = await runSerializedManagerOperation(() => deleteNativeHistoryCollection(collection.id))
+  if (result.status === 'failed') {
+    collectionError.value = t('managerCollectionDeleteFailed')
+    return
+  }
+  collections.value = collections.value.filter((candidate) => candidate.id !== collection.id)
+  if (managerCollectionFilter.value === `collection:${collection.id}`) {
+    managerCollectionFilter.value = 'unfiled'
+  }
+  collectionDeleteTarget.value = null
+  collectionDeleteRestoreFocus = null
+  clearManagerSelection()
+  managerBulkToolbarKey.value += 1
+  focusCurrentManagerRow()
+}
+
+function closeDeletePermanentSnippet() {
+  if (managerOperationBusy.value) return
+  permanentSnippetDeleteTarget.value = null
+  permanentSnippetDeleteError.value = ''
+  const restoreTarget = permanentSnippetDeleteRestoreFocus
+  permanentSnippetDeleteRestoreFocus = null
+  nextTick(() => {
+    if (restoreTarget?.isConnected) restoreTarget.focus()
+  })
+}
+
+async function confirmDeletePermanentSnippet() {
+  const target = permanentSnippetDeleteTarget.value
+  if (!target || managerOperationBusy.value) return
+  if (!nativeRuntime) {
+    permanentSnippetDeleteTarget.value = null
+    permanentSnippetDeleteRestoreFocus = null
+    deleteClipImmediately(target.id, 'manager')
+    lastRemoved.value = null
+    if (undoTimer) clearTimeout(undoTimer)
+    undoTimer = undefined
+    return
+  }
+
+  const oldVisualIndex = Math.max(
+    0,
+    libraryItems.value.findIndex((clip) => clip.id === target.id),
+  )
+  permanentSnippetDeleteError.value = ''
+  const result = await runSerializedManagerOperation(
+    () => applyNativeHistoryBatch(
+      { mode: 'ids', ids: [target.id] },
+      { type: 'delete' },
+    ),
+    oldVisualIndex,
+  )
+  if (result.status === 'failed') {
+    permanentSnippetDeleteError.value = t('managerPermanentDeleteFailed')
+    nextTick(() => {
+      document.querySelector<HTMLButtonElement>('[data-testid="manager-confirm-delete-permanent"]')?.focus()
+    })
+    return
+  }
+  permanentSnippetDeleteTarget.value = null
+  permanentSnippetDeleteRestoreFocus = null
+  lastRemoved.value = null
+  if (undoTimer) clearTimeout(undoTimer)
+  undoTimer = undefined
+  clearManagerSelection()
+  managerBulkToolbarKey.value += 1
+  focusCurrentManagerRow()
+}
+
+function openNewSnippet() {
+  if (managerOperationBusy.value || snippetLoading.value) return
+  snippetSessionGeneration += 1
+  snippetEditorKey.value += 1
+  snippetError.value = ''
+  snippetDraft.value = {
+    title: '',
+    content: '',
+    kind: 'text',
+    ...(managerCollectionFilter.value.startsWith('collection:')
+      ? { collectionId: managerCollectionFilter.value.slice('collection:'.length) }
+      : {}),
+  }
+}
+
+async function openSnippetEditor(clip: ClipboardItem) {
+  if (!clip.permanent || (clip.kind !== 'text' && clip.kind !== 'code') || snippetLoading.value) return
+  const generation = ++snippetSessionGeneration
+  snippetLoading.value = true
+  snippetError.value = ''
+  try {
+    const payload = await resolveClipPayload(clip)
+    if (generation !== snippetSessionGeneration
+      || appUnmounted
+      || currentView.value !== 'library'
+      || !payload
+      || !payload.permanent
+      || (payload.kind !== 'text' && payload.kind !== 'code')) return
+    snippetEditorKey.value += 1
+    snippetDraft.value = {
+      id: payload.id,
+      title: payload.title,
+      content: payload.content,
+      kind: payload.kind,
+      ...(payload.collectionId === undefined ? {} : { collectionId: payload.collectionId }),
+    }
+  } finally {
+    if (generation === snippetSessionGeneration) snippetLoading.value = false
+  }
+}
+
+function updateSnippetDraft(draft: SnippetDraft) {
+  snippetDraft.value = draft
+  snippetError.value = ''
+}
+
+function closeSnippetEditor() {
+  if (managerOperationBusy.value) return
+  snippetSessionGeneration += 1
+  snippetDraft.value = null
+  snippetError.value = ''
+}
+
+async function saveSnippet(draft: SnippetDraft) {
+  if (managerOperationBusy.value) return
+  snippetDraft.value = draft
+  snippetError.value = ''
+  const result = await runSerializedManagerOperation(() => saveNativeHistorySnippet(draft))
+  if (result.status === 'failed') {
+    snippetError.value = t('managerSnippetSaveFailed')
+    return
+  }
+  snippetSessionGeneration += 1
+  snippetDraft.value = null
+  managerSelectedId.value = libraryItems.value.some((clip) => clip.id === result.value.id)
+    ? result.value.id
+    : managerSelectedId.value
+  focusCurrentManagerRow()
+}
+
 function handleManagerSearchArrowDown(event: KeyboardEvent) {
   if (event.isComposing || isComposing.value) return
   event.preventDefault()
@@ -1468,6 +2924,8 @@ function handleManagerSearchArrowDown(event: KeyboardEvent) {
 
 function handleManagerRowKeydown(event: KeyboardEvent, index: number, clipId: string) {
   if (event.target !== event.currentTarget) return
+  if (event.isComposing || isComposing.value) return
+  const clip = libraryItems.value.find((item) => item.id === clipId)
   if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
     event.preventDefault()
     focusManagerIndex(index + (event.key === 'ArrowDown' ? 1 : -1))
@@ -1481,6 +2939,9 @@ function handleManagerRowKeydown(event: KeyboardEvent, index: number, clipId: st
     event.preventDefault()
     const clip = items.value.find((item) => item.id === clipId)
     if (clip) void pasteClip(clip)
+  } else if (event.key === ' ' && clip) {
+    event.preventDefault()
+    toggleManagerClipSelection(clip, event.shiftKey)
   } else if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'c') {
     event.preventDefault()
     const clip = items.value.find((item) => item.id === clipId)
@@ -1662,6 +3123,9 @@ function handleKeydown(event: KeyboardEvent) {
       if (pendingRetentionChange.value) closeRetentionChange()
       else if (clearHistoryOpen.value) closeClearHistory()
       else if (sensitiveAppsOpen.value) closeSensitiveApps()
+      else if (collectionDeleteTarget.value) closeDeleteCollection()
+      else if (permanentSnippetDeleteTarget.value) closeDeletePermanentSnippet()
+      else if (snippetDraft.value) closeSnippetEditor()
     }
     return
   }
@@ -1711,7 +3175,9 @@ function handleKeydown(event: KeyboardEvent) {
       closePreview()
     } else if (currentView.value === 'library') {
       event.preventDefault()
-      if (librarySection.value !== 'settings' && managerQuery.value) clearManagerSearch()
+      if (collectionEditor.value) closeCollectionEditor()
+      else if (librarySection.value !== 'settings' && managerSelectedCount.value > 0) clearManagerSelection()
+      else if (librarySection.value !== 'settings' && managerQuery.value) clearManagerSearch()
       else returnToQuickPanel()
     } else if (!event.shiftKey && (query.value || activeFilter.value !== 'all')) {
       event.preventDefault()
@@ -1755,23 +3221,24 @@ function handleKeydown(event: KeyboardEvent) {
     return
   }
 
+  if (currentView.value === 'library'
+    && librarySection.value !== 'settings'
+    && event.ctrlKey
+    && !event.altKey
+    && !event.shiftKey
+    && event.key.toLocaleLowerCase() === 'a'
+    && !preservesNativeManagerSelectionKeys(event.target)) {
+    event.preventDefault()
+    selectAllManagerMatches()
+    return
+  }
+
   if (currentView.value !== 'quick') return
 
   const eventTarget = event.target instanceof HTMLElement ? event.target : null
   const resultPrimary = eventTarget?.closest<HTMLElement>('.clip-primary') ?? null
   const isSearchTarget = eventTarget === searchInput.value
   const isResultNavigationTarget = isSearchTarget || resultPrimary !== null
-
-  if (resultPrimary
-    && event.ctrlKey
-    && !event.altKey
-    && !event.shiftKey
-    && event.key.toLocaleLowerCase() === 'c'
-    && selectedClip.value) {
-    event.preventDefault()
-    void copyClip(selectedClip.value)
-    return
-  }
 
   const hasExactDirectPasteModifier = event.altKey !== event.ctrlKey
     && !event.shiftKey
@@ -1799,12 +3266,6 @@ function handleKeydown(event: KeyboardEvent) {
   if (resultPrimary && (event.key === 'Home' || event.key === 'End')) {
     event.preventDefault()
     selectIndexWithKeyboard(event.key === 'Home' ? 0 : visibleItems.value.length - 1, true)
-    return
-  }
-
-  if (resultPrimary && event.key === 'Delete') {
-    event.preventDefault()
-    deleteSelectedClip()
     return
   }
 
@@ -1868,6 +3329,19 @@ async function connectSessionBridges() {
       currentView.value = 'quick'
       windowModeTransitioning.value = false
       resetQuickSession()
+      const sessionId = session?.sessionId
+      if (typeof sessionId !== 'number' || !Number.isSafeInteger(sessionId) || sessionId <= 0) return
+      const frameGeneration = ++quickFirstFrameGeneration
+      void nextTick().then(() => new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => resolve())
+      })).then(() => {
+        if (appUnmounted
+          || frameGeneration !== quickFirstFrameGeneration
+          || sessionId !== activeQuickSessionId
+          || sessionId === quickFirstFrameAcknowledgedSessionId) return
+        quickFirstFrameAcknowledgedSessionId = sessionId
+        return acknowledgeQuickPanelFirstFrame(sessionId)
+      }).catch(() => undefined)
     })),
     connectEventWithRetry(() => connectPasteTarget(applyPasteTarget)),
   ])
@@ -1906,6 +3380,7 @@ async function connectDesktopBridges() {
       setCaptureExclusions(excludedApps.value),
       setElevatedPasteEnabled(elevatedPasteEnabled.value),
       setQuickPanelPinned(quickPanelPinned.value),
+      setNativeClipboardOcrEnabled(ocrEnabled.value),
     ])
     const [capturePausedApplied, captureProtectionApplied, exclusionsApplied, elevatedPasteApplied, quickPanelPinnedApplied] = initializationResults
     // 启动阶段失败时，回到本进程已知的原生初始状态，避免 UI 与 Windows 状态相反。
@@ -1913,6 +3388,7 @@ async function connectDesktopBridges() {
     if (!captureProtectionApplied) hideDuringSharing.value = false
     if (!elevatedPasteApplied) elevatedPasteEnabled.value = true
     if (!quickPanelPinnedApplied) quickPanelPinned.value = false
+    // OCR 是隐私选择：原生同步失败时保留本地意图，尤其不能把显式关闭改回开启。
     if (!exclusionsApplied) {
       excludedApps.value = []
       excludedAppsSyncState.confirmed = []
@@ -1922,6 +3398,7 @@ async function connectDesktopBridges() {
     // 先让初始化造成的响应式变更在 nativeSettingsReady=false 时完成，避免被误判为用户操作并重复调用。
     await nextTick()
     nativeSettingsReady.value = true
+    await refreshManagerCollections()
     shortcutApplyInFlight.value = true
     try {
       if (!await setGlobalShortcut(globalShortcut.value)) {
@@ -1940,12 +3417,15 @@ async function connectDesktopBridges() {
     } finally {
       shortcutApplyInFlight.value = false
     }
-    const historyGeneration = ++historyLoadGeneration
-    const loadedHistory = await loadHistoryWithRetry()
-    if (appUnmounted || historyGeneration !== historyLoadGeneration) return
-    if (loadedHistory !== null) {
-      await applyLoadedHistory(loadedHistory)
-    } else {
+    const policySynced = await applyNativeHistoryMutation({
+      upserts: [],
+      deleteIds: [],
+      policy: currentHistoryPolicy(),
+    })
+    await refreshStorageState()
+    const loadedHistory = policySynced ? await runNativeHistoryQuery(false) : false
+    if (appUnmounted) return
+    if (!loadedHistory) {
       // 未知的数据库状态必须保持只读，避免本次运行中的新捕获覆盖既有历史。
       historyState.value = 'error'
     }
@@ -2026,6 +3506,10 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   appUnmounted = true
+  quickFirstFrameGeneration += 1
+  invalidateStoredOcrPump()
+  ocrCoordinator.shutdown()
+  if (nativeRuntime) void invalidateNativeClipboardOcr()
   window.removeEventListener('keydown', handleKeydown)
   window.removeEventListener('blur', handleWindowBlur)
   window.removeEventListener('resize', handleContextMenuScroll)
@@ -2140,9 +3624,9 @@ onBeforeUnmount(() => {
             :aria-activedescendant="previewId === null && selectedClip ? clipResultId(selectedClip.id) : undefined"
             :aria-label="t('searchClipboard')"
             :placeholder="t('searchClipboard')"
-            @compositionstart="isComposing = true"
-            @compositionend="isComposing = false"
-            @blur="isComposing = false"
+            @compositionstart="startSearchComposition('quick')"
+            @compositionend="finishSearchComposition('quick')"
+            @blur="cancelSearchComposition('quick')"
           />
           <button v-if="query" class="clear-search" type="button" :aria-label="t('clearSearch')" @click="clearSearchAndFocus()">
             <X :size="15" />
@@ -2187,20 +3671,39 @@ onBeforeUnmount(() => {
                     <p>{{ previewClip.sourceApp }} · {{ formatRelativeTime(previewClip.copiedAt, relativeTimeNow, locale) }}</p>
                   </div>
                 </div>
+                <div v-if="previewClip.formats?.length" class="format-badges" :aria-label="previewClip.formats.join(', ')">
+                  <span v-for="format in previewClip.formats" :key="format" class="format-badge">{{ format.toUpperCase() }}</span>
+                </div>
+                <p v-if="previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
+                  {{ t('omittedFormatsWarning', { formats: previewClip.omittedFormats.map((format) => format.toUpperCase()).join(', ') }) }}
+                </p>
                 <img v-if="previewClip.kind === 'image'" class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
-                <pre v-else-if="previewClip.kind === 'code'" class="preview-code">{{ previewClip.content }}</pre>
-                <a v-else-if="previewClip.kind === 'link'" class="preview-link" :href="previewClip.content" target="_blank" rel="noreferrer">{{ previewClip.content }}</a>
+                <CodePreview
+                  v-else-if="previewClip.kind === 'code'"
+                  class="preview-code"
+                  :code="previewClip.content"
+                  :language="previewCodeLanguage"
+                />
+                <ul v-else-if="previewClip.kind === 'file'" data-testid="preview-file-list" class="preview-file-list">
+                  <li v-for="file in previewClip.files" :key="file.path" :data-file-exists="String(file.exists)" :class="{ 'is-missing': !file.exists }">
+                    <span class="preview-file-name">{{ file.name }}</span>
+                    <span class="preview-file-status">{{ file.exists ? t('fileAvailable') : t('fileMissing') }}</span>
+                    <span class="preview-file-path">{{ file.path }}</span>
+                  </li>
+                </ul>
+                <p v-else-if="previewClip.kind === 'link'" class="preview-link">{{ previewClip.content }}</p>
                 <p v-else class="preview-copy">{{ previewClip.content }}</p>
               </div>
               <div class="preview-actions">
-                <button class="secondary-button" type="button" @click="pinClip(previewClip.id, 'quick')">
-                  <Pin :size="16" :fill="previewClip.pinned ? 'currentColor' : 'none'" />
-                  {{ previewClip.pinned ? t('unpin') : t('pinClip') }}
-                </button>
-                <button class="secondary-button" type="button" @click="copyClip(previewClip)">
-                  <Copy :size="16" /> {{ t('copyContent') }}
-                </button>
-                <button ref="previewPasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight" @click="pasteClip(previewClip)">
+                <template v-if="defaultPasteMode(previewClip) === 'preserve'">
+                  <button ref="previewPasteButton" data-testid="preview-paste-preserve" class="primary-button" type="button" :disabled="pasteInFlight" @click="pasteClip(previewClip, 'preserve')">
+                    {{ t('pastePreserve') }}
+                  </button>
+                  <button data-testid="preview-paste-plain" class="secondary-button" type="button" :disabled="pasteInFlight" @click="pasteClip(previewClip, 'plain')">
+                    {{ t('pastePlain') }}
+                  </button>
+                </template>
+                <button v-else ref="previewPasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight || getClipActions(previewClip, 'quick')[0]?.disabled" @click="pasteClip(previewClip)">
                   {{ t('paste') }}
                 </button>
               </div>
@@ -2208,6 +3711,7 @@ onBeforeUnmount(() => {
 
             <div v-else key="list" class="results-panel" :aria-busy="historyState === 'loading'">
               <p v-if="historyState === 'ready'" data-testid="quick-results-status" class="selection-announcement sr-only" aria-live="polite" aria-atomic="true">{{ selectionAnnouncement }}</p>
+              <p v-if="nativeRuntime && historyState === 'ready'" data-testid="quick-history-page-status" class="sr-only">{{ t('showingHistoryPage', { loaded: visibleItems.length, total: nativeHistoryTotalCount }) }}</p>
               <div v-if="historyState === 'loading'" data-testid="history-loading" class="empty-state history-state" role="status">
                 <span class="history-loader" aria-hidden="true"><span></span><span></span><span></span></span>
                 <h2>{{ t('historyLoading') }}</h2>
@@ -2244,16 +3748,20 @@ onBeforeUnmount(() => {
                   >
                     <span v-if="index < DIRECT_PASTE_ITEM_COUNT" class="quick-number" aria-hidden="true">{{ directPasteLabel(index) }}</span>
                     <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                      <img v-if="clip.kind === 'image'" :src="clip.imageUrl" alt="" />
+                      <img v-if="clip.kind === 'image' && clip.imageUrl" :src="clip.imageUrl" alt="" />
                       <component v-else :is="kindIcon(clip.kind)" :size="18" />
                     </span>
                     <span class="clip-copy">
                       <span class="clip-title">
-                        <template v-for="(segment, segmentIndex) in highlightSegments(clip.title)" :key="`title-${segmentIndex}`">
-                          <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
-                          <template v-else>{{ segment.text }}</template>
-                        </template>
-                        <span v-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t('pinyinMatch') }}</span>
+                        <span class="clip-title-text">
+                          <template v-for="(segment, segmentIndex) in highlightSegments(clip.title)" :key="`title-${segmentIndex}`">
+                            <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
+                            <template v-else>{{ segment.text }}</template>
+                          </template>
+                        </span>
+                        <span v-if="isOcrOnlyMatch(clip)" class="ocr-match">{{ t('ocrMatch') }}</span>
+                        <span v-else-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span>
+                        <span v-if="hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span>
                       </span>
                       <span class="clip-preview">
                         <template v-for="(segment, segmentIndex) in highlightSegments(searchPreviewText(clip.content))" :key="`preview-${segmentIndex}`">
@@ -2282,21 +3790,17 @@ onBeforeUnmount(() => {
                   </button>
                   <div class="row-actions">
                     <button :data-testid="`preview-clip-${clip.id}`" type="button" :tabindex="selectedId === clip.id ? 0 : -1" :aria-label="t('preview')" :title="t('preview')" @focus="selectedId = clip.id" @pointerdown="selectedId = clip.id" @click="openPreview(clip.id)"><Eye :size="15" /></button>
-                    <button
-                      :data-testid="`pin-clip-${clip.id}`"
-                      type="button"
-                      :tabindex="selectedId === clip.id ? 0 : -1"
-                      :aria-label="clip.pinned ? t('unpin') : t('pinClip')"
-                      :aria-pressed="clip.pinned"
-                      :class="{ active: clip.pinned }"
-                      @focus="selectedId = clip.id"
-                      @pointerdown="selectedId = clip.id"
-                      @click="pinClip(clip.id, 'quick')"
-                    ><Pin :size="15" :fill="clip.pinned ? 'currentColor' : 'none'" /></button>
-                    <button :data-testid="`delete-clip-${clip.id}`" type="button" :tabindex="selectedId === clip.id ? 0 : -1" :aria-label="t('deleteClip')" :title="t('deleteClip')" @focus="selectedId = clip.id" @pointerdown="selectedId = clip.id" @click="deleteClip(clip.id, 'quick')"><Trash2 :size="15" /></button>
                   </div>
                 </article>
-              </div>
+                  <button
+                    v-if="nativeRuntime && nativeHistoryNextCursor"
+                    data-testid="history-load-more"
+                    class="secondary-button history-load-more"
+                    type="button"
+                    :disabled="nativeHistoryPageLoading"
+                    @click="loadMoreNativeHistory"
+                  >{{ nativeHistoryPageLoading ? t('loadingMoreHistory') : t('loadMoreHistory') }}</button>
+                </div>
               </template>
 
               <div v-else-if="items.length === 0 && !query && activeFilter === 'all'" data-testid="empty-history" class="empty-state">
@@ -2341,10 +3845,31 @@ onBeforeUnmount(() => {
             <span>{{ t('productName') }}</span>
           </div>
           <nav :aria-label="t('managerCategories')">
-            <button data-testid="library-section-all" :class="{ active: librarySection === 'all' }" type="button" :title="t('allHistory')" :aria-current="librarySection === 'all' ? 'page' : undefined" @click="selectLibrarySection('all')"><Clock3 :size="17" />{{ t('allHistory') }}<span>{{ items.length }}</span></button>
-            <button data-testid="library-section-pinned" :class="{ active: librarySection === 'pinned' }" type="button" :title="t('pinned')" :aria-current="librarySection === 'pinned' ? 'page' : undefined" @click="selectLibrarySection('pinned')"><Pin :size="17" />{{ t('pinned') }}<span>{{ pinnedCount }}</span></button>
-            <button data-testid="library-section-images" :class="{ active: librarySection === 'images' }" type="button" :title="t('images')" :aria-current="librarySection === 'images' ? 'page' : undefined" @click="selectLibrarySection('images')"><ImageIcon :size="17" />{{ t('images') }}<span>{{ imageCount }}</span></button>
+            <button data-testid="library-section-all" :class="{ active: librarySection === 'all' }" type="button" :title="t('allHistory')" :aria-current="librarySection === 'all' ? 'page' : undefined" @click="selectLibrarySection('all')"><Clock3 :size="17" />{{ t('allHistory') }}<span>{{ nativeRuntime ? nativeHistoryTotalCount : items.length }}</span></button>
+            <button data-testid="library-section-pinned" :class="{ active: librarySection === 'pinned' }" type="button" :title="t('pinned')" :aria-current="librarySection === 'pinned' ? 'page' : undefined" @click="selectLibrarySection('pinned')"><Pin :size="17" />{{ t('pinned') }}<span v-if="!nativeRuntime">{{ pinnedCount }}</span></button>
+            <button data-testid="library-section-images" :class="{ active: librarySection === 'images' }" type="button" :title="t('images')" :aria-current="librarySection === 'images' ? 'page' : undefined" @click="selectLibrarySection('images')"><ImageIcon :size="17" />{{ t('images') }}<span v-if="!nativeRuntime">{{ imageCount }}</span></button>
           </nav>
+          <section v-if="nativeRuntime" data-testid="manager-collections" class="manager-collections" :aria-label="t('managerCollections')">
+            <header>
+              <strong>{{ t('managerCollections') }}</strong>
+              <button data-testid="manager-create-collection" type="button" :disabled="managerOperationBusy" @click="beginCreateCollection">{{ t('managerNewCollection') }}</button>
+            </header>
+            <nav :aria-label="t('managerCollectionFilters')">
+              <button data-testid="manager-collection-all" type="button" :aria-current="managerCollectionFilter === 'any' ? 'page' : undefined" @click="selectManagerCollection('any')">{{ t('managerAllCollections') }}</button>
+              <button data-testid="manager-collection-unfiled" type="button" :aria-current="managerCollectionFilter === 'unfiled' ? 'page' : undefined" @click="selectManagerCollection('unfiled')">{{ t('managerUnfiled') }}</button>
+              <div v-for="collection in collections" :key="collection.id" class="manager-collection-row">
+                <button :data-testid="`manager-collection-${collection.id}`" type="button" :aria-current="managerCollectionFilter === `collection:${collection.id}` ? 'page' : undefined" @click="selectManagerCollection(`collection:${collection.id}`)">{{ collection.name }}</button>
+                <button :data-testid="`manager-rename-collection-${collection.id}`" type="button" :disabled="managerOperationBusy" :aria-label="t('managerRenameCollection', { name: collection.name })" @click="beginRenameCollection(collection)">{{ t('managerEdit') }}</button>
+                <button :data-testid="`manager-delete-collection-${collection.id}`" type="button" :disabled="managerOperationBusy" :aria-label="t('managerDeleteCollectionLabel', { name: collection.name })" @click="requestDeleteCollection(collection, $event)">{{ t('managerDeleteShort') }}</button>
+              </div>
+            </nav>
+            <form v-if="collectionEditor" data-testid="manager-collection-editor" @submit.prevent="saveCollectionEditor">
+              <input data-testid="manager-collection-name" type="text" :value="collectionEditor.name" :disabled="managerOperationBusy" :aria-label="t('managerCollectionName')" @input="updateCollectionEditorName" />
+              <button data-testid="manager-save-collection" type="submit" :disabled="managerOperationBusy" @click.prevent="saveCollectionEditor">{{ t('managerSave') }}</button>
+              <button data-testid="manager-cancel-collection" type="button" :disabled="managerOperationBusy" @click="closeCollectionEditor">{{ t('cancel') }}</button>
+            </form>
+            <p v-if="collectionError" data-testid="manager-collection-error" role="alert">{{ collectionError }}</p>
+          </section>
           <div class="sidebar-divider"></div>
           <nav :aria-label="t('appSettings')">
             <button data-testid="library-section-settings" :class="{ active: librarySection === 'settings' }" type="button" :title="t('settings')" :aria-current="librarySection === 'settings' ? 'page' : undefined" @click="selectLibrarySection('settings')"><Settings2 :size="17" />{{ t('settings') }}</button>
@@ -2373,30 +3898,52 @@ onBeforeUnmount(() => {
 
           <section v-if="librarySection !== 'settings'" ref="libraryContent" class="library-content">
             <div class="library-stats">
-              <article><Database :size="18" /><div><strong>{{ items.length }}</strong><span>{{ t('historyItems') }}</span></div></article>
+              <article><Database :size="18" /><div><strong>{{ nativeRuntime ? nativeHistoryTotalCount : items.length }}</strong><span>{{ t('historyItems') }}</span></div></article>
               <article><Pin :size="18" /><div><strong>{{ pinnedCount }}</strong><span>{{ t('longTermPinned') }}</span></div></article>
               <article><ShieldCheck :size="18" /><div><strong>{{ t('local') }}</strong><span>{{ t('dataLocation') }}</span></div></article>
             </div>
             <div class="manager-toolbar">
               <div class="manager-search">
                 <Search :size="14" aria-hidden="true" />
-                <input ref="managerSearchInput" v-model="managerQuery" data-testid="manager-search-input" type="search" autocomplete="off" spellcheck="false" :aria-label="t('searchManager')" :placeholder="t('searchManager')" @keydown.down="handleManagerSearchArrowDown" @compositionstart="isComposing = true" @compositionend="isComposing = false" @blur="isComposing = false" />
+                <input ref="managerSearchInput" v-model="managerQuery" data-testid="manager-search-input" type="search" autocomplete="off" spellcheck="false" :aria-label="t('searchManager')" :placeholder="t('searchManager')" @keydown.down="handleManagerSearchArrowDown" @compositionstart="startSearchComposition('manager')" @compositionend="finishSearchComposition('manager')" @blur="cancelSearchComposition('manager')" />
                 <button v-if="managerQuery" data-testid="clear-manager-search" class="manager-search-clear" type="button" :aria-label="t('clearSearch')" @mousedown.prevent @click="clearManagerSearch"><X :size="13" /></button>
               </div>
-              <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? t('showingItems', { count: libraryItems.length }) : '' }}</span>
+              <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
+              <button v-if="nativeRuntime" data-testid="new-snippet" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet">{{ t('managerNewSnippet') }}</button>
               <button
-                v-if="librarySection === 'all'"
+                v-if="librarySection === 'all' && !nativeRuntime"
                 ref="clearHistoryTrigger"
                 data-testid="clear-history"
                 class="manager-clear"
                 type="button"
-                :disabled="unpinnedCount === 0"
+                :disabled="ordinaryHistoryCount === 0"
                 @click="requestClearHistory"
               >
-                <Trash2 :size="14" />{{ t('clearUnpinned') }}
+                <Trash2 :size="14" />{{ ordinaryClearLabel }}
               </button>
             </div>
-            <div class="manager-list" role="list" :aria-label="t('clipboardResults')">
+            <ManagerFilters
+              v-model:kinds="managerKinds"
+              v-model:source-app="managerSourceApp"
+              v-model:pinned="managerPinned"
+              :locale="locale"
+            />
+            <ManagerBulkToolbar
+              v-if="nativeRuntime"
+              :key="managerBulkToolbarKey"
+              :locale="locale"
+              :selection-state="managerBulkSelectionState"
+              :selected-count="managerSelectedCount"
+              :collections="collections"
+              :busy="managerSelectionBusy"
+              :error-message="managerBatchError"
+              :includes-pinned="managerSelectionIncludesPinned"
+              :includes-permanent="managerSelectionIncludesPermanent"
+              @select-all="selectAllManagerMatches"
+              @clear-selection="clearManagerSelection"
+              @apply="applyManagerBatch"
+            />
+            <div class="manager-list" role="listbox" aria-multiselectable="true" :aria-label="t('clipboardResults')">
               <div v-if="historyState === 'loading'" class="empty-state compact" role="status">
                 <span class="history-loader compact" aria-hidden="true"><span></span><span></span><span></span></span>
                 <h2>{{ t('historyLoading') }}</h2>
@@ -2413,29 +3960,40 @@ onBeforeUnmount(() => {
                 :key="clip.id"
                 :data-manager-clip-id="clip.id"
                 class="manager-row"
-                role="listitem"
+                role="option"
                 :tabindex="managerSelectedId === clip.id ? 0 : -1"
                 :aria-current="managerSelectedId === clip.id ? 'true' : undefined"
+                :aria-selected="managerClipSelected(clip)"
                 :aria-label="`${clip.title}, ${clip.sourceApp}`"
                 @focus="managerSelectedId = clip.id"
+                @click="handleManagerRowClick($event, clip)"
                 @keydown="handleManagerRowKeydown($event, index, clip.id)"
               >
                 <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                  <img v-if="clip.kind === 'image'" :src="clip.imageUrl" alt="" />
+                  <img v-if="clip.kind === 'image' && clip.imageUrl" :src="clip.imageUrl" alt="" />
                   <component v-else :is="kindIcon(clip.kind)" :size="17" />
                 </span>
                 <div>
-                  <strong><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template><span v-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t('pinyinMatch') }}</span></strong>
-                  <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p>
+                  <strong><span class="manager-title-text"><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="isOcrOnlyMatch(clip, true)" class="ocr-match">{{ t('ocrMatch') }}</span><span v-else-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-if="hasMissingFiles(clip)" :data-testid="`manager-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span></strong>
+                  <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template><span v-if="clip.kind === 'image' && clip.ocrStatus" :data-testid="`manager-ocr-status-${clip.id}`" class="ocr-status">{{ ocrStatusLabel(clip) }}</span></p>
                 </div>
                 <span class="manager-source"><SourceAppIcon class="manager-app-icon" :source="clip.sourceApp" :icon="clip.sourceAppIcon" :fallback-color="clip.color" /><span><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.sourceApp)" :key="`manager-source-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span></span>
                 <span class="manager-time">{{ formatRelativeTime(clip.copiedAt, relativeTimeNow, locale) }}</span>
                 <div class="manager-actions">
+                  <button v-if="clip.permanent && (clip.kind === 'text' || clip.kind === 'code')" :data-testid="`manager-edit-snippet-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="t('managerEditSnippet', { title: clip.title })" @focus="managerSelectedId = clip.id" @click="openSnippetEditor(clip)">{{ t('managerEdit') }}</button>
                   <button :data-testid="`manager-copy-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${t('copyContent')}: ${clip.title}`" :title="t('copyContent')" @focus="managerSelectedId = clip.id" @click="copyClip(clip)"><Copy :size="15" /></button>
                   <button :data-testid="`manager-pin-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${clip.pinned ? t('unpin') : t('pinClip')}: ${clip.title}`" :aria-pressed="clip.pinned" @focus="managerSelectedId = clip.id" @click="pinClip(clip.id, 'manager')"><Pin :size="15" :fill="clip.pinned ? 'currentColor' : 'none'" /></button>
                   <button :data-testid="`manager-delete-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${t('deleteClip')}: ${clip.title}`" @focus="managerSelectedId = clip.id" @click="deleteClip(clip.id, 'manager')"><Trash2 :size="15" /></button>
                 </div>
               </article>
+              <button
+                v-if="nativeRuntime && nativeHistoryNextCursor"
+                data-testid="history-load-more"
+                class="secondary-button history-load-more"
+                type="button"
+                :disabled="nativeHistoryPageLoading"
+                @click="loadMoreNativeHistory"
+              >{{ nativeHistoryPageLoading ? t('loadingMoreHistory') : t('loadMoreHistory') }}</button>
               <div v-if="historyState === 'ready' && libraryItems.length === 0" data-testid="manager-empty-state" class="empty-state compact"><component :is="managerEmptyState.icon" :size="22" /><h2>{{ managerEmptyState.title }}</h2><p>{{ managerEmptyState.hint }}</p><button v-if="managerEmptyState.canClear" data-testid="clear-empty-manager-search" class="secondary-button" type="button" @click="clearManagerSearch">{{ t('clearSearch') }}</button></div>
             </div>
           </section>
@@ -2450,11 +4008,29 @@ onBeforeUnmount(() => {
             </article>
             <article class="setting-group">
               <div class="setting-heading"><ShieldCheck :size="18" /><div><h2>{{ t('privacy') }}</h2><p>{{ t('privacyDescription') }}</p></div></div>
-              <label class="setting-row"><span><strong>{{ t('retention') }}</strong><small id="retention-description">{{ historyState === 'loading' ? t('retentionUnavailableLoading') : historyState === 'error' ? t('retentionUnavailableError') : t('retentionDescription') }}</small></span><select ref="retentionSelect" data-testid="retention-select" :value="retentionDays" :disabled="historyState !== 'ready'" aria-describedby="retention-description" @change="requestRetentionChange"><option value="7">{{ t('daysOption', { count: 7 }) }}</option><option value="30">{{ t('daysOption', { count: 30 }) }}</option><option value="90">{{ t('daysOption', { count: 90 }) }}</option><option value="forever">{{ t('forever') }}</option></select></label>
+              <label class="setting-row"><span><strong>{{ t('retention') }}</strong><small id="retention-description">{{ historyState === 'loading' ? t('retentionUnavailableLoading') : historyState === 'error' ? t('retentionUnavailableError') : t('retentionDescription') }}</small></span><select ref="retentionSelect" data-testid="retention-select" :value="retentionSelectValue" :disabled="historyState !== 'ready' || busyStorageOperation !== null" aria-describedby="retention-description" @change="requestRetentionChange"><option v-if="customRetentionDays !== null" :value="String(customRetentionDays)">{{ locale === 'zh-CN' ? `当前自定义 ${customRetentionDays} 天` : `Current custom value: ${customRetentionDays} days` }}</option><option value="7">{{ t('daysOption', { count: 7 }) }}</option><option value="30">{{ t('daysOption', { count: 30 }) }}</option><option value="90">{{ t('daysOption', { count: 90 }) }}</option><option value="forever">{{ t('forever') }}</option></select></label>
               <label class="setting-row"><span><strong>{{ t('captureProtection') }}</strong><small>{{ t('captureProtectionDescription') }}</small></span><input v-model="hideDuringSharing" data-testid="capture-protection-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
+              <label v-if="nativeRuntime" class="setting-row"><span><strong>{{ t('localImageOcr') }}</strong><small id="ocr-setting-description">{{ t('localImageOcrDescription') }}</small></span><input v-model="ocrEnabled" data-testid="ocr-enabled-toggle" class="switch" type="checkbox" :disabled="!nativeSettingsReady" aria-describedby="ocr-setting-description" /></label>
               <label class="setting-row"><span><strong>{{ t('elevatedPaste') }}</strong><small>{{ t('elevatedPasteDescription') }}</small></span><input v-model="elevatedPasteEnabled" data-testid="elevated-paste-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
               <button ref="sensitiveAppsTrigger" data-testid="open-sensitive-apps" class="setting-row action" type="button" :disabled="nativeRuntime && !nativeSettingsReady" @click="openSensitiveApps"><span><strong>{{ t('excludeSensitiveApps') }}</strong><small>{{ t('excludedAppsCount', { count: excludedApps.length }) }}</small></span><span class="select-button">{{ t('manage') }}</span></button>
             </article>
+            <StorageManager
+              v-if="nativeRuntime"
+              :locale="locale"
+              :stats="storageStats"
+              :health="historyHealth"
+              :prepared-restore="preparedRestore"
+              :busy-operation="busyStorageOperation"
+              :policy-editable="historyState === 'ready' && busyStorageOperation === null"
+              :status-message="storageStatusMessage"
+              @backup="createHistoryBackup"
+              @prepare-restore="prepareHistoryRestore"
+              @commit-restore="commitHistoryRestore"
+              @discard-restore="discardHistoryRestore"
+              @update-policy="updateHistoryCapacityPolicy"
+              @compact="compactHistoryDatabase"
+              @refresh="refreshHistoryStorage"
+            />
             <article class="update-card" :aria-busy="updateBusy">
               <Download :size="18" aria-hidden="true" />
               <div class="update-copy">
@@ -2493,12 +4069,54 @@ onBeforeUnmount(() => {
         :y="clipContextMenu.y"
         :paste-disabled="pasteInFlight"
         @close="closeClipContextMenu"
-        @paste="runContextPaste"
-        @copy="runContextCopy"
+        @action="runContextAction"
         @preview="runContextPreview"
-        @pin="runContextPin"
-        @delete="runContextDelete"
       />
+    </Transition>
+
+    <Transition name="modal">
+      <SnippetEditor
+        v-if="snippetDraft"
+        :key="snippetEditorKey"
+        :locale="locale"
+        :model-value="snippetDraft"
+        :collections="collections"
+        :busy="managerOperationBusy"
+        :error-message="snippetError"
+        @update:model-value="updateSnippetDraft"
+        @save="saveSnippet"
+        @cancel="closeSnippetEditor"
+      />
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="collectionDeleteTarget" class="settings-modal-backdrop" @click.self="closeDeleteCollection">
+        <section data-testid="manager-collection-delete-confirmation" class="settings-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="manager-collection-delete-title" aria-describedby="manager-collection-delete-description" @keydown="trapModalFocus">
+          <header>
+            <div><Trash2 :size="19" /><span><strong id="manager-collection-delete-title">{{ t('managerDeleteCollectionTitle') }}</strong><small id="manager-collection-delete-description">{{ t('managerDeleteCollectionDescription', { name: collectionDeleteTarget.name }) }}</small></span></div>
+          </header>
+          <div class="confirm-actions">
+            <button data-testid="manager-cancel-delete-collection" class="secondary-button" type="button" :disabled="managerOperationBusy" @click="closeDeleteCollection">{{ t('cancel') }}</button>
+            <button data-testid="manager-confirm-delete-collection" class="danger-button" type="button" :disabled="managerOperationBusy" @click="confirmDeleteCollection">{{ t('managerDeleteCollectionConfirm') }}</button>
+          </div>
+          <p v-if="collectionError" data-testid="manager-collection-delete-error" role="alert">{{ collectionError }}</p>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="modal">
+      <div v-if="permanentSnippetDeleteTarget" class="settings-modal-backdrop" @click.self="closeDeletePermanentSnippet">
+        <section data-testid="manager-permanent-delete-confirmation" class="settings-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="manager-permanent-delete-title" aria-describedby="manager-permanent-delete-description" @keydown="trapModalFocus">
+          <header>
+            <div><Trash2 :size="19" /><span><strong id="manager-permanent-delete-title">{{ t('managerPermanentDeleteTitle') }}</strong><small id="manager-permanent-delete-description">{{ t('managerPermanentDeleteDescription', { title: permanentSnippetDeleteTarget.title }) }}</small></span></div>
+          </header>
+          <div class="confirm-actions">
+            <button data-testid="manager-cancel-delete-permanent" class="secondary-button" type="button" :disabled="managerOperationBusy" @click="closeDeletePermanentSnippet">{{ t('cancel') }}</button>
+            <button data-testid="manager-confirm-delete-permanent" class="danger-button" type="button" :disabled="managerOperationBusy" @click="confirmDeletePermanentSnippet">{{ t('managerConfirmDelete') }}</button>
+          </div>
+          <p v-if="permanentSnippetDeleteError" data-testid="manager-permanent-delete-error" role="alert">{{ permanentSnippetDeleteError }}</p>
+        </section>
+      </div>
     </Transition>
 
     <Transition name="modal">
@@ -2528,7 +4146,7 @@ onBeforeUnmount(() => {
       <div v-if="clearHistoryOpen" class="settings-modal-backdrop" @click.self="closeClearHistory">
         <section data-testid="clear-history-dialog" class="settings-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="clear-history-title" aria-describedby="clear-history-description" @keydown="trapModalFocus">
           <header>
-            <div><Trash2 :size="19" /><span><strong id="clear-history-title">{{ t('clearHistoryTitle') }}</strong><small id="clear-history-description">{{ t('clearHistoryDescription', { count: unpinnedCount }) }}</small></span></div>
+            <div><Trash2 :size="19" /><span><strong id="clear-history-title">{{ t('clearHistoryTitle') }}</strong><small id="clear-history-description">{{ ordinaryClearDescription }}</small></span></div>
           </header>
           <div class="confirm-actions">
             <button ref="clearHistoryCancel" data-testid="cancel-clear-history" class="secondary-button" type="button" @click="closeClearHistory">{{ t('cancel') }}</button>

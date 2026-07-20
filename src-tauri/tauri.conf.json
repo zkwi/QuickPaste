@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "QuickPaste",
-  "version": "0.2.0",
+  "version": "0.6.0",
   "identifier": "com.quickpaste.desktop",
   "build": {
     "frontendDist": "../dist",
@@ -35,7 +35,10 @@
     "active": true,
     "targets": ["nsis"],
     "resources": {
-      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md"
+      "../THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../THIRD_PARTY_LICENSES_NPM.md": "THIRD_PARTY_LICENSES_NPM.md",
+      "../THIRD_PARTY_LICENSES_RUST.md": "THIRD_PARTY_LICENSES_RUST.md",
+      "../THIRD_PARTY_LICENSES_NATIVE.md": "THIRD_PARTY_LICENSES_NATIVE.md"
     },
     "publisher": "QuickPaste",
     "icon": [

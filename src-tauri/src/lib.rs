@@ -1,4 +1,32 @@
+mod clipboard_formats;
+mod history;
+mod metrics;
+mod ocr;
+mod system_actions;
 mod updater;
+
+/// 仅供仓库内 release 基准复用生产数据库路径；不会注册为 Tauri IPC。
+#[doc(hidden)]
+pub mod history_benchmark {
+    use rusqlite::Connection;
+
+    pub use crate::history::{
+        CapacityPolicy, ClipboardFile, ClipboardFormat, CollectionScope, HistoryItem,
+        HistoryMutation, HistoryPage, HistoryQuery,
+    };
+
+    pub fn initialize(connection: &mut Connection) -> Result<(), String> {
+        crate::history::initialize_history_database(connection)
+    }
+
+    pub fn apply(connection: &mut Connection, mutation: HistoryMutation) -> Result<(), String> {
+        crate::history::apply_history_mutation(connection, mutation).map(|_| ())
+    }
+
+    pub fn query(connection: &Connection, query: HistoryQuery) -> Result<HistoryPage, String> {
+        crate::history::query_history(connection, query)
+    }
+}
 
 use std::{
     borrow::Cow,
@@ -9,7 +37,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex, OnceLock, RwLock,
+        Arc, Mutex, OnceLock, RwLock, Weak,
     },
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -17,9 +45,9 @@ use std::{
 
 use arboard::{Clipboard, Error as ClipboardError, ImageData};
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use image::{DynamicImage, ImageFormat, RgbaImage};
-use rusqlite::{params, Connection};
+use image::{DynamicImage, ImageFormat, ImageReader, RgbaImage};
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -37,11 +65,6 @@ const QUIT_REQUESTED_EVENT: &str = "app://quit-requested";
 const UPDATE_CHECK_REQUESTED_EVENT: &str = "update://check-requested";
 const APP_ICON_SIZE: u32 = 64;
 const APP_ICON_CACHE_CAPACITY: usize = 96;
-const SOURCE_APP_ICON_DATA_URL_PREFIX: &str = "data:image/png;base64,";
-const SOURCE_APP_ICON_PNG_MAX_BYTES: usize = 32 * 1024;
-const SOURCE_APP_ICON_BASE64_MAX_LENGTH: usize = SOURCE_APP_ICON_PNG_MAX_BYTES.div_ceil(3) * 4;
-const SOURCE_APP_ICON_DATA_URL_MAX_LENGTH: usize =
-    SOURCE_APP_ICON_DATA_URL_PREFIX.len() + SOURCE_APP_ICON_BASE64_MAX_LENGTH;
 const DEFAULT_GLOBAL_SHORTCUT: &str = "Ctrl+Shift+V";
 const PASTE_TARGET_TTL: Duration = Duration::from_secs(5 * 60);
 const ELEVATED_HELPER_REQUEST_TTL_MS: u64 = 30_000;
@@ -57,7 +80,6 @@ const CLIPBOARD_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(250
 const CLIPBOARD_READ_ATTEMPTS: usize = 4;
 const CLIPBOARD_READ_RETRY_DELAY: Duration = Duration::from_millis(40);
 const CLIPBOARD_EXHAUSTED_RETRY_DELAY: Duration = Duration::from_millis(800);
-const HISTORY_DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
 const CARET_ACCESSIBILITY_TIMEOUT: Duration = Duration::from_millis(60);
 const QUICK_PANEL_SHELL_INSET_DIP: f64 = 16.0;
 const QUICK_PANEL_VISIBLE_GAP_DIP: f64 = 12.0;
@@ -185,8 +207,26 @@ fn should_auto_hide_quick_panel(mode: WindowMode, focused: bool, pinned: bool) -
     mode == WindowMode::Quick && !focused && !pinned
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum QuickPanelHotkeyAction {
+    Hide,
+    ShowAndSample,
+}
+
+fn quick_panel_hotkey_action(
+    mode: WindowMode,
+    visible: bool,
+    minimized: bool,
+) -> QuickPanelHotkeyAction {
+    if mode == WindowMode::Quick && visible && !minimized {
+        QuickPanelHotkeyAction::Hide
+    } else {
+        QuickPanelHotkeyAction::ShowAndSample
+    }
+}
+
 fn should_toggle_quick_panel_on_hotkey(mode: WindowMode, visible: bool, minimized: bool) -> bool {
-    mode == WindowMode::Quick && visible && !minimized
+    quick_panel_hotkey_action(mode, visible, minimized) == QuickPanelHotkeyAction::Hide
 }
 
 fn window_size_dip(mode: WindowMode) -> ScreenSize {
@@ -431,6 +471,175 @@ fn choose_paste_strategy(
     } else {
         PasteStrategy::CopyOnly
     }
+}
+
+fn paste_strategy_terminal_outcome(
+    strategy: PasteStrategy,
+    pasted: bool,
+) -> metrics::PasteTerminalOutcome {
+    match (strategy, pasted) {
+        (PasteStrategy::Direct, true) => metrics::PasteTerminalOutcome::DirectSucceeded,
+        (PasteStrategy::Direct, false) => metrics::PasteTerminalOutcome::DirectFailed,
+        (PasteStrategy::ElevatedHelper, true) => metrics::PasteTerminalOutcome::ElevatedSucceeded,
+        (PasteStrategy::ElevatedHelper, false) => metrics::PasteTerminalOutcome::ElevatedFailed,
+        (PasteStrategy::CopyOnly, _) => metrics::PasteTerminalOutcome::ElevationDisabled,
+    }
+}
+
+fn captured_snapshot_terminal_outcome(
+    internal_write: bool,
+    should_capture: bool,
+    paused: bool,
+    excluded: bool,
+    payload_supported: bool,
+    event_delivered: Option<bool>,
+) -> metrics::CaptureTerminalOutcome {
+    if internal_write {
+        metrics::CaptureTerminalOutcome::InternalWrite
+    } else if !should_capture {
+        metrics::CaptureTerminalOutcome::Duplicate
+    } else if paused {
+        metrics::CaptureTerminalOutcome::Paused
+    } else if excluded {
+        metrics::CaptureTerminalOutcome::Excluded
+    } else if !payload_supported {
+        metrics::CaptureTerminalOutcome::ExternalFailed
+    } else if event_delivered == Some(true) {
+        metrics::CaptureTerminalOutcome::ExternalDelivered
+    } else {
+        metrics::CaptureTerminalOutcome::ExternalFailed
+    }
+}
+
+const ACCEPTANCE_METRICS_FLUSH_DELAY: Duration = Duration::from_millis(250);
+
+#[derive(Clone)]
+struct AcceptanceMetricsState {
+    metrics: Arc<Mutex<metrics::AcceptanceMetrics>>,
+    flush_scheduled: Arc<AtomicBool>,
+    next_paste_operation_id: Arc<AtomicU64>,
+    next_capture_operation_id: Arc<AtomicU64>,
+}
+
+impl Default for AcceptanceMetricsState {
+    fn default() -> Self {
+        Self::new(metrics::AcceptanceMetrics::disabled())
+    }
+}
+
+impl AcceptanceMetricsState {
+    fn new(metrics: metrics::AcceptanceMetrics) -> Self {
+        Self {
+            metrics: Arc::new(Mutex::new(metrics)),
+            flush_scheduled: Arc::new(AtomicBool::new(false)),
+            next_paste_operation_id: Arc::new(AtomicU64::new(0)),
+            next_capture_operation_id: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn enabled(app_data_root: impl AsRef<Path>) -> Self {
+        Self::new(metrics::AcceptanceMetrics::enabled(app_data_root))
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.metrics
+            .lock()
+            .is_ok_and(|metrics| metrics.is_enabled())
+    }
+
+    fn start_quick_panel_session(&self, session_id: u64, started_at: Instant) -> bool {
+        self.metrics
+            .lock()
+            .is_ok_and(|mut metrics| metrics.start_quick_panel_session(session_id, started_at))
+    }
+
+    fn acknowledge_quick_panel_first_frame(&self, session_id: u64) -> bool {
+        let recorded = self.metrics.lock().is_ok_and(|mut metrics| {
+            metrics.acknowledge_quick_panel_first_frame(session_id, Instant::now())
+        });
+        if recorded {
+            self.schedule_flush();
+        }
+        recorded
+    }
+
+    fn record_paste_terminal(&self, outcome: metrics::PasteTerminalOutcome) -> bool {
+        let Some(operation_id) = next_metrics_operation_id(&self.next_paste_operation_id) else {
+            return false;
+        };
+        let recorded = self
+            .metrics
+            .lock()
+            .is_ok_and(|mut metrics| metrics.record_paste_terminal(operation_id, outcome));
+        if recorded {
+            self.schedule_flush();
+        }
+        recorded
+    }
+
+    fn record_capture_terminal(&self, outcome: metrics::CaptureTerminalOutcome) -> bool {
+        let Some(operation_id) = next_metrics_operation_id(&self.next_capture_operation_id) else {
+            return false;
+        };
+        let recorded = self
+            .metrics
+            .lock()
+            .is_ok_and(|mut metrics| metrics.record_capture_terminal(operation_id, outcome));
+        if recorded {
+            self.schedule_flush();
+        }
+        recorded
+    }
+
+    fn schedule_flush(&self) {
+        if !self.is_enabled()
+            || self
+                .flush_scheduled
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+
+        let state = self.clone();
+        thread::spawn(move || loop {
+            thread::sleep(ACCEPTANCE_METRICS_FLUSH_DELAY);
+            let flush_succeeded = state.flush_now();
+            state.flush_scheduled.store(false, Ordering::Release);
+            if !flush_succeeded {
+                log::warn!("验收指标写入失败；业务流程继续运行");
+                return;
+            }
+
+            let pending = state
+                .metrics
+                .lock()
+                .is_ok_and(|metrics| metrics.has_pending_changes());
+            if !pending
+                || state
+                    .flush_scheduled
+                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                    .is_err()
+            {
+                return;
+            }
+        });
+    }
+
+    fn flush_now(&self) -> bool {
+        self.metrics
+            .lock()
+            .is_ok_and(|mut metrics| metrics.flush(SystemTime::now()).is_ok())
+    }
+}
+
+fn next_metrics_operation_id(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            (current < metrics::JS_MAX_SAFE_INTEGER).then_some(current + 1)
+        })
+        .ok()
+        .map(|previous| previous + 1)
 }
 
 #[derive(Clone)]
@@ -897,10 +1106,12 @@ fn paste_target_presentation(source_app: Option<SourceAppIdentity>) -> (String, 
 #[derive(Debug, Eq, PartialEq)]
 enum ClipboardSnapshot {
     Text(String),
+    Package(clipboard_formats::FormatPackage),
     Image {
         width: usize,
         height: usize,
         bytes: Vec<u8>,
+        omitted_formats: Vec<clipboard_formats::ClipboardFormatKind>,
     },
 }
 
@@ -970,15 +1181,48 @@ impl InternalClipboardWrites {
 }
 
 enum ClipboardReadAttempt<T> {
-    Captured(T),
-    Ignored,
+    Captured {
+        snapshot: T,
+        sequence: Option<u64>,
+    },
+    Ignored {
+        package: clipboard_formats::FormatPackage,
+        sequence: Option<u64>,
+    },
     Retryable,
 }
 
 enum ClipboardReadOutcome<T> {
-    Captured(T),
-    Ignored,
+    Captured {
+        snapshot: T,
+        sequence: Option<u64>,
+    },
+    Ignored {
+        package: clipboard_formats::FormatPackage,
+        sequence: Option<u64>,
+    },
     Exhausted,
+}
+
+struct ClipboardOmissionCandidate<'a> {
+    package: &'a clipboard_formats::FormatPackage,
+    sequence: Option<u64>,
+}
+
+fn monitor_omission_candidate<T>(
+    outcome: &ClipboardReadOutcome<T>,
+) -> Option<ClipboardOmissionCandidate<'_>> {
+    match outcome {
+        ClipboardReadOutcome::Ignored { package, sequence }
+            if !package.omitted_formats.is_empty() =>
+        {
+            Some(ClipboardOmissionCandidate {
+                package,
+                sequence: *sequence,
+            })
+        }
+        _ => None,
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -994,6 +1238,17 @@ struct CapturedClipboardPayload {
     width: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     height: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    image_hash: Option<String>,
+    formats: Vec<clipboard_formats::ClipboardFormatKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    html: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rtf_base64: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    files: Vec<clipboard_formats::CapturedFile>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    omitted_formats: Vec<clipboard_formats::ClipboardFormatKind>,
 }
 
 #[derive(Clone, Serialize)]
@@ -1002,6 +1257,11 @@ struct PasteResult {
     copied: bool,
     pasted: bool,
     requires_elevation: bool,
+}
+
+struct PasteAttempt {
+    result: PasteResult,
+    terminal_outcome: metrics::PasteTerminalOutcome,
 }
 
 #[derive(Clone, Serialize)]
@@ -1038,12 +1298,17 @@ fn snapshot_signature(snapshot: &ClipboardSnapshot) -> u64 {
     match snapshot {
         ClipboardSnapshot::Text(text) => {
             0_u8.hash(&mut hasher);
-            text.hash(&mut hasher);
+            clipboard_formats::plain_text_signature(text).hash(&mut hasher);
+        }
+        ClipboardSnapshot::Package(package) => {
+            0_u8.hash(&mut hasher);
+            clipboard_formats::package_signature(package).hash(&mut hasher);
         }
         ClipboardSnapshot::Image {
             width,
             height,
             bytes,
+            ..
         } => {
             1_u8.hash(&mut hasher);
             width.hash(&mut hasher);
@@ -1064,10 +1329,14 @@ fn clipboard_error_is_retryable(error: &ClipboardError) -> bool {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
 fn read_clipboard_snapshot(clipboard: &mut Clipboard) -> ClipboardReadAttempt<ClipboardSnapshot> {
     let text_retryable = match clipboard.get_text() {
         Ok(text) if !text.is_empty() => {
-            return ClipboardReadAttempt::Captured(ClipboardSnapshot::Text(text));
+            return ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Text(text),
+                sequence: None,
+            };
         }
         Ok(_) | Err(ClipboardError::ContentNotAvailable) => false,
         Err(error) => clipboard_error_is_retryable(&error),
@@ -1079,18 +1348,146 @@ fn read_clipboard_snapshot(clipboard: &mut Clipboard) -> ClipboardReadAttempt<Cl
                 && image.height > 0
                 && image.bytes.len() == image.width * image.height * 4 =>
         {
-            ClipboardReadAttempt::Captured(ClipboardSnapshot::Image {
-                width: image.width,
-                height: image.height,
-                bytes: image.bytes.into_owned(),
-            })
+            ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Image {
+                    width: image.width,
+                    height: image.height,
+                    bytes: image.bytes.into_owned(),
+                    omitted_formats: Vec::new(),
+                },
+                sequence: None,
+            }
         }
-        Ok(_) => ClipboardReadAttempt::Ignored,
+        Ok(_) => ClipboardReadAttempt::Ignored {
+            package: clipboard_formats::FormatPackage::default(),
+            sequence: None,
+        },
         Err(error) if text_retryable || clipboard_error_is_retryable(&error) => {
             ClipboardReadAttempt::Retryable
         }
-        Err(_) => ClipboardReadAttempt::Ignored,
+        Err(_) => ClipboardReadAttempt::Ignored {
+            package: clipboard_formats::FormatPackage::default(),
+            sequence: None,
+        },
     }
+}
+
+#[cfg(target_os = "windows")]
+fn complete_windows_image_fallback(
+    mut package: clipboard_formats::FormatPackage,
+    image_before: Option<u64>,
+    image: ClipboardReadAttempt<ClipboardSnapshot>,
+    after_image: Option<u64>,
+) -> ClipboardReadAttempt<ClipboardSnapshot> {
+    if after_image != image_before {
+        return ClipboardReadAttempt::Retryable;
+    }
+    match image {
+        ClipboardReadAttempt::Captured {
+            snapshot:
+                ClipboardSnapshot::Image {
+                    width,
+                    height,
+                    bytes,
+                    ..
+                },
+            ..
+        } => {
+            if !clipboard_formats::clipboard_rgba_layout_is_safe(width, height, bytes.len()) {
+                if !package
+                    .omitted_formats
+                    .contains(&clipboard_formats::ClipboardFormatKind::Image)
+                {
+                    package
+                        .omitted_formats
+                        .push(clipboard_formats::ClipboardFormatKind::Image);
+                }
+                ClipboardReadAttempt::Ignored {
+                    package,
+                    sequence: after_image,
+                }
+            } else {
+                ClipboardReadAttempt::Captured {
+                    snapshot: ClipboardSnapshot::Image {
+                        width,
+                        height,
+                        bytes,
+                        omitted_formats: package.omitted_formats,
+                    },
+                    sequence: after_image,
+                }
+            }
+        }
+        ClipboardReadAttempt::Captured { snapshot, .. } => ClipboardReadAttempt::Captured {
+            snapshot,
+            sequence: after_image,
+        },
+        ClipboardReadAttempt::Ignored { .. } => ClipboardReadAttempt::Ignored {
+            package,
+            sequence: after_image,
+        },
+        ClipboardReadAttempt::Retryable => ClipboardReadAttempt::Retryable,
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn clipboard_package_allows_image_fallback(package: &clipboard_formats::FormatPackage) -> bool {
+    !package
+        .omitted_formats
+        .contains(&clipboard_formats::ClipboardFormatKind::Image)
+}
+
+#[cfg(target_os = "windows")]
+fn read_clipboard_snapshot(clipboard: &mut Clipboard) -> ClipboardReadAttempt<ClipboardSnapshot> {
+    let (omitted_package, image_before) = match clipboard_formats::read_format_package() {
+        clipboard_formats::PackageReadOutcome::Captured { package, sequence } => {
+            return ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Package(package),
+                sequence,
+            };
+        }
+        clipboard_formats::PackageReadOutcome::Retryable => {
+            return ClipboardReadAttempt::Retryable;
+        }
+        clipboard_formats::PackageReadOutcome::Ignored { package, sequence } => {
+            if !clipboard_package_allows_image_fallback(&package) {
+                return ClipboardReadAttempt::Ignored { package, sequence };
+            }
+            (package, sequence)
+        }
+    };
+
+    // clipboard-win guard 已由 read_format_package 释放，此处才允许 arboard 图片 fallback。
+    let image = match clipboard.get_image() {
+        Ok(image)
+            if clipboard_formats::clipboard_rgba_layout_is_safe(
+                image.width,
+                image.height,
+                image.bytes.len(),
+            ) =>
+        {
+            ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Image {
+                    width: image.width,
+                    height: image.height,
+                    bytes: image.bytes.into_owned(),
+                    omitted_formats: Vec::new(),
+                },
+                sequence: None,
+            }
+        }
+        Ok(_) | Err(ClipboardError::ContentNotAvailable) => ClipboardReadAttempt::Ignored {
+            package: clipboard_formats::FormatPackage::default(),
+            sequence: None,
+        },
+        Err(error) if clipboard_error_is_retryable(&error) => ClipboardReadAttempt::Retryable,
+        Err(_) => ClipboardReadAttempt::Ignored {
+            package: clipboard_formats::FormatPackage::default(),
+            sequence: None,
+        },
+    };
+    let after_image = clipboard_sequence();
+    complete_windows_image_fallback(omitted_package, image_before, image, after_image)
 }
 
 fn retry_clipboard_snapshot_read<T>(
@@ -1100,10 +1497,12 @@ fn retry_clipboard_snapshot_read<T>(
 ) -> ClipboardReadOutcome<T> {
     for attempt in 0..attempts {
         match read() {
-            ClipboardReadAttempt::Captured(snapshot) => {
-                return ClipboardReadOutcome::Captured(snapshot);
+            ClipboardReadAttempt::Captured { snapshot, sequence } => {
+                return ClipboardReadOutcome::Captured { snapshot, sequence };
             }
-            ClipboardReadAttempt::Ignored => return ClipboardReadOutcome::Ignored,
+            ClipboardReadAttempt::Ignored { package, sequence } => {
+                return ClipboardReadOutcome::Ignored { package, sequence };
+            }
             ClipboardReadAttempt::Retryable => {
                 if attempt + 1 < attempts && !delay.is_zero() {
                     thread::sleep(delay);
@@ -1116,11 +1515,11 @@ fn retry_clipboard_snapshot_read<T>(
 
 fn committed_clipboard_sequence<T>(
     previous: Option<u64>,
-    observed: Option<u64>,
     outcome: &ClipboardReadOutcome<T>,
 ) -> Option<u64> {
     match outcome {
-        ClipboardReadOutcome::Captured(_) | ClipboardReadOutcome::Ignored => observed.or(previous),
+        ClipboardReadOutcome::Captured { sequence, .. }
+        | ClipboardReadOutcome::Ignored { sequence, .. } => sequence.or(previous),
         ClipboardReadOutcome::Exhausted => previous,
     }
 }
@@ -1160,10 +1559,20 @@ fn should_capture_snapshot(
 }
 
 fn png_data_url(image: RgbaImage) -> Option<String> {
+    if !clipboard_formats::clipboard_rgba_layout_is_safe(
+        image.width() as usize,
+        image.height() as usize,
+        image.as_raw().len(),
+    ) {
+        return None;
+    }
     let mut cursor = Cursor::new(Vec::new());
     DynamicImage::ImageRgba8(image)
         .write_to(&mut cursor, ImageFormat::Png)
         .ok()?;
+    if cursor.get_ref().len() > clipboard_formats::MAX_CLIPBOARD_IMAGE_SOURCE_BYTES {
+        return None;
+    }
     Some(format!(
         "data:image/png;base64,{}",
         STANDARD.encode(cursor.into_inner())
@@ -1171,8 +1580,37 @@ fn png_data_url(image: RgbaImage) -> Option<String> {
 }
 
 fn image_data_url(width: usize, height: usize, bytes: Vec<u8>) -> Option<String> {
-    let image = RgbaImage::from_raw(width as u32, height as u32, bytes)?;
+    let width = u32::try_from(width).ok()?;
+    let height = u32::try_from(height).ok()?;
+    if !clipboard_formats::clipboard_rgba_layout_is_safe(
+        width as usize,
+        height as usize,
+        bytes.len(),
+    ) {
+        return None;
+    }
+    let image = RgbaImage::from_raw(width, height, bytes)?;
     png_data_url(image)
+}
+
+/// Stable v1 identity for a decoded RGBA clipboard image. The version prefix and
+/// little-endian u64 dimensions make this independent of Rust's process hasher
+/// and of the machine word size.
+fn image_capture_hash(width: usize, height: usize, bytes: &[u8]) -> Option<String> {
+    let width_u32 = u32::try_from(width).ok()?;
+    let height_u32 = u32::try_from(height).ok()?;
+    if width_u32 == 0
+        || height_u32 == 0
+        || !clipboard_formats::clipboard_rgba_layout_is_safe(width, height, bytes.len())
+    {
+        return None;
+    }
+    let mut digest = Sha256::new();
+    digest.update(b"QuickPaste:image-rgba:v1\0");
+    digest.update((width as u64).to_le_bytes());
+    digest.update((height as u64).to_le_bytes());
+    digest.update(bytes);
+    Some(format!("{:x}", digest.finalize()))
 }
 
 fn app_icon_png_data_url(width: u32, height: u32, bytes: Vec<u8>) -> Option<String> {
@@ -1214,20 +1652,55 @@ fn snapshot_payload(
             source_app_icon: source_app.icon,
             width: None,
             height: None,
+            image_hash: None,
+            formats: vec![clipboard_formats::ClipboardFormatKind::Text],
+            html: None,
+            rtf_base64: None,
+            files: Vec::new(),
+            omitted_formats: Vec::new(),
         }),
+        ClipboardSnapshot::Package(package) => {
+            let omitted_formats = package.omitted_formats.clone();
+            let payload = clipboard_formats::package_payload(&package)?;
+            Some(CapturedClipboardPayload {
+                kind: payload.kind,
+                content: payload.content,
+                captured_at,
+                source_app: source_app.name,
+                source_app_icon: source_app.icon,
+                width: None,
+                height: None,
+                image_hash: None,
+                formats: payload.formats,
+                html: payload.html,
+                rtf_base64: payload.rtf_base64,
+                files: payload.files,
+                omitted_formats,
+            })
+        }
         ClipboardSnapshot::Image {
             width,
             height,
             bytes,
-        } => Some(CapturedClipboardPayload {
-            kind: "image",
-            content: image_data_url(width, height, bytes)?,
-            captured_at,
-            source_app: source_app.name,
-            source_app_icon: source_app.icon,
-            width: Some(width),
-            height: Some(height),
-        }),
+            omitted_formats,
+        } => {
+            let image_hash = image_capture_hash(width, height, &bytes)?;
+            Some(CapturedClipboardPayload {
+                kind: "image",
+                content: image_data_url(width, height, bytes)?,
+                captured_at,
+                source_app: source_app.name,
+                source_app_icon: source_app.icon,
+                width: Some(width),
+                height: Some(height),
+                image_hash: Some(image_hash),
+                formats: vec![clipboard_formats::ClipboardFormatKind::Image],
+                html: None,
+                rtf_base64: None,
+                files: Vec::new(),
+                omitted_formats,
+            })
+        }
     }
 }
 
@@ -1708,6 +2181,25 @@ fn set_window_mode(mode: String, app: AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn set_quick_panel_pinned(enabled: bool, pinned: State<'_, QuickPanelPinned>) {
     pinned.0.store(enabled, Ordering::Relaxed);
+}
+
+fn quick_panel_ack_matches_current_session(
+    current_session: &CurrentQuickPanelSession,
+    session_id: u64,
+) -> bool {
+    session_id != 0 && current_session.current() == session_id
+}
+
+#[tauri::command]
+fn record_quick_panel_first_frame(
+    session_id: u64,
+    current_session: State<'_, CurrentQuickPanelSession>,
+    metrics: State<'_, AcceptanceMetricsState>,
+) -> bool {
+    if !quick_panel_ack_matches_current_session(&current_session, session_id) {
+        return false;
+    }
+    metrics.acknowledge_quick_panel_first_frame(session_id)
 }
 
 #[cfg(target_os = "windows")]
@@ -2865,16 +3357,27 @@ fn stable_verified_clipboard_sequence(
 }
 
 fn clipboard_matches_snapshot(expected: &ClipboardSnapshot) -> Option<bool> {
-    let mut clipboard = Clipboard::new().ok()?;
     match expected {
         ClipboardSnapshot::Text(expected) => {
+            let mut clipboard = Clipboard::new().ok()?;
             Some(clipboard.get_text().ok()?.as_str() == expected.as_str())
         }
+        ClipboardSnapshot::Package(expected) => match clipboard_formats::read_format_package() {
+            clipboard_formats::PackageReadOutcome::Captured {
+                package: actual, ..
+            } => Some(clipboard_formats::package_matches_requested(
+                expected, &actual,
+            )),
+            clipboard_formats::PackageReadOutcome::Ignored { .. } => Some(false),
+            clipboard_formats::PackageReadOutcome::Retryable => None,
+        },
         ClipboardSnapshot::Image {
             width,
             height,
             bytes,
+            ..
         } => {
+            let mut clipboard = Clipboard::new().ok()?;
             let actual = clipboard.get_image().ok()?;
             Some(
                 actual.width == *width
@@ -2894,12 +3397,47 @@ fn verified_clipboard_sequence(expected: &ClipboardSnapshot) -> Option<u64> {
     })
 }
 
+fn verified_format_package_sequence(expected: &clipboard_formats::FormatPackage) -> Option<u64> {
+    retry_with_delay(CLIPBOARD_READ_ATTEMPTS, CLIPBOARD_READ_RETRY_DELAY, || {
+        match clipboard_formats::read_format_package() {
+            clipboard_formats::PackageReadOutcome::Captured {
+                package: actual,
+                sequence,
+            } => clipboard_formats::verified_package_sequence(
+                sequence,
+                expected,
+                Some(&actual),
+                sequence,
+            ),
+            _ => None,
+        }
+    })
+}
+
+fn write_and_verify_package(
+    internal_writes: &InternalClipboardWrites,
+    expected: &clipboard_formats::FormatPackage,
+    write: impl FnOnce(&clipboard_formats::FormatPackage) -> Result<(), String>,
+    verify: impl FnOnce(&clipboard_formats::FormatPackage) -> Option<u64>,
+) -> Result<Option<u64>, String> {
+    let snapshot = ClipboardSnapshot::Package(expected.clone());
+    let signature = internal_writes.begin(&snapshot);
+    if let Err(error) = write(expected) {
+        internal_writes.cancel(signature);
+        return Err(error);
+    }
+    let sequence = verify(expected);
+    internal_writes.commit(signature, sequence);
+    Ok(sequence)
+}
+
 fn start_clipboard_monitor(
     app: AppHandle,
     control: CaptureControl,
     exclusions: CaptureExclusions,
     health: CaptureHealth,
     internal_writes: InternalClipboardWrites,
+    metrics: AcceptanceMetricsState,
 ) {
     thread::spawn(move || {
         let mut clipboard = match retry_with_delay(
@@ -2930,6 +3468,13 @@ fn start_clipboard_monitor(
 
         loop {
             let sequence = clipboard_sequence();
+            if sequence.is_some() && exhausted_sequence.is_some() && sequence != exhausted_sequence
+            {
+                let _ = metrics
+                    .record_capture_terminal(metrics::CaptureTerminalOutcome::RetryExhausted);
+                exhausted_sequence = None;
+                exhausted_retry_at = None;
+            }
             let sequence_is_committed = sequence.is_some() && sequence == last_sequence;
             let sequence_retry_pending = exhausted_clipboard_retry_pending(
                 sequence,
@@ -2949,20 +3494,48 @@ fn start_clipboard_monitor(
                 CLIPBOARD_READ_RETRY_DELAY,
                 || read_clipboard_snapshot(&mut clipboard),
             );
-            last_sequence = committed_clipboard_sequence(last_sequence, sequence, &outcome);
+            if let Some(candidate) = monitor_omission_candidate(&outcome) {
+                log::debug!(
+                    "剪贴板变更仅包含无法捕获的格式: sequence={:?}, omitted={:?}",
+                    candidate.sequence,
+                    candidate.package.omitted_formats
+                );
+            }
+            last_sequence = committed_clipboard_sequence(last_sequence, &outcome);
 
             match outcome {
-                ClipboardReadOutcome::Captured(snapshot) => {
+                ClipboardReadOutcome::Captured {
+                    snapshot,
+                    sequence: stable_sequence,
+                } => {
                     let signature = snapshot_signature(&snapshot);
-                    if internal_writes.consume(sequence, signature) {
+                    let internal_write = internal_writes.consume(stable_sequence, signature);
+                    if internal_write {
+                        let outcome = captured_snapshot_terminal_outcome(
+                            true, true, false, false, true, None,
+                        );
+                        let _ = metrics.record_capture_terminal(outcome);
                         last_signature = Some(signature);
                         thread::sleep(Duration::from_millis(20));
                         continue;
                     }
-                    if should_capture_snapshot(sequence, last_signature, signature) {
+                    let should_capture =
+                        should_capture_snapshot(stable_sequence, last_signature, signature);
+                    if !should_capture {
+                        let outcome = captured_snapshot_terminal_outcome(
+                            false, false, false, false, true, None,
+                        );
+                        let _ = metrics.record_capture_terminal(outcome);
+                    } else {
                         let mut capture_enabled = false;
                         let mut event_delivered = false;
-                        if !control.0.load(Ordering::Relaxed) {
+                        let paused = control.0.load(Ordering::Relaxed);
+                        if paused {
+                            let outcome = captured_snapshot_terminal_outcome(
+                                false, true, true, false, true, None,
+                            );
+                            let _ = metrics.record_capture_terminal(outcome);
+                        } else {
                             let source_app = choose_clipboard_source(
                                 clipboard_owner_source_app(),
                                 foreground_source_app(),
@@ -2970,7 +3543,12 @@ fn start_clipboard_monitor(
                             let is_excluded = source_app
                                 .as_ref()
                                 .is_some_and(|source| exclusions.contains(&source.name));
-                            if !is_excluded {
+                            if is_excluded {
+                                let outcome = captured_snapshot_terminal_outcome(
+                                    false, true, false, true, true, None,
+                                );
+                                let _ = metrics.record_capture_terminal(outcome);
+                            } else {
                                 capture_enabled = true;
                                 if let Some(payload) = snapshot_payload(snapshot, source_app) {
                                     match app.emit(CLIPBOARD_EVENT, payload) {
@@ -2979,6 +3557,20 @@ fn start_clipboard_monitor(
                                             log::warn!("无法发送剪贴板捕获事件: {error}")
                                         }
                                     }
+                                    let outcome = captured_snapshot_terminal_outcome(
+                                        false,
+                                        true,
+                                        false,
+                                        false,
+                                        true,
+                                        Some(event_delivered),
+                                    );
+                                    let _ = metrics.record_capture_terminal(outcome);
+                                } else {
+                                    let outcome = captured_snapshot_terminal_outcome(
+                                        false, true, false, false, false, None,
+                                    );
+                                    let _ = metrics.record_capture_terminal(outcome);
                                 }
                             }
                         }
@@ -2990,7 +3582,10 @@ fn start_clipboard_monitor(
                         );
                     }
                 }
-                ClipboardReadOutcome::Ignored => {}
+                ClipboardReadOutcome::Ignored { .. } => {
+                    let _ = metrics
+                        .record_capture_terminal(metrics::CaptureTerminalOutcome::Unsupported);
+                }
                 ClipboardReadOutcome::Exhausted => {
                     exhausted_sequence = exhausted_clipboard_sequence(sequence);
                     exhausted_retry_at = exhausted_sequence
@@ -3148,7 +3743,7 @@ fn show_main_window(app: &AppHandle) {
     if let Some(target) = app.try_state::<PasteTarget>() {
         clear_paste_target_and_notify(app, &target);
     }
-    show_quick_panel(app, None, None, false);
+    show_quick_panel(app, None, None, false, None);
 }
 
 fn show_quick_panel(
@@ -3156,6 +3751,7 @@ fn show_quick_panel(
     target_identity: Option<PasteTargetIdentity>,
     source_app: Option<SourceAppIdentity>,
     elevated: bool,
+    sample_started_at: Option<Instant>,
 ) {
     // 鼠标坐标也在抢焦点前快照；跨进程 caret 读取失败时不会产生二次跳动。
     let pointer = app
@@ -3179,6 +3775,11 @@ fn show_quick_panel(
         .try_state::<CurrentQuickPanelSession>()
         .map(|session| session.begin())
         .unwrap_or_default();
+    if let Some(started_at) = sample_started_at {
+        if let Some(metrics) = app.try_state::<AcceptanceMetricsState>() {
+            let _ = metrics.start_quick_panel_session(session_id, started_at);
+        }
+    }
     let (source_app, source_app_icon) = paste_target_presentation(source_app);
     let _ = app.emit(
         PASTE_TARGET_EVENT,
@@ -3215,6 +3816,7 @@ pub(crate) fn request_app_quit(app: &AppHandle) {
     thread::spawn(move || {
         thread::sleep(QUIT_FALLBACK_TIMEOUT);
         if take_pending_quit(&fallback_requested, request_id) {
+            flush_acceptance_metrics(&fallback_app);
             fallback_app.exit(0);
         }
     });
@@ -3222,7 +3824,17 @@ pub(crate) fn request_app_quit(app: &AppHandle) {
 
 #[tauri::command]
 fn exit_app(app: AppHandle) {
+    flush_acceptance_metrics(&app);
     app.exit(0);
+}
+
+fn flush_acceptance_metrics(app: &AppHandle) {
+    if app
+        .try_state::<AcceptanceMetricsState>()
+        .is_some_and(|metrics| !metrics.flush_now())
+    {
+        log::warn!("退出前无法刷新验收指标");
+    }
 }
 
 #[tauri::command]
@@ -3261,6 +3873,7 @@ fn write_clipboard_image(
         width: image.width,
         height: image.height,
         bytes: image.bytes.to_vec(),
+        omitted_formats: Vec::new(),
     };
     let signature = internal_writes.begin(&expected);
     if let Err(error) = write_image_data_to_clipboard(image) {
@@ -3272,17 +3885,44 @@ fn write_clipboard_image(
 }
 
 fn decode_clipboard_image(data_url: &str) -> Result<ImageData<'static>, String> {
-    let encoded = data_url
-        .split_once(',')
-        .map(|(_, encoded)| encoded)
-        .unwrap_or(data_url);
+    const PNG_DATA_URL_PREFIX: &str = "data:image/png;base64,";
+    let encoded = if data_url.starts_with("data:") {
+        data_url
+            .strip_prefix(PNG_DATA_URL_PREFIX)
+            .ok_or_else(|| "剪贴板图片必须是 PNG data URL".to_owned())?
+    } else {
+        data_url
+    };
+    let max_encoded = clipboard_formats::MAX_CLIPBOARD_IMAGE_SOURCE_BYTES
+        .div_ceil(3)
+        .saturating_mul(4);
+    if encoded.is_empty() || encoded.len() > max_encoded {
+        return Err("剪贴板 PNG 超过 64 MiB 限制".to_owned());
+    }
     let png = STANDARD
         .decode(encoded)
         .map_err(|error| error.to_string())?;
-    let image = image::load_from_memory(&png)
-        .map_err(|error| error.to_string())?
+    if png.is_empty() || png.len() > clipboard_formats::MAX_CLIPBOARD_IMAGE_SOURCE_BYTES {
+        return Err("剪贴板 PNG 超过 64 MiB 限制".to_owned());
+    }
+    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(clipboard_formats::MAX_CLIPBOARD_IMAGE_DIMENSION as u32);
+    limits.max_image_height = Some(clipboard_formats::MAX_CLIPBOARD_IMAGE_DIMENSION as u32);
+    limits.max_alloc = Some(clipboard_formats::MAX_CLIPBOARD_IMAGE_SOURCE_BYTES as u64);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|_| "剪贴板 PNG 无效或超过安全尺寸".to_owned())?
         .to_rgba8();
     let (width, height) = image.dimensions();
+    if !clipboard_formats::clipboard_rgba_layout_is_safe(
+        width as usize,
+        height as usize,
+        image.as_raw().len(),
+    ) {
+        return Err("剪贴板图片解码后超过 64 MiB、40 MP 或 8192 像素边界".to_owned());
+    }
     Ok(ImageData {
         width: width as usize,
         height: height as usize,
@@ -3296,257 +3936,588 @@ fn write_image_data_to_clipboard(image: ImageData<'static>) -> Result<(), String
         .map_err(|error| error.to_string())
 }
 
-fn initialize_history_database(connection: &Connection) -> Result<(), String> {
-    connection
-        .execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS clipboard_items (
-               position INTEGER NOT NULL,
-               id TEXT PRIMARY KEY NOT NULL,
-               payload TEXT NOT NULL,
-               image_mime TEXT,
-               image_data BLOB
-             );
-             CREATE TABLE IF NOT EXISTS source_app_icons (
-               source_app TEXT PRIMARY KEY,
-               icon_png BLOB NOT NULL CHECK(length(icon_png) <= 32768)
-             );
-             CREATE INDEX IF NOT EXISTS clipboard_items_position
-               ON clipboard_items(position);",
-        )
-        .map_err(|error| error.to_string())
+const HISTORY_RUNTIME_UNAVAILABLE: &str = "历史运行时暂时不可用";
+const HISTORY_RUNTIME_WORKER_FAILED: &str = "历史后台操作异常结束";
+
+#[derive(Clone)]
+struct HistoryRuntimeState {
+    runtime: Arc<Mutex<history::HistoryRuntime>>,
+    maintenance_started: Arc<AtomicBool>,
 }
 
-fn data_url_parts(value: &str) -> Option<(String, Vec<u8>)> {
-    let (header, encoded) = value.split_once(',')?;
-    let mime = header.strip_prefix("data:")?.strip_suffix(";base64")?;
-    STANDARD
-        .decode(encoded)
-        .ok()
-        .map(|bytes| (mime.to_owned(), bytes))
-}
+impl HistoryRuntimeState {
+    fn new(runtime: history::HistoryRuntime) -> Self {
+        Self {
+            runtime: Arc::new(Mutex::new(runtime)),
+            maintenance_started: Arc::new(AtomicBool::new(false)),
+        }
+    }
 
-fn source_app_icon_png_is_safe(bytes: &[u8]) -> bool {
-    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
-
-    if bytes.len() > SOURCE_APP_ICON_PNG_MAX_BYTES
-        || bytes.len() < 24
-        || &bytes[..8] != PNG_SIGNATURE
-        || u32::from_be_bytes(bytes[8..12].try_into().unwrap_or_default()) != 13
-        || &bytes[12..16] != b"IHDR"
-        || u32::from_be_bytes(bytes[16..20].try_into().unwrap_or_default()) != APP_ICON_SIZE
-        || u32::from_be_bytes(bytes[20..24].try_into().unwrap_or_default()) != APP_ICON_SIZE
+    fn try_start_maintenance_with<F>(&self, start: F) -> Result<bool, String>
+    where
+        F: FnOnce(Weak<Mutex<history::HistoryRuntime>>) -> Result<(), String>,
     {
-        return false;
+        if self
+            .maintenance_started
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(false);
+        }
+        if let Err(error) = start(Arc::downgrade(&self.runtime)) {
+            self.maintenance_started.store(false, Ordering::Release);
+            return Err(error);
+        }
+        Ok(true)
     }
 
-    image::load_from_memory_with_format(bytes, ImageFormat::Png)
-        .map(|image| image.width() == APP_ICON_SIZE && image.height() == APP_ICON_SIZE)
-        .unwrap_or(false)
+    #[cfg(test)]
+    fn shares_runtime_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.runtime, &other.runtime)
+    }
 }
 
-fn source_app_icon_png_from_data_url(value: &str) -> Option<Vec<u8>> {
-    if value.len() > SOURCE_APP_ICON_DATA_URL_MAX_LENGTH {
-        return None;
-    }
-    let encoded = value.strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)?;
-    if encoded.is_empty() || encoded.len() > SOURCE_APP_ICON_BASE64_MAX_LENGTH {
-        return None;
-    }
-    let bytes = STANDARD.decode(encoded).ok()?;
-    source_app_icon_png_is_safe(&bytes).then_some(bytes)
+fn initialize_history_runtime(data_directory: PathBuf) -> Result<HistoryRuntimeState, String> {
+    fs::create_dir_all(&data_directory).map_err(|_| "无法初始化历史数据目录".to_owned())?;
+    history::HistoryRuntime::open(data_directory).map(HistoryRuntimeState::new)
 }
 
-fn load_source_app_icon_cache(connection: &Connection) -> Result<HashMap<String, String>, String> {
-    let mut statement = connection
-        .prepare(
-            "SELECT source_app, icon_png FROM source_app_icons
-             WHERE typeof(icon_png) = 'blob' AND length(icon_png) <= 32768",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0).ok(), row.get::<_, Vec<u8>>(1).ok()))
-        })
-        .map_err(|error| error.to_string())?;
+fn initialize_history_runtime_off_ui_thread(
+    data_directory: PathBuf,
+) -> Result<HistoryRuntimeState, String> {
+    thread::Builder::new()
+        .name("quickpaste-history-init".to_owned())
+        .spawn(move || initialize_history_runtime(data_directory))
+        .map_err(|_| "无法启动历史初始化线程".to_owned())?
+        .join()
+        .map_err(|_| "历史初始化线程异常结束".to_owned())?
+}
 
-    let mut icons = HashMap::new();
-    for row in rows {
-        let (Some(source_app), Some(icon_png)) = row.map_err(|error| error.to_string())? else {
-            continue;
+fn execute_history_operation<T, F>(state: HistoryRuntimeState, operation: F) -> Result<T, String>
+where
+    F: FnOnce(&mut history::HistoryRuntime) -> Result<T, String>,
+{
+    let mut runtime = state
+        .runtime
+        .lock()
+        .map_err(|_| HISTORY_RUNTIME_UNAVAILABLE.to_owned())?;
+    operation(&mut runtime)
+}
+
+async fn run_history_operation<T, F>(state: HistoryRuntimeState, operation: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut history::HistoryRuntime) -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(move || execute_history_operation(state, operation))
+        .await
+        .map_err(|_| HISTORY_RUNTIME_WORKER_FAILED.to_owned())?
+}
+
+fn history_maintenance_loop(runtime: Weak<Mutex<history::HistoryRuntime>>) {
+    loop {
+        thread::sleep(history::HISTORY_MAINTENANCE_INTERVAL);
+        let Some(runtime) = runtime.upgrade() else {
+            return;
         };
-        if source_app.is_empty() || !source_app_icon_png_is_safe(&icon_png) {
-            continue;
+        let Ok(mut runtime) = runtime.lock() else {
+            log::warn!("历史维护因运行时不可用而停止");
+            return;
+        };
+        if runtime.purge_expired().is_err() {
+            log::warn!("历史恢复暂存清理将在下一维护周期重试");
         }
-        icons.insert(
-            source_app,
-            format!(
-                "{SOURCE_APP_ICON_DATA_URL_PREFIX}{}",
-                STANDARD.encode(icon_png)
-            ),
-        );
     }
-    Ok(icons)
 }
 
-fn save_history_to_database(
-    connection: &mut Connection,
-    items: &[serde_json::Value],
-) -> Result<(), String> {
-    initialize_history_database(connection)?;
-    let transaction = connection
-        .transaction()
-        .map_err(|error| error.to_string())?;
-    transaction
-        .execute("DELETE FROM clipboard_items", [])
-        .map_err(|error| error.to_string())?;
-
-    let mut source_app_icons = HashMap::<String, Vec<u8>>::new();
-
-    for (position, item) in items.iter().enumerate() {
-        let id = item
-            .get("id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| "剪贴板记录缺少 id".to_owned())?;
-        let mut payload = item.clone();
-        let source_app = payload
-            .get("sourceApp")
-            .and_then(serde_json::Value::as_str)
-            .filter(|source_app| !source_app.is_empty())
-            .map(str::to_owned);
-        let source_app_icon = source_app.as_ref().and_then(|source_app| {
-            if source_app_icons.contains_key(source_app) {
-                return None;
-            }
-            payload
-                .get("sourceAppIcon")
-                .and_then(serde_json::Value::as_str)
-                .and_then(source_app_icon_png_from_data_url)
-        });
-        let image = payload
-            .get("imageUrl")
-            .and_then(serde_json::Value::as_str)
-            .and_then(data_url_parts);
-        if let Some(object) = payload.as_object_mut() {
-            object.remove("sourceAppIcon");
-            if image.is_some() {
-                object.remove("imageUrl");
-            }
-        }
-        if let (Some(source_app), Some(icon_png)) = (source_app, source_app_icon) {
-            source_app_icons.insert(source_app, icon_png);
-        }
-        let (image_mime, image_data) = image.unzip();
-
-        transaction
-            .execute(
-                "INSERT INTO clipboard_items(position, id, payload, image_mime, image_data)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    position as i64,
-                    id,
-                    payload.to_string(),
-                    image_mime,
-                    image_data
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-
-    for (source_app, icon_png) in source_app_icons {
-        transaction
-            .execute(
-                "INSERT INTO source_app_icons(source_app, icon_png) VALUES (?1, ?2)
-                 ON CONFLICT(source_app) DO UPDATE SET icon_png = excluded.icon_png",
-                params![source_app, icon_png],
-            )
-            .map_err(|error| error.to_string())?;
-    }
-
-    transaction.commit().map_err(|error| error.to_string())
-}
-
-fn load_history_from_database(connection: &Connection) -> Result<Vec<serde_json::Value>, String> {
-    initialize_history_database(connection)?;
-    let source_app_icons = load_source_app_icon_cache(connection)?;
-    let mut statement = connection
-        .prepare(
-            "SELECT payload, image_mime, image_data
-             FROM clipboard_items ORDER BY position ASC",
-        )
-        .map_err(|error| error.to_string())?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<Vec<u8>>>(2)?,
-            ))
+fn start_history_maintenance(state: &HistoryRuntimeState) -> Result<(), String> {
+    state
+        .try_start_maintenance_with(|runtime| {
+            thread::Builder::new()
+                .name("quickpaste-history-maintenance".to_owned())
+                .spawn(move || history_maintenance_loop(runtime))
+                .map(|_| ())
+                .map_err(|_| "无法启动历史维护线程".to_owned())
         })
-        .map_err(|error| error.to_string())?;
+        .map(|_| ())
+}
 
-    let mut items = Vec::new();
-    for row in rows {
-        let (payload, image_mime, image_data) = row.map_err(|error| error.to_string())?;
-        let mut item: serde_json::Value =
-            serde_json::from_str(&payload).map_err(|error| error.to_string())?;
-        if let Some(object) = item.as_object_mut() {
-            let source_app = object
-                .get("sourceApp")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned);
-            object.remove("sourceAppIcon");
-            if let Some(icon) = source_app.and_then(|source_app| source_app_icons.get(&source_app))
-            {
-                object.insert(
-                    "sourceAppIcon".into(),
-                    serde_json::Value::String(icon.clone()),
-                );
-            }
-            if let (Some(mime), Some(bytes)) = (image_mime, image_data) {
-                object.insert(
-                    "imageUrl".into(),
-                    serde_json::Value::String(format!(
-                        "data:{mime};base64,{}",
-                        STANDARD.encode(bytes)
-                    )),
-                );
+#[tauri::command]
+async fn load_clipboard_history(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<Vec<history::HistoryItem>, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|connection| history::load_history(connection))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply_history_mutation(
+    upserts: Vec<history::HistoryItem>,
+    delete_ids: Vec<String>,
+    policy: history::CapacityPolicy,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::HistoryMutationResult, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| {
+            history::apply_history_mutation(
+                connection,
+                history::HistoryMutation {
+                    upserts,
+                    delete_ids,
+                    policy,
+                },
+            )
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn query_clipboard_history(
+    query: history::HistoryQuery,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::HistoryPage, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::query_history(connection, query))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_pending_ocr_images(
+    query: history::PendingOcrQuery,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::PendingOcrPage, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::list_pending_ocr_images(connection, query))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_clip_payload(
+    id: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<Option<history::HistoryItem>, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::get_clip_payload(connection, &id))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_storage_stats(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::StorageStats, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|connection| history::get_storage_stats(connection))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn compact_history_database(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::StorageStats, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|connection| history::compact_history_database(connection))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn create_history_backup(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::BackupResult, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|_| Ok(()))?;
+        let Some(destination) = system_actions::choose_history_backup_destination()? else {
+            return Ok(history::BackupResult::Cancelled {});
+        };
+        runtime.create_backup_at(&destination)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn prepare_history_restore(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::PreparedRestoreResult, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|_| Ok(()))?;
+        let Some(source) = system_actions::choose_history_restore_source()? else {
+            return Ok(history::PreparedRestoreResult::Cancelled {});
+        };
+        runtime.prepare_restore_source(&source)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn commit_history_restore(
+    token: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::RestoreResult, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.commit_restore_token(&token)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn discard_history_restore(
+    token: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::DiscardRestoreResult, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.discard_restore(&token)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_history_health(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::HistoryHealth, String> {
+    run_history_operation(
+        history_state.inner().clone(),
+        |runtime| Ok(runtime.health()),
+    )
+    .await
+}
+
+#[tauri::command]
+async fn list_history_collections(
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<Vec<history::Collection>, String> {
+    run_history_operation(history_state.inner().clone(), |runtime| {
+        runtime.with_connection(|connection| history::list_history_collections(connection))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn create_history_collection(
+    name: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::Collection, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::create_history_collection(connection, &name))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn rename_history_collection(
+    id: String,
+    name: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::Collection, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| {
+            history::rename_history_collection(connection, &id, &name)
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_history_collection(
+    id: String,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::CollectionDeleteResult, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::delete_history_collection(connection, &id))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_history_snippet(
+    draft: history::SnippetDraft,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::HistoryItem, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime.with_connection(|connection| history::save_history_snippet(connection, draft))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply_history_batch(
+    target: history::BatchTarget,
+    action: history::BatchAction,
+    history_state: State<'_, HistoryRuntimeState>,
+) -> Result<history::BatchResult, String> {
+    run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime
+            .with_connection(|connection| history::apply_history_batch(connection, target, action))
+    })
+    .await
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum OcrErrorReason {
+    Busy,
+    Database,
+    QueueFull,
+    Unknown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+enum OcrCommandResult {
+    Applied {
+        ocr_status: &'static str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ocr_text: Option<String>,
+    },
+    Stale {},
+    Error {
+        reason: OcrErrorReason,
+    },
+}
+
+fn history_ocr_error(error: &str) -> OcrCommandResult {
+    let lower = error.to_ascii_lowercase();
+    let reason = if lower.contains("busy")
+        || lower.contains("locked")
+        || error == HISTORY_RUNTIME_UNAVAILABLE
+    {
+        OcrErrorReason::Busy
+    } else {
+        OcrErrorReason::Database
+    };
+    OcrCommandResult::Error { reason }
+}
+
+fn terminal_ocr_patch(
+    outcome: Result<ocr::OcrOutcome, ocr::OcrFailure>,
+) -> (&'static str, Option<String>) {
+    match outcome {
+        Ok(ocr::OcrOutcome::Completed(text)) => ("completed", Some(text)),
+        Ok(ocr::OcrOutcome::Unavailable) => ("unavailable", None),
+        Ok(ocr::OcrOutcome::Oversized) | Err(ocr::OcrFailure::Oversized) => ("oversized", None),
+        Err(ocr::OcrFailure::Decode | ocr::OcrFailure::Winrt) => ("failed", None),
+    }
+}
+
+async fn apply_native_ocr_patch(
+    history_state: HistoryRuntimeState,
+    ocr_runtime: ocr::OcrRuntime,
+    expected_generation: u64,
+    id: String,
+    image_hash: String,
+    status: &'static str,
+    text: Option<String>,
+) -> OcrCommandResult {
+    let patch_text = text.clone();
+    match run_history_operation(history_state, move |runtime| {
+        runtime.with_connection(|connection| {
+            ocr_runtime
+                .commit_if_current(expected_generation, || {
+                    history::apply_ocr_patch(
+                        connection,
+                        &id,
+                        &image_hash,
+                        status,
+                        patch_text.as_deref(),
+                    )
+                })
+                .unwrap_or(Ok(false))
+        })
+    })
+    .await
+    {
+        Ok(true) => OcrCommandResult::Applied {
+            ocr_status: status,
+            ocr_text: text,
+        },
+        Ok(false) => OcrCommandResult::Stale {},
+        Err(error) => history_ocr_error(&error),
+    }
+}
+
+async fn recognize_clip_image_inner(
+    id: String,
+    image_hash: String,
+    history_state: State<'_, HistoryRuntimeState>,
+    ocr_state: State<'_, ocr::OcrRuntime>,
+) -> OcrCommandResult {
+    // Reserve before entering the blocking history lane or loading the PNG BLOB.
+    // The RAII permit remains held through the final conditional database patch.
+    let command_permit = match ocr_state.try_reserve() {
+        Ok(permit) => permit,
+        Err(ocr::OcrSubmitError::Disabled) => return OcrCommandResult::Stale {},
+        Err(ocr::OcrSubmitError::QueueFull) => {
+            return OcrCommandResult::Error {
+                reason: OcrErrorReason::QueueFull,
             }
         }
-        items.push(item);
+    };
+    let command_generation = command_permit.generation();
+    let stored = match run_history_operation(history_state.inner().clone(), {
+        let id = id.clone();
+        let image_hash = image_hash.clone();
+        move |runtime| {
+            runtime.with_connection(|connection| {
+                history::load_stored_ocr_image(connection, &id, &image_hash)
+            })
+        }
+    })
+    .await
+    {
+        Ok(stored) => stored,
+        Err(error) => return history_ocr_error(&error),
+    };
+
+    let png = match stored {
+        history::StoredOcrImage::Ready(png) => png,
+        history::StoredOcrImage::Stale => return OcrCommandResult::Stale {},
+        history::StoredOcrImage::Decode => {
+            return apply_native_ocr_patch(
+                history_state.inner().clone(),
+                ocr_state.inner().clone(),
+                command_generation,
+                id,
+                image_hash,
+                "failed",
+                None,
+            )
+            .await;
+        }
+        history::StoredOcrImage::Oversized => {
+            if ocr_state.enabled_generation() != Some(command_generation) {
+                return OcrCommandResult::Stale {};
+            }
+            return apply_native_ocr_patch(
+                history_state.inner().clone(),
+                ocr_state.inner().clone(),
+                command_generation,
+                id,
+                image_hash,
+                "oversized",
+                None,
+            )
+            .await;
+        }
+    };
+
+    let ticket = match ocr_state.submit_reserved(command_permit, png) {
+        Ok(ticket) => ticket,
+        Err(ocr::OcrSubmitError::Disabled) => return OcrCommandResult::Stale {},
+        Err(ocr::OcrSubmitError::QueueFull) => {
+            return OcrCommandResult::Error {
+                reason: OcrErrorReason::QueueFull,
+            }
+        }
+    };
+    let (received, _command_permit) =
+        match tauri::async_runtime::spawn_blocking(move || ticket.wait()).await {
+            Ok(received) => received,
+            Err(_) => {
+                return OcrCommandResult::Error {
+                    reason: OcrErrorReason::Unknown,
+                }
+            }
+        };
+    let outcome = match received {
+        Ok(outcome) => outcome,
+        Err(ocr::OcrReceiveError::Disabled) => return OcrCommandResult::Stale {},
+        Err(ocr::OcrReceiveError::Disconnected) => {
+            return OcrCommandResult::Error {
+                reason: OcrErrorReason::Unknown,
+            }
+        }
+    };
+    if ocr_state.enabled_generation() != Some(command_generation) {
+        return OcrCommandResult::Stale {};
     }
-    Ok(items)
+    let (status, text) = terminal_ocr_patch(outcome);
+    apply_native_ocr_patch(
+        history_state.inner().clone(),
+        ocr_state.inner().clone(),
+        command_generation,
+        id,
+        image_hash,
+        status,
+        text,
+    )
+    .await
 }
 
-fn open_history_database(app: &AppHandle) -> Result<Connection, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-    let connection =
-        Connection::open(data_dir.join("history.sqlite3")).map_err(|error| error.to_string())?;
-    configure_history_database_connection(&connection)?;
-    Ok(connection)
-}
-
-fn configure_history_database_connection(connection: &Connection) -> Result<(), String> {
-    connection
-        .busy_timeout(HISTORY_DATABASE_BUSY_TIMEOUT)
-        .map_err(|error| error.to_string())
+async fn mark_clip_ocr_failed_inner(
+    id: String,
+    image_hash: String,
+    history_state: State<'_, HistoryRuntimeState>,
+    ocr_state: State<'_, ocr::OcrRuntime>,
+) -> OcrCommandResult {
+    let command_permit = match ocr_state.try_reserve() {
+        Ok(permit) => permit,
+        Err(ocr::OcrSubmitError::Disabled) => return OcrCommandResult::Stale {},
+        Err(ocr::OcrSubmitError::QueueFull) => {
+            return OcrCommandResult::Error {
+                reason: OcrErrorReason::QueueFull,
+            }
+        }
+    };
+    let command_generation = command_permit.generation();
+    apply_native_ocr_patch(
+        history_state.inner().clone(),
+        ocr_state.inner().clone(),
+        command_generation,
+        id,
+        image_hash,
+        "failed",
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
-fn load_clipboard_history(app: AppHandle) -> Result<Vec<serde_json::Value>, String> {
-    let connection = open_history_database(&app)?;
-    load_history_from_database(&connection)
+async fn recognize_clip_image(
+    id: String,
+    image_hash: String,
+    history_state: State<'_, HistoryRuntimeState>,
+    ocr_state: State<'_, ocr::OcrRuntime>,
+) -> Result<OcrCommandResult, String> {
+    Ok(recognize_clip_image_inner(id, image_hash, history_state, ocr_state).await)
 }
 
 #[tauri::command]
-fn save_clipboard_history(items: Vec<serde_json::Value>, app: AppHandle) -> Result<(), String> {
-    let mut connection = open_history_database(&app)?;
-    save_history_to_database(&mut connection, &items)
+async fn mark_clip_ocr_failed(
+    id: String,
+    image_hash: String,
+    history_state: State<'_, HistoryRuntimeState>,
+    ocr_state: State<'_, ocr::OcrRuntime>,
+) -> Result<OcrCommandResult, String> {
+    Ok(mark_clip_ocr_failed_inner(id, image_hash, history_state, ocr_state).await)
+}
+
+#[tauri::command]
+fn set_clipboard_ocr_enabled(enabled: bool, ocr_state: State<'_, ocr::OcrRuntime>) -> bool {
+    ocr_state.set_enabled(enabled);
+    enabled
+}
+
+#[tauri::command]
+fn invalidate_clipboard_ocr(ocr_state: State<'_, ocr::OcrRuntime>) -> bool {
+    ocr_state.invalidate()
+}
+
+fn unverified_clipboard_copy_result(sequence: Option<u64>) -> Option<PasteResult> {
+    sequence.is_none().then_some(PasteResult {
+        copied: true,
+        pasted: false,
+        requires_elevation: false,
+    })
 }
 
 fn paste_to_remembered_target(
@@ -3555,12 +4526,21 @@ fn paste_to_remembered_target(
     elevated_paste_enabled: bool,
     quick_panel_pinned: bool,
     clipboard_sequence: Option<u64>,
-) -> PasteResult {
+) -> PasteAttempt {
+    if let Some(result) = unverified_clipboard_copy_result(clipboard_sequence) {
+        return PasteAttempt {
+            result,
+            terminal_outcome: metrics::PasteTerminalOutcome::ClipboardUnverified,
+        };
+    }
     let Some(identity) = paste_target.identity_for_activation(quick_panel_pinned) else {
-        return PasteResult {
-            copied: true,
-            pasted: false,
-            requires_elevation: false,
+        return PasteAttempt {
+            result: PasteResult {
+                copied: true,
+                pasted: false,
+                requires_elevation: false,
+            },
+            terminal_outcome: metrics::PasteTerminalOutcome::TargetMissing,
         };
     };
     if !quick_panel_pinned {
@@ -3576,62 +4556,86 @@ fn paste_to_remembered_target(
                 cleared_paste_target_payload(current_quick_panel_session_id(app)),
             );
         }
-        return PasteResult {
-            copied: true,
-            pasted: false,
-            requires_elevation: false,
+        return PasteAttempt {
+            result: PasteResult {
+                copied: true,
+                pasted: false,
+                requires_elevation: false,
+            },
+            terminal_outcome: metrics::PasteTerminalOutcome::TargetStale,
         };
     }
 
     let target_elevated = window_is_elevated(identity.window_handle).unwrap_or(true);
     let current_elevated = current_process_is_elevated().unwrap_or(false);
-    let result =
-        match choose_paste_strategy(current_elevated, target_elevated, elevated_paste_enabled) {
-            PasteStrategy::Direct => PasteResult {
-                copied: true,
-                pasted: clipboard_sequence.is_some_and(|sequence| {
-                    paste_into_window(app, &identity, quick_panel_pinned, sequence)
-                }),
-                requires_elevation: false,
-            },
-            PasteStrategy::CopyOnly => PasteResult {
-                copied: true,
-                pasted: false,
-                requires_elevation: true,
-            },
-            PasteStrategy::ElevatedHelper => {
-                let main_window = app.get_webview_window("main");
-                if !quick_panel_pinned {
-                    if let Some(window) = &main_window {
-                        let _ = window.hide();
-                    }
-                    thread::sleep(Duration::from_millis(40));
+    let strategy = choose_paste_strategy(current_elevated, target_elevated, elevated_paste_enabled);
+    let result = match strategy {
+        PasteStrategy::Direct => PasteResult {
+            copied: true,
+            pasted: clipboard_sequence.is_some_and(|sequence| {
+                paste_into_window(app, &identity, quick_panel_pinned, sequence)
+            }),
+            requires_elevation: false,
+        },
+        PasteStrategy::CopyOnly => PasteResult {
+            copied: true,
+            pasted: false,
+            requires_elevation: true,
+        },
+        PasteStrategy::ElevatedHelper => {
+            let main_window = app.get_webview_window("main");
+            if !quick_panel_pinned {
+                if let Some(window) = &main_window {
+                    let _ = window.hide();
                 }
-                let pasted = clipboard_sequence
-                    .is_some_and(|sequence| launch_elevated_paste_helper(&identity, sequence));
-                if !pasted && !quick_panel_pinned {
-                    if let Some(window) = main_window {
-                        let _ = window.show();
-                        let _ = window.set_focus();
-                    }
-                }
-                PasteResult {
-                    copied: true,
-                    pasted,
-                    requires_elevation: !pasted,
+                thread::sleep(Duration::from_millis(40));
+            }
+            let pasted = clipboard_sequence
+                .is_some_and(|sequence| launch_elevated_paste_helper(&identity, sequence));
+            if !pasted && !quick_panel_pinned {
+                if let Some(window) = main_window {
+                    let _ = window.show();
+                    let _ = window.set_focus();
                 }
             }
-        };
+            PasteResult {
+                copied: true,
+                pasted,
+                requires_elevation: !pasted,
+            }
+        }
+    };
     if paste_target.complete_activation(&identity, quick_panel_pinned, result.pasted) {
         let _ = app.emit(
             PASTE_TARGET_EVENT,
             cleared_paste_target_payload(current_quick_panel_session_id(app)),
         );
     }
-    result
+    PasteAttempt {
+        terminal_outcome: paste_strategy_terminal_outcome(strategy, result.pasted),
+        result,
+    }
+}
+
+fn paste_command_error(
+    metrics: &AcceptanceMetricsState,
+    error: String,
+) -> Result<PasteResult, String> {
+    let _ = metrics.record_paste_terminal(metrics::PasteTerminalOutcome::ClipboardWriteFailed);
+    Err(error)
+}
+
+fn finish_paste_attempt(
+    metrics: &AcceptanceMetricsState,
+    attempt: PasteAttempt,
+) -> Result<PasteResult, String> {
+    let _ = metrics.record_paste_terminal(attempt.terminal_outcome);
+    Ok(attempt.result)
 }
 
 #[tauri::command]
+// Tauri command 保持顶层参数；状态参数由运行时注入，不能打包进前端请求。
+#[allow(clippy::too_many_arguments)]
 fn paste_clipboard_text(
     text: String,
     app: AppHandle,
@@ -3640,27 +4644,119 @@ fn paste_clipboard_text(
     elevated_paste: State<'_, ElevatedPasteEnabled>,
     quick_panel_pinned: State<'_, QuickPanelPinned>,
     current_window_mode: State<'_, CurrentWindowMode>,
+    metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
     let expected = ClipboardSnapshot::Text(text.clone());
     let signature = internal_writes.begin(&expected);
     if let Err(error) = write_text_to_clipboard(text) {
         internal_writes.cancel(signature);
-        return Err(error);
+        return paste_command_error(&metrics_state, error);
     }
     let clipboard_sequence = verified_clipboard_sequence(&expected);
     internal_writes.commit(signature, clipboard_sequence);
     let continuous_paste = current_window_mode.get() == WindowMode::Quick
         && quick_panel_pinned.0.load(Ordering::Relaxed);
-    Ok(paste_to_remembered_target(
-        &app,
-        &paste_target,
-        elevated_paste.0.load(Ordering::Relaxed),
-        continuous_paste,
-        clipboard_sequence,
-    ))
+    finish_paste_attempt(
+        &metrics_state,
+        paste_to_remembered_target(
+            &app,
+            &paste_target,
+            elevated_paste.0.load(Ordering::Relaxed),
+            continuous_paste,
+            clipboard_sequence,
+        ),
+    )
 }
 
 #[tauri::command]
+// Tauri command 保持顶层 camelCase 参数；状态参数由运行时注入，不能打包进前端请求。
+#[allow(clippy::too_many_arguments)]
+fn paste_clipboard_formats(
+    plain_text: String,
+    html: Option<String>,
+    rtf_base64: Option<String>,
+    app: AppHandle,
+    internal_writes: State<'_, InternalClipboardWrites>,
+    paste_target: State<'_, PasteTarget>,
+    elevated_paste: State<'_, ElevatedPasteEnabled>,
+    quick_panel_pinned: State<'_, QuickPanelPinned>,
+    current_window_mode: State<'_, CurrentWindowMode>,
+    metrics_state: State<'_, AcceptanceMetricsState>,
+) -> Result<PasteResult, String> {
+    let expected = match clipboard_formats::prepare_format_package(
+        &plain_text,
+        html.as_deref(),
+        rtf_base64.as_deref(),
+    ) {
+        Ok(expected) => expected,
+        Err(error) => return paste_command_error(&metrics_state, error),
+    };
+    let clipboard_sequence = match write_and_verify_package(
+        internal_writes.inner(),
+        &expected,
+        clipboard_formats::write_format_package,
+        verified_format_package_sequence,
+    ) {
+        Ok(sequence) => sequence,
+        Err(error) => return paste_command_error(&metrics_state, error),
+    };
+    let continuous_paste = current_window_mode.get() == WindowMode::Quick
+        && quick_panel_pinned.0.load(Ordering::Relaxed);
+    finish_paste_attempt(
+        &metrics_state,
+        paste_to_remembered_target(
+            &app,
+            &paste_target,
+            elevated_paste.0.load(Ordering::Relaxed),
+            continuous_paste,
+            clipboard_sequence,
+        ),
+    )
+}
+
+#[tauri::command]
+// Tauri command 保持顶层参数；状态参数由运行时注入，不能打包进前端请求。
+#[allow(clippy::too_many_arguments)]
+fn paste_clipboard_files(
+    paths: Vec<String>,
+    app: AppHandle,
+    internal_writes: State<'_, InternalClipboardWrites>,
+    paste_target: State<'_, PasteTarget>,
+    elevated_paste: State<'_, ElevatedPasteEnabled>,
+    quick_panel_pinned: State<'_, QuickPanelPinned>,
+    current_window_mode: State<'_, CurrentWindowMode>,
+    metrics_state: State<'_, AcceptanceMetricsState>,
+) -> Result<PasteResult, String> {
+    let expected = match clipboard_formats::prepare_file_package(&paths) {
+        Ok(expected) => expected,
+        Err(error) => return paste_command_error(&metrics_state, error),
+    };
+    let clipboard_sequence = match write_and_verify_package(
+        internal_writes.inner(),
+        &expected,
+        clipboard_formats::write_format_package,
+        verified_format_package_sequence,
+    ) {
+        Ok(sequence) => sequence,
+        Err(error) => return paste_command_error(&metrics_state, error),
+    };
+    let continuous_paste = current_window_mode.get() == WindowMode::Quick
+        && quick_panel_pinned.0.load(Ordering::Relaxed);
+    finish_paste_attempt(
+        &metrics_state,
+        paste_to_remembered_target(
+            &app,
+            &paste_target,
+            elevated_paste.0.load(Ordering::Relaxed),
+            continuous_paste,
+            clipboard_sequence,
+        ),
+    )
+}
+
+#[tauri::command]
+// Tauri command 保持顶层参数；状态参数由运行时注入，不能打包进前端请求。
+#[allow(clippy::too_many_arguments)]
 fn paste_clipboard_image(
     data_url: String,
     app: AppHandle,
@@ -3669,29 +4765,37 @@ fn paste_clipboard_image(
     elevated_paste: State<'_, ElevatedPasteEnabled>,
     quick_panel_pinned: State<'_, QuickPanelPinned>,
     current_window_mode: State<'_, CurrentWindowMode>,
+    metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
-    let image = decode_clipboard_image(&data_url)?;
+    let image = match decode_clipboard_image(&data_url) {
+        Ok(image) => image,
+        Err(error) => return paste_command_error(&metrics_state, error),
+    };
     let expected = ClipboardSnapshot::Image {
         width: image.width,
         height: image.height,
         bytes: image.bytes.to_vec(),
+        omitted_formats: Vec::new(),
     };
     let signature = internal_writes.begin(&expected);
     if let Err(error) = write_image_data_to_clipboard(image) {
         internal_writes.cancel(signature);
-        return Err(error);
+        return paste_command_error(&metrics_state, error);
     }
     let clipboard_sequence = verified_clipboard_sequence(&expected);
     internal_writes.commit(signature, clipboard_sequence);
     let continuous_paste = current_window_mode.get() == WindowMode::Quick
         && quick_panel_pinned.0.load(Ordering::Relaxed);
-    Ok(paste_to_remembered_target(
-        &app,
-        &paste_target,
-        elevated_paste.0.load(Ordering::Relaxed),
-        continuous_paste,
-        clipboard_sequence,
-    ))
+    finish_paste_attempt(
+        &metrics_state,
+        paste_to_remembered_target(
+            &app,
+            &paste_target,
+            elevated_paste.0.load(Ordering::Relaxed),
+            continuous_paste,
+            clipboard_sequence,
+        ),
+    )
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3704,7 +4808,25 @@ pub fn run() {
         std::process::exit(2);
     }
 
-    let start_hidden = std::env::args().any(|argument| argument == "--hidden");
+    let process_arguments = std::env::args_os().collect::<Vec<_>>();
+    let start_hidden = process_arguments
+        .iter()
+        .any(|argument| argument == "--hidden");
+    let acceptance_mode = metrics::acceptance_metrics_enabled(&process_arguments);
+    let acceptance_profile_override =
+        std::env::var_os(metrics::ACCEPTANCE_PROFILE_ENV).map(PathBuf::from);
+    let acceptance_profile = match metrics::prepare_acceptance_profile(
+        acceptance_mode,
+        acceptance_profile_override.as_deref(),
+        &std::env::temp_dir(),
+        SystemTime::now(),
+    ) {
+        Ok(profile) => profile,
+        Err(_) => {
+            eprintln!("验收 profile 校验失败；拒绝启动以保护正常用户数据");
+            std::process::exit(2);
+        }
+    };
     let capture_control = CaptureControl(Arc::new(AtomicBool::new(false)));
     let capture_health = CaptureHealth::default();
     let internal_clipboard_writes = InternalClipboardWrites::default();
@@ -3765,6 +4887,7 @@ pub fn run() {
                             return;
                         }
 
+                        let sample_started_at = Instant::now();
                         let snapshot = capture_foreground_paste_target(app);
                         let target_identity =
                             snapshot.as_ref().map(|snapshot| snapshot.identity.clone());
@@ -3781,19 +4904,51 @@ pub fn run() {
                                 (None, false)
                             }
                         };
-                        show_quick_panel(app, target_identity, source_app, elevated);
+                        show_quick_panel(
+                            app,
+                            target_identity,
+                            source_app,
+                            elevated,
+                            Some(sample_started_at),
+                        );
                     }
                 })
                 .build(),
         )
         .setup(move |app| {
-            app.handle().plugin(
-                tauri_plugin_log::Builder::default()
-                    .level(log::LevelFilter::Info)
-                    .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
-                    .max_file_size(256_000)
-                    .build(),
-            )?;
+            if !acceptance_mode {
+                app.handle().plugin(
+                    tauri_plugin_log::Builder::default()
+                        .level(log::LevelFilter::Info)
+                        .rotation_strategy(tauri_plugin_log::RotationStrategy::KeepSome(3))
+                        .max_file_size(256_000)
+                        .build(),
+                )?;
+            }
+            let history_data_directory = match &acceptance_profile {
+                Some(profile) => profile.clone(),
+                None => app.path().app_data_dir()?,
+            };
+            let metrics_state = if acceptance_mode && acceptance_profile.is_some() {
+                AcceptanceMetricsState::enabled(&history_data_directory)
+            } else {
+                AcceptanceMetricsState::default()
+            };
+            if !app.manage(metrics_state.clone()) {
+                return Err(std::io::Error::other("验收指标运行时被重复注册").into());
+            }
+            metrics_state.schedule_flush();
+            let history_state = initialize_history_runtime_off_ui_thread(history_data_directory)
+                .map_err(std::io::Error::other)?;
+            if !app.manage(history_state.clone()) {
+                return Err(std::io::Error::other("历史运行时被重复注册").into());
+            }
+            let ocr_runtime = ocr::OcrRuntime::new()
+                .map_err(|_| std::io::Error::other("无法启动本地 OCR 运行时"))?;
+            if !app.manage(ocr_runtime) {
+                return Err(std::io::Error::other("OCR 运行时被重复注册").into());
+            }
+            start_history_maintenance(&history_state).map_err(std::io::Error::other)?;
             if let Err(error) = app.global_shortcut().register(open_shortcut) {
                 log::warn!("全局快捷键 Ctrl+Shift+V 注册失败: {error}");
             }
@@ -3847,6 +5002,7 @@ pub fn run() {
                 capture_exclusions.clone(),
                 capture_health.clone(),
                 internal_clipboard_writes.clone(),
+                metrics_state.clone(),
             );
             if let Err(error) = set_screen_capture_protection(
                 initial_screen_capture_protection(),
@@ -3855,7 +5011,7 @@ pub fn run() {
                 log::warn!("首次显示前无法应用窗口捕获策略: {error}");
             }
             if !start_hidden {
-                show_quick_panel(app.handle(), None, None, false);
+                show_quick_panel(app.handle(), None, None, false, None);
             }
             Ok(())
         })
@@ -3883,15 +5039,42 @@ pub fn run() {
             set_global_shortcut,
             set_window_mode,
             set_quick_panel_pinned,
+            record_quick_panel_first_frame,
             get_launch_at_startup,
             set_launch_at_startup,
             set_screen_capture_protection,
             write_clipboard_text,
             write_clipboard_image,
             paste_clipboard_text,
+            paste_clipboard_formats,
+            paste_clipboard_files,
             paste_clipboard_image,
+            system_actions::open_external_link,
+            system_actions::open_file_path,
+            system_actions::reveal_file_path,
+            system_actions::save_clipboard_image,
             load_clipboard_history,
-            save_clipboard_history,
+            apply_history_mutation,
+            query_clipboard_history,
+            list_pending_ocr_images,
+            get_clip_payload,
+            get_storage_stats,
+            compact_history_database,
+            create_history_backup,
+            prepare_history_restore,
+            commit_history_restore,
+            discard_history_restore,
+            get_history_health,
+            list_history_collections,
+            create_history_collection,
+            rename_history_collection,
+            delete_history_collection,
+            save_history_snippet,
+            apply_history_batch,
+            recognize_clip_image,
+            mark_clip_ocr_failed,
+            set_clipboard_ocr_enabled,
+            invalidate_clipboard_ocr,
             cancel_app_quit,
             exit_app,
             updater::check_for_update,
@@ -3906,6 +5089,256 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn temporary_history_lane_directory(name: &str) -> PathBuf {
+        static COUNTER: AtomicU64 = AtomicU64::new(1);
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let counter = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "quickpaste-lib-history-{name}-{}-{nonce}-{counter}",
+            std::process::id()
+        ));
+        fs::create_dir(&path).expect("create isolated history lane directory");
+        path
+    }
+
+    #[test]
+    fn history_runtime_clones_share_one_serial_lane() {
+        use std::sync::atomic::AtomicUsize;
+
+        let directory = temporary_history_lane_directory("serial-lane");
+        let runtime = history::HistoryRuntime::open(directory.clone()).expect("open history lane");
+        let state = HistoryRuntimeState::new(runtime);
+        let sibling = state.clone();
+        assert!(state.shares_runtime_with(&sibling));
+
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let mut workers = Vec::new();
+        for lane in [state.clone(), sibling] {
+            let active = active.clone();
+            let maximum = maximum.clone();
+            workers.push(thread::spawn(move || {
+                execute_history_operation(lane, |_| {
+                    let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                    maximum.fetch_max(now, Ordering::SeqCst);
+                    thread::sleep(Duration::from_millis(25));
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .expect("serialized history operation");
+            }));
+        }
+        for worker in workers {
+            worker.join().expect("history lane worker");
+        }
+        assert_eq!(maximum.load(Ordering::SeqCst), 1);
+
+        drop(state);
+        fs::remove_dir_all(directory).expect("remove history lane directory");
+    }
+
+    #[test]
+    fn history_maintenance_can_only_be_started_once_per_managed_lane() {
+        assert_eq!(
+            history::HISTORY_MAINTENANCE_INTERVAL,
+            Duration::from_secs(30)
+        );
+        let directory = temporary_history_lane_directory("maintenance-once");
+        let runtime = history::HistoryRuntime::open(directory.clone()).expect("open history lane");
+        let state = HistoryRuntimeState::new(runtime);
+        let starts = Arc::new(AtomicU64::new(0));
+
+        for _ in 0..3 {
+            let starts = starts.clone();
+            state
+                .try_start_maintenance_with(move |_| {
+                    starts.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                })
+                .expect("claim bounded maintenance loop");
+        }
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+
+        drop(state);
+        fs::remove_dir_all(directory).expect("remove history lane directory");
+    }
+
+    #[test]
+    fn history_worker_join_and_mutex_poison_errors_are_content_free() {
+        let directory = temporary_history_lane_directory("worker-errors");
+        let runtime = history::HistoryRuntime::open(directory.clone()).expect("open history lane");
+        let state = HistoryRuntimeState::new(runtime);
+
+        let worker_error = tauri::async_runtime::block_on(run_history_operation(
+            state.clone(),
+            |_| -> Result<(), String> { panic!("injected history worker panic") },
+        ));
+        assert_eq!(worker_error, Err(HISTORY_RUNTIME_WORKER_FAILED.to_owned()));
+        assert_eq!(
+            execute_history_operation(state.clone(), |_| Ok(())),
+            Err(HISTORY_RUNTIME_UNAVAILABLE.to_owned())
+        );
+
+        drop(state);
+        fs::remove_dir_all(directory).expect("remove history lane directory");
+    }
+
+    #[test]
+    fn managed_restore_commit_keeps_the_reopened_lane_usable() {
+        let root = temporary_history_lane_directory("restore-reopen");
+        let live_directory = root.join("live");
+        let source_directory = root.join("source");
+        fs::create_dir(&live_directory).expect("create live directory");
+        fs::create_dir(&source_directory).expect("create source directory");
+
+        let source = history::HistoryRuntime::open(source_directory.clone())
+            .expect("open restore source runtime");
+        drop(source);
+        let mut live =
+            history::HistoryRuntime::open(live_directory).expect("open restore live runtime");
+        let prepared = live
+            .prepare_restore_source(&source_directory.join("history.sqlite3"))
+            .expect("prepare managed restore");
+        let history::PreparedRestoreResult::Prepared { token, .. } = prepared else {
+            panic!("fixture restore must be prepared");
+        };
+        let state = HistoryRuntimeState::new(live);
+
+        execute_history_operation(state.clone(), move |runtime| {
+            runtime.commit_restore_token(&token).map(|_| ())
+        })
+        .expect("commit through managed runtime route");
+        execute_history_operation(state.clone(), |runtime| {
+            runtime.with_connection(|connection| history::get_storage_stats(connection))
+        })
+        .expect("reopened connection remains usable");
+
+        drop(state);
+        fs::remove_dir_all(root).expect("remove restore lane directory");
+    }
+
+    #[test]
+    fn every_history_ipc_is_async_registered_and_routes_through_spawn_blocking() {
+        let source = include_str!("lib.rs");
+        let command_source = source
+            .split_once("const HISTORY_RUNTIME_UNAVAILABLE")
+            .expect("history runtime source")
+            .1
+            .split_once("fn unverified_clipboard_copy_result")
+            .expect("history command source")
+            .0;
+        let handler_source = source
+            .split_once(".invoke_handler(tauri::generate_handler![")
+            .expect("invoke handler source")
+            .1
+            .split_once("])\n        .run(")
+            .expect("invoke handler end")
+            .0;
+        let setup_source = source
+            .split_once(".setup(move |app| {")
+            .expect("setup source")
+            .1
+            .split_once("        .on_window_event(")
+            .expect("setup end")
+            .0;
+        let commands = [
+            "load_clipboard_history",
+            "apply_history_mutation",
+            "query_clipboard_history",
+            "get_clip_payload",
+            "get_storage_stats",
+            "compact_history_database",
+            "create_history_backup",
+            "prepare_history_restore",
+            "commit_history_restore",
+            "discard_history_restore",
+            "get_history_health",
+            "list_history_collections",
+            "create_history_collection",
+            "rename_history_collection",
+            "delete_history_collection",
+            "save_history_snippet",
+            "apply_history_batch",
+        ];
+        for command in commands {
+            let body = command_source
+                .split_once(&format!("async fn {command}("))
+                .unwrap_or_else(|| panic!("{command} must remain async"))
+                .1
+                .split_once("\n}\n")
+                .unwrap_or_else(|| panic!("{command} must keep a bounded body"))
+                .0;
+            assert!(
+                body.contains("run_history_operation("),
+                "{command} must route through the shared blocking lane"
+            );
+            assert!(
+                handler_source.contains(&format!("            {command},")),
+                "{command} must remain registered"
+            );
+        }
+        assert!(command_source.contains("tauri::async_runtime::spawn_blocking"));
+        assert!(!command_source.contains("fn open_history_database(app:"));
+        assert!(command_source.contains("runtime.commit_restore_token(&token)"));
+        assert_eq!(
+            setup_source
+                .matches("start_history_maintenance(&history_state)")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn native_ocr_commands_reserve_capacity_before_history_or_blob_work() {
+        let source = include_str!("lib.rs");
+        let recognize = source
+            .split_once("async fn recognize_clip_image_inner(")
+            .expect("recognize command source")
+            .1
+            .split_once("async fn mark_clip_ocr_failed_inner(")
+            .expect("recognize command end")
+            .0;
+        let reserve = recognize
+            .find("ocr_state.try_reserve()")
+            .expect("recognize must reserve a bounded command permit");
+        let history_lane = recognize
+            .find("run_history_operation(")
+            .expect("recognize must enter the history lane");
+        let blob_load = recognize
+            .find("history::load_stored_ocr_image")
+            .expect("recognize must load the stored image");
+        assert!(reserve < history_lane && reserve < blob_load);
+        assert!(recognize.contains("submit_reserved(command_permit, png)"));
+        let stored_decode = recognize
+            .split_once("history::StoredOcrImage::Decode =>")
+            .expect("stored decode branch")
+            .1
+            .split_once("history::StoredOcrImage::Oversized =>")
+            .expect("stored decode branch end")
+            .0;
+        assert!(stored_decode.contains("apply_native_ocr_patch("));
+        assert!(stored_decode.contains("\"failed\""));
+
+        let mark_failed = source
+            .split_once("async fn mark_clip_ocr_failed_inner(")
+            .expect("failure command source")
+            .1
+            .split_once("#[tauri::command]\nasync fn recognize_clip_image(")
+            .expect("failure command end")
+            .0;
+        assert!(
+            mark_failed
+                .find("ocr_state.try_reserve()")
+                .expect("failure patch must reserve capacity")
+                < mark_failed
+                    .find("apply_native_ocr_patch(")
+                    .expect("failure patch database call")
+        );
+    }
+
     #[test]
     fn snapshot_signatures_are_stable_and_kind_sensitive() {
         let first = ClipboardSnapshot::Text("QuickPaste".into());
@@ -3914,6 +5347,25 @@ mod tests {
 
         assert_eq!(snapshot_signature(&first), snapshot_signature(&same));
         assert_ne!(snapshot_signature(&first), snapshot_signature(&different));
+    }
+
+    #[test]
+    fn rich_and_file_packages_participate_in_snapshot_signatures() {
+        let rich = ClipboardSnapshot::Package(clipboard_formats::FormatPackage {
+            plain_text: Some("same plain".into()),
+            html: Some("<b>same plain</b>".into()),
+            ..clipboard_formats::FormatPackage::default()
+        });
+        let different_html = ClipboardSnapshot::Package(clipboard_formats::FormatPackage {
+            plain_text: Some("same plain".into()),
+            html: Some("<i>same plain</i>".into()),
+            ..clipboard_formats::FormatPackage::default()
+        });
+
+        assert_ne!(
+            snapshot_signature(&rich),
+            snapshot_signature(&different_html)
+        );
     }
 
     #[test]
@@ -3935,12 +5387,114 @@ mod tests {
     }
 
     #[test]
+    fn legacy_plain_writes_match_the_windows_plain_format_package_once() {
+        let writes = InternalClipboardWrites::default();
+        let text = ClipboardSnapshot::Text("由 QuickPaste 写入".into());
+        let package = ClipboardSnapshot::Package(clipboard_formats::FormatPackage {
+            plain_text: Some("由 QuickPaste 写入".into()),
+            ..clipboard_formats::FormatPackage::default()
+        });
+        let signature = writes.begin(&text);
+        writes.commit(signature, Some(89));
+
+        assert_eq!(signature, snapshot_signature(&package));
+        assert!(writes.consume(Some(89), snapshot_signature(&package)));
+        assert!(!writes.consume(Some(90), snapshot_signature(&package)));
+    }
+
+    #[test]
+    fn an_internal_format_package_is_consumed_once_then_the_same_external_content_is_visible() {
+        let writes = InternalClipboardWrites::default();
+        let snapshot = ClipboardSnapshot::Package(clipboard_formats::FormatPackage {
+            plain_text: Some("由 QuickPaste 写入".into()),
+            html: Some("<b>由 QuickPaste 写入</b>".into()),
+            ..clipboard_formats::FormatPackage::default()
+        });
+        let signature = writes.begin(&snapshot);
+        writes.commit(signature, Some(91));
+
+        assert!(writes.consume(Some(91), signature));
+        assert!(!writes.consume(Some(92), signature));
+    }
+
+    #[test]
+    fn package_payloads_keep_rich_formats_and_ordered_file_metadata() {
+        let rich = snapshot_payload(
+            ClipboardSnapshot::Package(clipboard_formats::FormatPackage {
+                plain_text: Some("富文本".into()),
+                html: Some("<b>富文本</b>".into()),
+                rtf: Some(br"{\rtf1 rich}".to_vec()),
+                ..clipboard_formats::FormatPackage::default()
+            }),
+            None,
+        )
+        .expect("rich payload");
+        assert_eq!(rich.kind, "text");
+        assert_eq!(
+            rich.formats,
+            vec![
+                clipboard_formats::ClipboardFormatKind::Text,
+                clipboard_formats::ClipboardFormatKind::Html,
+                clipboard_formats::ClipboardFormatKind::Rtf,
+            ]
+        );
+        assert_eq!(rich.html.as_deref(), Some("<b>富文本</b>"));
+        assert!(rich.rtf_base64.is_some());
+
+        let files = clipboard_formats::prepare_file_package(&[
+            "C:\\Fixtures\\first.txt".into(),
+            "C:\\Fixtures\\folder".into(),
+        ])
+        .expect("valid file paths");
+        let files =
+            snapshot_payload(ClipboardSnapshot::Package(files), None).expect("file payload");
+        let json = serde_json::to_value(files).expect("serialize file payload");
+        assert_eq!(json["kind"], "file");
+        assert_eq!(json["formats"], serde_json::json!(["files"]));
+        assert_eq!(json["files"][0]["path"], "C:\\Fixtures\\first.txt");
+        assert!(json["files"][0].get("existsAtCapture").is_none());
+        assert!(json["files"][0].get("exists").is_some());
+    }
+
+    #[test]
+    fn package_write_verification_commits_optional_sequence_and_cancels_on_write_failure() {
+        let expected = clipboard_formats::prepare_format_package(
+            "plain",
+            Some("<b>plain</b>"),
+            Some("e1xydGYxXGFuc2k="),
+        )
+        .expect("valid package");
+        let writes = InternalClipboardWrites::default();
+
+        let sequence = write_and_verify_package(&writes, &expected, |_| Ok(()), |_| Some(101))
+            .expect("write succeeds");
+        assert_eq!(sequence, Some(101));
+        assert!(writes.consume(
+            Some(101),
+            snapshot_signature(&ClipboardSnapshot::Package(expected.clone()))
+        ));
+
+        let failed = write_and_verify_package(
+            &writes,
+            &expected,
+            |_| Err("拒绝写入".into()),
+            |_| Some(102),
+        );
+        assert_eq!(failed, Err("拒绝写入".into()));
+        assert!(!writes.consume(
+            Some(102),
+            snapshot_signature(&ClipboardSnapshot::Package(expected))
+        ));
+    }
+
+    #[test]
     fn image_payload_is_encoded_as_png_data_url() {
         let payload = snapshot_payload(
             ClipboardSnapshot::Image {
                 width: 1,
                 height: 1,
                 bytes: vec![77, 111, 206, 255],
+                omitted_formats: Vec::new(),
             },
             Some(SourceAppIdentity {
                 name: "截图工具".into(),
@@ -3952,10 +5506,122 @@ mod tests {
         assert_eq!(payload.kind, "image");
         assert!(payload.content.starts_with("data:image/png;base64,"));
         assert_eq!(payload.width, Some(1));
+        assert_eq!(
+            payload.image_hash.as_deref(),
+            Some("bb56ccebcec59e12ecff6f26f69eb98418b0402726e4086c3235e9cdc1d282bc")
+        );
+        assert_eq!(
+            image_capture_hash(1, 1, &[77, 111, 206, 255]).as_deref(),
+            payload.image_hash.as_deref()
+        );
         assert_eq!(payload.source_app, "截图工具");
         assert_eq!(
             payload.source_app_icon.as_deref(),
             Some("data:image/png;base64,source-icon")
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn oversized_or_malformed_rgba_never_reaches_png_base64_or_ipc_payloads() {
+        let oversized_dimension = complete_windows_image_fallback(
+            clipboard_formats::FormatPackage::default(),
+            Some(71),
+            ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Image {
+                    width: 8_193,
+                    height: 1,
+                    bytes: vec![0; 8_193 * 4],
+                    omitted_formats: Vec::new(),
+                },
+                sequence: None,
+            },
+            Some(71),
+        );
+        assert!(matches!(
+            oversized_dimension,
+            ClipboardReadAttempt::Ignored { package, sequence: Some(71) }
+                if package.omitted_formats
+                    == vec![clipboard_formats::ClipboardFormatKind::Image]
+        ));
+
+        let omitted = clipboard_formats::FormatPackage {
+            omitted_formats: vec![clipboard_formats::ClipboardFormatKind::Image],
+            ..clipboard_formats::FormatPackage::default()
+        };
+        assert!(!clipboard_package_allows_image_fallback(&omitted));
+        assert!(snapshot_payload(
+            ClipboardSnapshot::Image {
+                width: usize::MAX,
+                height: 2,
+                bytes: Vec::new(),
+                omitted_formats: Vec::new(),
+            },
+            None,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn native_ocr_results_have_closed_content_free_error_and_terminal_shapes() {
+        let cases = [
+            (
+                OcrCommandResult::Applied {
+                    ocr_status: "completed",
+                    ocr_text: Some("line\r\ntext".into()),
+                },
+                serde_json::json!({
+                    "status": "applied",
+                    "ocrStatus": "completed",
+                    "ocrText": "line\r\ntext"
+                }),
+            ),
+            (
+                OcrCommandResult::Applied {
+                    ocr_status: "oversized",
+                    ocr_text: None,
+                },
+                serde_json::json!({"status": "applied", "ocrStatus": "oversized"}),
+            ),
+            (
+                OcrCommandResult::Stale {},
+                serde_json::json!({"status": "stale"}),
+            ),
+            (
+                OcrCommandResult::Error {
+                    reason: OcrErrorReason::QueueFull,
+                },
+                serde_json::json!({"status": "error", "reason": "queueFull"}),
+            ),
+        ];
+        for (actual, expected) in cases {
+            assert_eq!(
+                serde_json::to_value(actual).expect("serialize OCR result"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn deterministic_ocr_failures_become_terminal_failed_patches() {
+        assert_eq!(
+            terminal_ocr_patch(Ok(ocr::OcrOutcome::Completed("text".into()))),
+            ("completed", Some("text".into()))
+        );
+        assert_eq!(
+            terminal_ocr_patch(Ok(ocr::OcrOutcome::Unavailable)),
+            ("unavailable", None)
+        );
+        assert_eq!(
+            terminal_ocr_patch(Ok(ocr::OcrOutcome::Oversized)),
+            ("oversized", None)
+        );
+        for failure in [ocr::OcrFailure::Decode, ocr::OcrFailure::Winrt] {
+            assert_eq!(terminal_ocr_patch(Err(failure)), ("failed", None));
+        }
+        assert_eq!(
+            terminal_ocr_patch(Err(ocr::OcrFailure::Oversized)),
+            ("oversized", None)
         );
     }
 
@@ -3987,6 +5653,12 @@ mod tests {
             source_app_icon: Some("data:image/png;base64,captured".into()),
             width: None,
             height: None,
+            image_hash: None,
+            formats: vec![clipboard_formats::ClipboardFormatKind::Text],
+            html: None,
+            rtf_base64: None,
+            files: Vec::new(),
+            omitted_formats: Vec::new(),
         };
         let target = PasteTargetPayload {
             session_id: 7,
@@ -4168,281 +5840,6 @@ mod tests {
                 .window_handle,
             8484
         );
-    }
-
-    #[test]
-    fn sqlite_history_deduplicates_source_icons_outside_item_payloads() {
-        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-        let newest_icon = app_icon_png_data_url(1, 1, vec![77, 111, 206, 255])
-            .expect("valid source application icon");
-        let older_icon = app_icon_png_data_url(1, 1, vec![31, 51, 76, 255])
-            .expect("valid older source application icon");
-        let items = vec![
-            serde_json::json!({
-                "id": "chrome-1",
-                "kind": "text",
-                "content": "第一条",
-                "sourceApp": "Google Chrome",
-                "sourceAppIcon": newest_icon
-            }),
-            serde_json::json!({
-                "id": "chrome-2",
-                "kind": "text",
-                "content": "第二条",
-                "sourceApp": "Google Chrome",
-                "sourceAppIcon": older_icon
-            }),
-        ];
-
-        save_history_to_database(&mut connection, &items).expect("save history");
-
-        let icon_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM source_app_icons", [], |row| {
-                row.get(0)
-            })
-            .expect("count deduplicated icons");
-        assert_eq!(icon_count, 1);
-        let mut statement = connection
-            .prepare("SELECT payload FROM clipboard_items ORDER BY position ASC")
-            .expect("prepare payload query");
-        let payloads = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("query payloads")
-            .collect::<Result<Vec<_>, _>>()
-            .expect("read payloads");
-        assert!(payloads.iter().all(|payload| {
-            !payload.contains("sourceAppIcon") && !payload.contains("data:image/png;base64,")
-        }));
-        drop(statement);
-
-        let loaded = load_history_from_database(&connection).expect("load history");
-        assert_eq!(loaded[0]["sourceAppIcon"], newest_icon);
-        assert_eq!(loaded[1]["sourceAppIcon"], newest_icon);
-    }
-
-    #[test]
-    fn sqlite_history_round_trip_keeps_images_and_source_icons_independent() {
-        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-        let icon = app_icon_png_data_url(1, 1, vec![77, 111, 206, 255])
-            .expect("valid source application icon");
-        let items = vec![
-            serde_json::json!({
-                "id": "text-1",
-                "kind": "text",
-                "content": "你好"
-            }),
-            serde_json::json!({
-                "id": "image-1",
-                "kind": "image",
-                "content": "图片",
-                "sourceApp": "Snipping Tool",
-                "sourceAppIcon": icon,
-                "imageUrl": "data:image/png;base64,TWFu"
-            }),
-        ];
-
-        save_history_to_database(&mut connection, &items).expect("save history");
-        let (payload, image_mime, image_data): (String, Option<String>, Option<Vec<u8>>) = connection
-            .query_row(
-                "SELECT payload, image_mime, image_data FROM clipboard_items WHERE id = 'image-1'",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .expect("read stored image record");
-        assert!(!payload.contains("imageUrl"));
-        assert!(!payload.contains("sourceAppIcon"));
-        assert_eq!(image_mime.as_deref(), Some("image/png"));
-        assert_eq!(image_data.as_deref(), Some(b"Man".as_slice()));
-        let loaded = load_history_from_database(&connection).expect("load history");
-
-        assert_eq!(loaded, items);
-    }
-
-    #[test]
-    fn sqlite_history_drops_invalid_icons_without_overwriting_a_valid_cache() {
-        let mut connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-        let valid_icon = app_icon_png_data_url(1, 1, vec![77, 111, 206, 255])
-            .expect("valid source application icon");
-        save_history_to_database(
-            &mut connection,
-            &[serde_json::json!({
-                "id": "cached",
-                "content": "缓存来源",
-                "sourceApp": "Cached App",
-                "sourceAppIcon": valid_icon
-            })],
-        )
-        .expect("prime valid icon cache");
-
-        let wrong_size_icon = png_data_url(
-            RgbaImage::from_raw(1, 1, vec![77, 111, 206, 255]).expect("one pixel image"),
-        )
-        .expect("one pixel PNG");
-        let oversized_icon = format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(vec![0_u8; 32 * 1024 + 1])
-        );
-        let items = vec![
-            serde_json::json!({
-                "id": "cached",
-                "content": "正文仍需保留",
-                "sourceApp": "Cached App",
-                "sourceAppIcon": "data:image/png;base64,not-valid-base64"
-            }),
-            serde_json::json!({
-                "id": "wrong-size",
-                "content": "错误尺寸正文",
-                "sourceApp": "Wrong Size",
-                "sourceAppIcon": wrong_size_icon
-            }),
-            serde_json::json!({
-                "id": "oversized",
-                "content": "超限正文",
-                "sourceApp": "Oversized",
-                "sourceAppIcon": oversized_icon
-            }),
-        ];
-
-        save_history_to_database(&mut connection, &items).expect("save invalid icon history");
-        let loaded = load_history_from_database(&connection).expect("load history");
-
-        assert_eq!(loaded[0]["content"], "正文仍需保留");
-        assert_eq!(loaded[0]["sourceAppIcon"], valid_icon);
-        assert_eq!(loaded[1]["content"], "错误尺寸正文");
-        assert!(loaded[1].get("sourceAppIcon").is_none());
-        assert_eq!(loaded[2]["content"], "超限正文");
-        assert!(loaded[2].get("sourceAppIcon").is_none());
-    }
-
-    #[test]
-    fn history_database_initialization_preserves_legacy_clipboard_items() {
-        let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-        connection
-            .execute_batch(
-                "CREATE TABLE clipboard_items (
-                   position INTEGER NOT NULL,
-                   id TEXT PRIMARY KEY NOT NULL,
-                   payload TEXT NOT NULL,
-                   image_mime TEXT,
-                   image_data BLOB
-                 );",
-            )
-            .expect("create legacy history table");
-        connection
-            .execute(
-                "INSERT INTO clipboard_items(position, id, payload) VALUES (0, 'legacy', ?1)",
-                [serde_json::json!({
-                    "id": "legacy",
-                    "content": "旧版本正文",
-                    "sourceApp": "Legacy App"
-                })
-                .to_string()],
-            )
-            .expect("insert legacy history");
-
-        initialize_history_database(&connection).expect("initialize upgraded database");
-
-        let legacy_count: i64 = connection
-            .query_row("SELECT COUNT(*) FROM clipboard_items", [], |row| row.get(0))
-            .expect("count legacy items");
-        let icon_table_count: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'source_app_icons'",
-                [],
-                |row| row.get(0),
-            )
-            .expect("find icon table");
-        assert_eq!(legacy_count, 1);
-        assert_eq!(icon_table_count, 1);
-        assert!(connection
-            .execute(
-                "INSERT INTO source_app_icons(source_app, icon_png) VALUES ('Too Big', ?1)",
-                [vec![0_u8; 32 * 1024 + 1]],
-            )
-            .is_err());
-
-        let loaded = load_history_from_database(&connection).expect("load legacy history");
-        assert_eq!(loaded[0]["content"], "旧版本正文");
-    }
-
-    #[test]
-    fn sqlite_history_load_skips_corrupt_and_oversized_cached_icons() {
-        let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-        let valid_icon = app_icon_png_data_url(1, 1, vec![77, 111, 206, 255])
-            .expect("valid source application icon");
-        let (_, valid_icon_png) = data_url_parts(&valid_icon).expect("decode valid icon");
-        connection
-            .execute_batch(
-                "CREATE TABLE clipboard_items (
-                   position INTEGER NOT NULL,
-                   id TEXT PRIMARY KEY NOT NULL,
-                   payload TEXT NOT NULL,
-                   image_mime TEXT,
-                   image_data BLOB
-                 );
-                 CREATE TABLE source_app_icons (
-                   source_app TEXT PRIMARY KEY NOT NULL,
-                   icon_png BLOB NOT NULL
-                 );",
-            )
-            .expect("create permissive history tables");
-        for (position, source_app) in ["Valid", "Corrupt", "Oversized"].into_iter().enumerate() {
-            connection
-                .execute(
-                    "INSERT INTO clipboard_items(position, id, payload) VALUES (?1, ?2, ?3)",
-                    params![
-                        position as i64,
-                        source_app,
-                        serde_json::json!({
-                            "id": source_app,
-                            "content": format!("{source_app} 正文"),
-                            "sourceApp": source_app
-                        })
-                        .to_string()
-                    ],
-                )
-                .expect("insert history row");
-        }
-        connection
-            .execute(
-                "INSERT INTO source_app_icons(source_app, icon_png) VALUES ('Valid', ?1)",
-                [valid_icon_png],
-            )
-            .expect("insert valid icon");
-        connection
-            .execute(
-                "INSERT INTO source_app_icons(source_app, icon_png) VALUES ('Corrupt', ?1)",
-                [b"not a PNG".as_slice()],
-            )
-            .expect("insert corrupt icon");
-        connection
-            .execute(
-                "INSERT INTO source_app_icons(source_app, icon_png) VALUES ('Oversized', ?1)",
-                [vec![0_u8; 32 * 1024 + 1]],
-            )
-            .expect("insert oversized icon");
-
-        let loaded = load_history_from_database(&connection).expect("load history safely");
-
-        assert_eq!(loaded.len(), 3);
-        assert_eq!(loaded[0]["sourceAppIcon"], valid_icon);
-        assert!(loaded[1..]
-            .iter()
-            .all(|item| item.get("sourceAppIcon").is_none()));
-        assert_eq!(loaded[1]["content"], "Corrupt 正文");
-        assert_eq!(loaded[2]["content"], "Oversized 正文");
-    }
-
-    #[test]
-    fn sqlite_history_connections_wait_briefly_for_transient_writer_locks() {
-        let connection = rusqlite::Connection::open_in_memory().expect("in-memory database");
-
-        configure_history_database_connection(&connection).expect("configure connection");
-
-        let busy_timeout_ms: u64 = connection
-            .query_row("PRAGMA busy_timeout", [], |row| row.get(0))
-            .expect("busy timeout");
-        assert_eq!(busy_timeout_ms, 2_000);
     }
 
     #[test]
@@ -4979,6 +6376,168 @@ mod tests {
     }
 
     #[test]
+    fn quick_panel_geometry_covers_all_supported_dpi_and_taskbar_edges() {
+        let scales = [1.0_f64, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5];
+        let taskbar_edges = ["top", "right", "bottom", "left"];
+
+        for scale in scales {
+            let screen_width = (1920.0 * scale).round() as i32;
+            let screen_height = (1080.0 * scale).round() as i32;
+            let taskbar = (40.0 * scale).round() as i32;
+            let margin = (16.0 * scale).round() as i32;
+
+            for edge in taskbar_edges {
+                let native_work = match edge {
+                    "top" => ScreenRect::new(0, taskbar, screen_width, screen_height),
+                    "right" => ScreenRect::new(0, 0, screen_width - taskbar, screen_height),
+                    "bottom" => ScreenRect::new(0, 0, screen_width, screen_height - taskbar),
+                    "left" => ScreenRect::new(taskbar, 0, screen_width, screen_height),
+                    _ => unreachable!(),
+                };
+                let work = ScreenRect::new(
+                    native_work.left + margin,
+                    native_work.top + margin,
+                    native_work.right - margin,
+                    native_work.bottom - margin,
+                );
+                let center_x = work.left + (work.right - work.left) / 2;
+                let center_y = work.top + (work.bottom - work.top) / 2;
+                let anchor = ScreenRect::new(
+                    center_x,
+                    center_y,
+                    center_x + (2.0 * scale).round() as i32,
+                    center_y + (24.0 * scale).round() as i32,
+                );
+
+                let size_dip = choose_quick_panel_size_dip(anchor, work, scale);
+                let native_size = fit_window_size_to_work_area(size_dip, work, scale);
+                let position = place_quick_panel_window(anchor, native_size, work, scale);
+                let case = format!("scale={scale}, taskbar={edge}");
+
+                assert!(native_size.width >= 1 && native_size.height >= 1, "{case}");
+                assert!(
+                    position.x >= work.left && position.y >= work.top,
+                    "{case}: {position:?}"
+                );
+                assert!(
+                    position.x + native_size.width <= work.right,
+                    "{case}: {position:?} {native_size:?}"
+                );
+                assert!(
+                    position.y + native_size.height <= work.bottom,
+                    "{case}: {position:?} {native_size:?}"
+                );
+                assert!(
+                    quick_panel_can_clear_anchor(anchor, native_size, work, scale),
+                    "{case}"
+                );
+
+                let requested_inset = (QUICK_PANEL_SHELL_INSET_DIP * scale).round() as i32;
+                let inset_x = requested_inset.clamp(0, ((native_size.width - 1) / 2).max(0));
+                let inset_y = requested_inset.clamp(0, ((native_size.height - 1) / 2).max(0));
+                let shell = ScreenRect::new(
+                    position.x + inset_x,
+                    position.y + inset_y,
+                    position.x + native_size.width - inset_x,
+                    position.y + native_size.height - inset_y,
+                );
+                assert!(
+                    shell.left >= native_work.left && shell.top >= native_work.top,
+                    "{case}: {shell:?}"
+                );
+                assert!(
+                    shell.right <= native_work.right && shell.bottom <= native_work.bottom,
+                    "{case}: {shell:?}"
+                );
+                let overlaps = shell.left < anchor.right
+                    && shell.right > anchor.left
+                    && shell.top < anchor.bottom
+                    && shell.bottom > anchor.top;
+                assert!(!overlaps, "{case}: shell={shell:?}, anchor={anchor:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn quick_panel_geometry_is_bounded_in_small_work_areas_at_all_supported_dpi() {
+        for scale in [1.0_f64, 1.25, 1.5, 1.75, 2.0, 2.25, 2.5] {
+            let left = (-80.0 * scale).round() as i32;
+            let top = (24.0 * scale).round() as i32;
+            let width = (520.0 * scale).round() as i32;
+            let height = (360.0 * scale).round() as i32;
+            let work = ScreenRect::new(left, top, left + width, top + height);
+            let anchor = ScreenRect::new(
+                left + width / 2,
+                top + height / 2,
+                left + width / 2 + (2.0 * scale).round() as i32,
+                top + height / 2 + (24.0 * scale).round() as i32,
+            );
+            let size_dip = choose_quick_panel_size_dip(anchor, work, scale);
+            let native_size = fit_window_size_to_work_area(size_dip, work, scale);
+            let position = place_quick_panel_window(anchor, native_size, work, scale);
+            let case = format!("small work area at {scale}");
+
+            assert!(
+                (1..=width).contains(&native_size.width),
+                "{case}: {native_size:?}"
+            );
+            assert!(
+                (1..=height).contains(&native_size.height),
+                "{case}: {native_size:?}"
+            );
+            assert!(
+                (work.left..=work.right - native_size.width).contains(&position.x),
+                "{case}: {position:?}"
+            );
+            assert!(
+                (work.top..=work.bottom - native_size.height).contains(&position.y),
+                "{case}: {position:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn cross_display_anchor_wins_over_cursor_and_selects_the_anchor_monitor() {
+        let caret_on_left_seam = ScreenRect::new(-2, 420, 0, 444);
+        let cursor_on_right = ScreenPoint::new(960, 540);
+        let anchor = choose_popup_anchor(Some(caret_on_left_seam), Some(cursor_on_right)).unwrap();
+        assert_eq!(anchor, caret_on_left_seam);
+        assert_eq!(
+            anchor_monitor_point(anchor, Some(ScreenPoint::new(-1280, 720))),
+            ScreenPoint::new(-1, 432),
+        );
+
+        let left_work = ScreenRect::new(-2544, 16, -16, 1424);
+        let size = fit_window_size_to_work_area(
+            choose_quick_panel_size_dip(anchor, left_work, 1.0),
+            left_work,
+            1.0,
+        );
+        let position = place_quick_panel_window(anchor, size, left_work, 1.0);
+        assert!(position.x >= left_work.left && position.x + size.width <= left_work.right);
+        assert!(position.y >= left_work.top && position.y + size.height <= left_work.bottom);
+
+        assert_eq!(
+            choose_popup_anchor(Some(ScreenRect::new(0, 0, 0, 0)), Some(cursor_on_right),),
+            Some(ScreenRect::from_point(cursor_on_right)),
+        );
+        assert_eq!(
+            anchor_monitor_point(ScreenRect::from_point(cursor_on_right), None),
+            cursor_on_right,
+        );
+
+        let seam = ScreenRect::new(0, 420, 0, 444);
+        assert_eq!(
+            anchor_monitor_point(seam, Some(ScreenPoint::new(-1280, 720))).x,
+            -1,
+        );
+        assert_eq!(
+            anchor_monitor_point(seam, Some(ScreenPoint::new(960, 540))).x,
+            0,
+        );
+    }
+
+    #[test]
     fn quick_panel_clamps_to_negative_coordinate_work_areas() {
         let work_area = ScreenRect::new(-1920, 40, 0, 1080);
         let size = ScreenSize::new(800, 580);
@@ -5072,6 +6631,35 @@ mod tests {
             true,
             false
         ));
+
+        assert_eq!(
+            quick_panel_hotkey_action(WindowMode::Quick, true, false),
+            QuickPanelHotkeyAction::Hide,
+        );
+        for (mode, visible, minimized) in [
+            (WindowMode::Quick, true, true),
+            (WindowMode::Quick, false, false),
+            (WindowMode::Library, true, false),
+        ] {
+            assert_eq!(
+                quick_panel_hotkey_action(mode, visible, minimized),
+                QuickPanelHotkeyAction::ShowAndSample,
+            );
+        }
+    }
+
+    #[test]
+    fn first_frame_acknowledgement_requires_the_current_quick_panel_session() {
+        let sessions = CurrentQuickPanelSession::default();
+        assert!(!quick_panel_ack_matches_current_session(&sessions, 0));
+
+        let first = sessions.begin();
+        assert!(quick_panel_ack_matches_current_session(&sessions, first));
+
+        // 托盘或启动等非采样唤起也会推进全局会话，旧 hotkey 的迟到 rAF 不得入账。
+        let second = sessions.begin();
+        assert!(!quick_panel_ack_matches_current_session(&sessions, first));
+        assert!(quick_panel_ack_matches_current_session(&sessions, second));
     }
 
     #[test]
@@ -5210,6 +6798,72 @@ mod tests {
         );
     }
 
+    #[test]
+    fn paste_strategy_maps_to_one_closed_terminal_metric() {
+        assert_eq!(
+            paste_strategy_terminal_outcome(PasteStrategy::Direct, true),
+            metrics::PasteTerminalOutcome::DirectSucceeded,
+        );
+        assert_eq!(
+            paste_strategy_terminal_outcome(PasteStrategy::Direct, false),
+            metrics::PasteTerminalOutcome::DirectFailed,
+        );
+        assert_eq!(
+            paste_strategy_terminal_outcome(PasteStrategy::ElevatedHelper, true),
+            metrics::PasteTerminalOutcome::ElevatedSucceeded,
+        );
+        assert_eq!(
+            paste_strategy_terminal_outcome(PasteStrategy::ElevatedHelper, false),
+            metrics::PasteTerminalOutcome::ElevatedFailed,
+        );
+        assert_eq!(
+            paste_strategy_terminal_outcome(PasteStrategy::CopyOnly, false),
+            metrics::PasteTerminalOutcome::ElevationDisabled,
+        );
+    }
+
+    #[test]
+    fn capture_decision_maps_every_stable_sequence_to_one_terminal_metric() {
+        assert_eq!(
+            captured_snapshot_terminal_outcome(true, true, false, false, true, Some(true)),
+            metrics::CaptureTerminalOutcome::InternalWrite,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, false, false, false, true, Some(true)),
+            metrics::CaptureTerminalOutcome::Duplicate,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, true, true, false, true, Some(true)),
+            metrics::CaptureTerminalOutcome::Paused,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, true, false, true, true, Some(true)),
+            metrics::CaptureTerminalOutcome::Excluded,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, true, false, false, false, None),
+            metrics::CaptureTerminalOutcome::ExternalFailed,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, true, false, false, true, Some(true)),
+            metrics::CaptureTerminalOutcome::ExternalDelivered,
+        );
+        assert_eq!(
+            captured_snapshot_terminal_outcome(false, true, false, false, true, Some(false)),
+            metrics::CaptureTerminalOutcome::ExternalFailed,
+        );
+    }
+
+    #[test]
+    fn an_unverified_clipboard_write_is_copy_only_before_any_target_strategy() {
+        let result = unverified_clipboard_copy_result(None).expect("copy-only result");
+
+        assert!(result.copied);
+        assert!(!result.pasted);
+        assert!(!result.requires_elevation);
+        assert!(unverified_clipboard_copy_result(Some(42)).is_none());
+    }
+
     #[cfg(target_os = "windows")]
     #[test]
     fn helper_arguments_only_select_an_authenticated_pipe_session() {
@@ -5283,15 +6937,151 @@ mod tests {
             if attempts < 3 {
                 ClipboardReadAttempt::Retryable
             } else {
-                ClipboardReadAttempt::Captured(ClipboardSnapshot::Text("重试成功".into()))
+                ClipboardReadAttempt::Captured {
+                    snapshot: ClipboardSnapshot::Text("重试成功".into()),
+                    sequence: Some(41),
+                }
             }
         });
 
         assert_eq!(attempts, 3);
         assert!(matches!(
             outcome,
-            ClipboardReadOutcome::Captured(ClipboardSnapshot::Text(ref text))
-                if text == "重试成功"
+            ClipboardReadOutcome::Captured {
+                snapshot: ClipboardSnapshot::Text(ref text),
+                sequence: Some(41),
+            } if text == "重试成功"
+        ));
+    }
+
+    #[test]
+    fn retry_outcome_carries_the_sequence_from_the_stable_successful_attempt() {
+        let snapshot = ClipboardSnapshot::Text("重试后的新内容".into());
+        let signature = snapshot_signature(&snapshot);
+        let writes = InternalClipboardWrites::default();
+        let pending = writes.begin(&snapshot);
+        writes.commit(pending, Some(42));
+        let mut attempts = 0;
+
+        let outcome = retry_clipboard_snapshot_read(2, Duration::ZERO, || {
+            attempts += 1;
+            if attempts == 1 {
+                ClipboardReadAttempt::Retryable
+            } else {
+                ClipboardReadAttempt::Captured {
+                    snapshot: ClipboardSnapshot::Text("重试后的新内容".into()),
+                    sequence: Some(42),
+                }
+            }
+        });
+
+        assert!(matches!(
+            outcome,
+            ClipboardReadOutcome::Captured {
+                sequence: Some(42),
+                ..
+            }
+        ));
+        assert_eq!(committed_clipboard_sequence(Some(41), &outcome), Some(42));
+        let actual_sequence = match outcome {
+            ClipboardReadOutcome::Captured { sequence, .. } => sequence,
+            _ => unreachable!("stable capture expected"),
+        };
+        assert!(writes.consume(actual_sequence, signature));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_image_fallback_carries_omissions_through_retry_to_monitor_payload() {
+        let omitted_package = clipboard_formats::FormatPackage {
+            omitted_formats: vec![
+                clipboard_formats::ClipboardFormatKind::Html,
+                clipboard_formats::ClipboardFormatKind::Rtf,
+            ],
+            ..clipboard_formats::FormatPackage::default()
+        };
+        let attempt = complete_windows_image_fallback(
+            omitted_package,
+            Some(73),
+            ClipboardReadAttempt::Captured {
+                snapshot: ClipboardSnapshot::Image {
+                    width: 1,
+                    height: 1,
+                    bytes: vec![1, 2, 3, 255],
+                    omitted_formats: Vec::new(),
+                },
+                sequence: None,
+            },
+            Some(73),
+        );
+        let mut attempt = Some(attempt);
+        let outcome = retry_clipboard_snapshot_read(1, Duration::ZERO, || {
+            attempt.take().expect("one monitor read attempt")
+        });
+
+        let ClipboardReadOutcome::Captured {
+            snapshot,
+            sequence: Some(73),
+        } = outcome
+        else {
+            panic!("stable image fallback should reach the monitor as a captured outcome");
+        };
+        let payload = snapshot_payload(snapshot, None).expect("monitor event candidate");
+        assert_eq!(
+            payload.omitted_formats,
+            vec![
+                clipboard_formats::ClipboardFormatKind::Html,
+                clipboard_formats::ClipboardFormatKind::Rtf,
+            ]
+        );
+        let json = serde_json::to_value(payload).expect("serialize monitor payload");
+        assert_eq!(json["omittedFormats"], serde_json::json!(["html", "rtf"]));
+        let history_formats: Vec<history::ClipboardFormat> =
+            serde_json::from_value(json["omittedFormats"].clone())
+                .expect("monitor omissions match the history JSON contract");
+        assert_eq!(
+            history_formats,
+            vec![
+                history::ClipboardFormat::Html,
+                history::ClipboardFormat::Rtf,
+            ]
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_ignored_package_reaches_the_monitor_outcome_without_an_image() {
+        let omitted_package = clipboard_formats::FormatPackage {
+            omitted_formats: vec![clipboard_formats::ClipboardFormatKind::Html],
+            ..clipboard_formats::FormatPackage::default()
+        };
+        let attempt = complete_windows_image_fallback(
+            omitted_package,
+            Some(74),
+            ClipboardReadAttempt::Ignored {
+                package: clipboard_formats::FormatPackage::default(),
+                sequence: None,
+            },
+            Some(74),
+        );
+        let mut attempt = Some(attempt);
+        let outcome = retry_clipboard_snapshot_read(1, Duration::ZERO, || {
+            attempt.take().expect("one monitor read attempt")
+        });
+
+        let candidate = monitor_omission_candidate(&outcome)
+            .expect("the monitor should retain an omission-only package candidate");
+        assert_eq!(candidate.sequence, Some(74));
+        assert_eq!(
+            candidate.package.omitted_formats,
+            vec![clipboard_formats::ClipboardFormatKind::Html]
+        );
+        assert!(matches!(
+            outcome,
+            ClipboardReadOutcome::Ignored {
+                package: clipboard_formats::FormatPackage { ref omitted_formats, .. },
+                sequence: Some(74),
+            } if omitted_formats == &[clipboard_formats::ClipboardFormatKind::Html]
         ));
     }
 
@@ -5314,7 +7104,6 @@ mod tests {
         assert_eq!(
             committed_clipboard_sequence(
                 previous,
-                Some(41),
                 &ClipboardReadOutcome::<ClipboardSnapshot>::Exhausted,
             ),
             previous
@@ -5322,16 +7111,20 @@ mod tests {
         assert_eq!(
             committed_clipboard_sequence(
                 previous,
-                Some(41),
-                &ClipboardReadOutcome::Captured(ClipboardSnapshot::Text("内容".into())),
+                &ClipboardReadOutcome::Captured {
+                    snapshot: ClipboardSnapshot::Text("内容".into()),
+                    sequence: Some(41),
+                },
             ),
             Some(41)
         );
         assert_eq!(
             committed_clipboard_sequence(
                 previous,
-                Some(41),
-                &ClipboardReadOutcome::<ClipboardSnapshot>::Ignored,
+                &ClipboardReadOutcome::<ClipboardSnapshot>::Ignored {
+                    package: clipboard_formats::FormatPackage::default(),
+                    sequence: Some(41),
+                },
             ),
             Some(41)
         );

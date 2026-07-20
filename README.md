@@ -2,24 +2,30 @@
 
 **闪电剪贴板 QuickPaste** 是一款专为 Windows 打造的剪贴板历史管理工具，主打一个“快”字。
 `Ctrl + Shift + V` 一键唤起，搜索结果保留原文并高亮命中，选中后自动帮你切回原来的输入框完成粘贴——
-把“复制 → 切窗口 → 粘贴”一步搞定。支持按中文原文和拼音搜索，所有历史只存在本机 SQLite 中，
-没有云同步，没有遥测。
+把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
+SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：`0.2.0` 未签名预发布版。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从本仓库 Release 下载。
+> 当前版本：[`0.6.0` 未签名 GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.6.0)。个人项目阶段明确不使用 Authenticode 或 Tauri updater 签名；安装时可能触发 SmartScreen 提示，请只从该 Release 下载严格命名的 NSIS 安装包。
 
 ## 当前能力
 
-- 监听 Windows 文本与图片剪贴板，基于剪贴板序列号避免无效轮询。
-- 按中文原文、内容、来源应用和类型搜索；新捕获的中文内容会生成全拼与首字母索引。
-- 文本、代码、链接、图片分类及预览，搜索结果保留原文并高亮可见命中。
-- 固定、删除、撤销、保留期限、暂停记录，以及保留固定项的安全批量清理。
+- 监听 Windows 文本、HTML/RTF 富文本、图片及 `CF_HDROP` 文件/多文件剪贴板；文件记录只保存路径和元数据，不复制原文件。
+- 同一条富文本记录保留 plain text、HTML 与 RTF，可明确选择“保留格式粘贴”或“纯文本粘贴”；图片和多文件也按原生类型写回。
+- 文本、代码、链接、图片和文件使用统一的类型化动作规则：链接显式打开、图片另存为、文件打开/定位，缺失文件安全禁用。
+- SQLite FTS5 支持中文子串、拼音/首字母、OCR、文件名及正文搜索，并可组合类型、来源、集合和固定状态筛选；结果使用稳定游标分页。
+- 固定、删除和撤销；单层集合、可编辑永久文本/代码片段，以及管理页跨页批量固定、移动和删除。
+- 按记录数量、图片逻辑字节数和保留期限共同裁剪普通历史；固定项与永久片段不参与自动裁剪。
+- 管理页显示数据库、WAL/SHM 的真实磁盘占用，支持安全压缩、未加密 SQLite 备份、原子恢复及损坏数据库隔离恢复。
+- 对已进入历史的剪贴板图片默认启用 Windows 本地 OCR，可随时关闭；只使用系统已安装语言，不下载或捆绑模型，也不上传图片或识别文字。
+- 代码预览按需加载 `highlight.js` core 与命中的语言模块；失败或超限时回退为转义纯文本，不向快速面板加入代码工具箱。
 - 默认使用 `Ctrl + Shift + V` 唤起；快速面板优先靠近文本插入点右下方，并受当前显示器工作区约束。
 - 记住并复核原窗口后尽力自动回贴；目标失效或修饰键未释放时安全降级为仅复制。
 - 管理员窗口使用带时限、进程互认且绑定剪贴板版本的一次性 UAC helper，目标请求不落盘；主程序若被以管理员身份启动会提示并退出。
 - Enter、双击和 Alt + 数字快速粘贴，支持键盘导航和中文输入法组合态保护。
 - 浅色/深色主题、紧凑快速面板、管理页、设置页和首次启动引导。
 - 简体中文为默认语言，主要界面可即时切换英文。
-- SQLite 本地历史持久化，图片以 BLOB 保存，普通历史默认上限 500 条。
+- SQLite 是桌面历史的唯一真值；增量 CRUD 避免每次变化重写全库，大载荷只在预览或粘贴时按需读取。
+- 入站载荷采用明确硬边界：plain text、HTML 和 RTF 单格式最多 8 MiB；图片源及持久化图片最多 64 MiB、单边最多 8192 像素且不超过 4000 万像素。超限的附加格式会被明确省略，异常持久化正文会在复制进内存前被拒绝。
 - 在设置页或托盘检查 GitHub Release，经用户确认后下载严格命名的 NSIS 安装包；下载会核对 GitHub SHA-256 摘要，但这不是发布者签名。
 - 关闭隐藏到系统托盘、托盘暂停/恢复、单实例唤回和开机静默启动。
 - 敏感应用排除，以及可选的屏幕捕获保护；默认允许截图，用户开启保护后才在 Windows 支持的捕获路径中尽力隐藏闪电剪贴板窗口。
@@ -54,15 +60,15 @@ npm run tauri dev
 npm run build:windows
 ```
 
-产物位于 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis`。公开预发布前必须完成标准用户安装、升级/卸载、哈希核对和真实 Windows 场景验收，详见 [docs/release.md](docs/release.md)。
+产物位于 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis`。本地构建、上传后摘要核对和正式发布门槛见 [docs/release.md](docs/release.md)；真实机长循环尚未完成的版本只能标记为 Pre-release，不能表述为稳定版已全面验收。
 
 ## 项目结构
 
 - `src/domain/`：可独立测试的剪贴板、搜索、高亮和快捷键规则。
 - `src/platform/`：前端与 Tauri IPC、系统剪贴板、窗口、设置和历史能力的适配层。
 - `src/App.vue`：快速面板、管理页、设置页、模态框及焦点生命周期编排。
-- `src-tauri/`：Tauri 2 + Rust 的 Windows API、SQLite、全局快捷键、托盘和粘贴实现。
-- `scripts/`：无额外运行时依赖的仓库治理检查。
+- `src-tauri/`：Tauri 2 + Rust 的 Windows API、SQLite、WinRT OCR、全局快捷键、托盘和粘贴实现。
+- `scripts/`：无额外运行时依赖的仓库治理检查、10,000 条历史基准和本地验收工具。
 
 ## 文档
 
@@ -73,14 +79,18 @@ npm run build:windows
 - [docs/release.md](docs/release.md)：Windows 发布清单。
 - [SECURITY.md](SECURITY.md)：数据生命周期、安全边界和报告策略。
 - [CHANGELOG.md](CHANGELOG.md)：版本历史与用户可感知变化。
-- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：随安装包分发的第三方组件许可证。
+- [docs/releases/v0.6.0.md](docs/releases/v0.6.0.md)：v0.6.0 能力、隐私边界和验收证据状态。
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方声明总索引、锁文件指纹和 MPL 源码入口。
+- [THIRD_PARTY_LICENSES_NPM.md](THIRD_PARTY_LICENSES_NPM.md)：npm production 依赖及许可证原文。
+- [THIRD_PARTY_LICENSES_RUST.md](THIRD_PARTY_LICENSES_RUST.md)：Windows Rust 依赖及许可证原文。
+- [THIRD_PARTY_LICENSES_NATIVE.md](THIRD_PARTY_LICENSES_NATIVE.md)：NSIS、LZMA 和 bundled SQLite 声明。
 
 ## 隐私与发布边界
 
-剪贴板历史默认只写入本机 SQLite，不包含遥测或云端同步；数据库目前没有由 QuickPaste 提供的应用层加密。自动检查更新只访问固定的公开 GitHub Releases API，并发送常规网络元数据与 `QuickPaste/<version>` User-Agent，不上传剪贴板、设置或设备标识。屏幕捕获保护默认关闭，以保证截图工具可正常捕获界面；开启后窗口可能在部分截图或共享中隐藏或显示空白。屏幕捕获排除和敏感应用识别都是尽力而为的防护，不应被表述为 DRM 或绝对防泄漏能力。
+剪贴板历史默认只写入本机 SQLite，不包含云同步或远程遥测；数据库和导出的备份目前没有由 QuickPaste 提供的应用层加密，备份文件由用户自行保管。普通运行不会生成验收指标；只有维护者显式使用隔离验收配置启动时，才会在该临时配置内记录不含正文、路径、搜索词或设备标识的本地计数和耗时。自动检查更新只访问固定的公开 GitHub Releases API，并发送常规网络元数据与 `QuickPaste/<version>` User-Agent，不上传剪贴板、设置、OCR 结果或设备标识。屏幕捕获保护默认关闭，以保证截图工具可正常捕获界面；开启后窗口可能在部分截图或共享中隐藏或显示空白。屏幕捕获排除和敏感应用识别都是尽力而为的防护，不应被表述为 DRM 或绝对防泄漏能力。
 
 当前包标记为私有并禁止发布到 npm/crates.io。仓库尚未选择开源许可证，因此源码公开可见不等于获得开源许可；在明确许可证前保留全部权利。
 
-## 后续方向
+## 产品边界
 
-优先补齐 HTML/文件等更多剪贴板格式、标签与集合、大历史全文索引、更多语言和崩溃诊断；云同步仅在有明确需求时再设计，并必须默认关闭且端到端加密。
+QuickPaste 不复制文件正文，不提供截图、云 OCR、翻译、代码执行、嵌套集合或标签系统，也不捆绑 OCR/翻译模型或 FFmpeg。快速面板只负责搜索、选择、预览和粘贴；整理、批量操作、备份与存储管理留在管理页。

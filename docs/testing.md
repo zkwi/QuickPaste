@@ -10,12 +10,25 @@
 | `npm run check:versions` | 版本、NSIS、工具链及自定义标题栏 Tauri 权限契约 |
 | `npm run check:repository` | 生成目录、敏感文件、单文件体积和 Markdown 相对链接 |
 | `npm run check:privacy` | 拦截个人路径、邮箱、Token、数据库、日志、截图和构建产物 |
+| `node --test scripts/acceptance/acceptance.test.mjs` | 验收准备器、阈值边界、JSON schema 与 PowerShell 语法；不会运行真实机长循环 |
 | `npm test` | domain、platform 和 Vue 交互回归 |
 | `npm run build` | TypeScript 类型检查和 Vite 生产构建 |
 | `npm run check:rust` | Rustfmt、Clippy 和 Rust 单元测试 |
 | `npm run check` | 以上全部门禁 |
 
 修改行为时先增加会失败的最小回归测试。测试数据只能使用构造内容，不得复制真实聊天、凭据、本机路径或剪贴板数据库。
+
+## 证据分级
+
+| 级别 | 能证明什么 | 不能证明什么 |
+| --- | --- | --- |
+| **automated proof** | 单元/集成测试中的规则、序列化白名单、阈值边界、临时 profile 安全约束 | 真实 Windows 的焦点、目标收到内容、合成器呈现、长时间剪贴板吞吐 |
+| **synthetic benchmark** | 固定种子和受控环境中的 10k SQLite 查询/构建性能 | 最终用户机器的快捷键首帧、普通目标粘贴成功率或 100k 捕获完整性 |
+| **pending real-machine** | 表示对应真实机证据尚未完成或不完整 | 不能表述为已达标、通过或由自动化间接证明 |
+
+真实机验收使用 [验收脚手架与协议](../scripts/acceptance/README.md)。每个场景必须由显式 `-OptIn` 启动独立临时 profile；生产默认不得创建 metrics。仅同时提供 `--acceptance-metrics` 与有效 `QUICKPASTE_ACCEPTANCE_PROFILE` 时，候选才可在固定 profile 相对路径 `acceptance/metrics-v1.json` 原子写入内容无关的有界快照；缺少 profile 时必须在 Tauri setup 前失败，不能回落真实 app-data。其 schema 为 [metrics-v1.schema.json](../scripts/acceptance/metrics-v1.schema.json)。
+
+暖唤起、普通目标粘贴、捕获完整性和 DPI 分别需要 50+500、10,000、100,000 和 1.0–2.5 七档混合显示器记录。脚手架自测或 synthetic benchmark 通过时，这些项目仍保持 **pending real-machine**；普通粘贴必须由外部普通权限目标读取实际收到的标记，捕获必须由独立 writer/expected-ID ledger 与最终 DB/事件对账。
 
 ## 变更对应的最低验证
 
@@ -30,7 +43,7 @@
 
 ## Windows 人工矩阵
 
-发布候选至少在 Windows 10 和 Windows 11 的 x64 标准用户账户验证；涉及定位或透明外壳时，还需覆盖 100%、125%、150% DPI 及双显示器不同缩放。
+发布候选至少在 Windows 10 和 Windows 11 的 x64 标准用户账户验证；涉及定位或透明外壳时，还需覆盖 100%、125%、150%、175%、200%、225%、250% DPI 及双显示器不同缩放、负坐标与四个任务栏边缘。
 
 ### 快速面板
 
@@ -86,4 +99,4 @@
 
 ## 验收记录
 
-人工验收应记录版本、提交标识、Windows build、DPI/显示器、安装方式、结果和脱敏截图。截图不得包含真实剪贴板、账户名、聊天记录或本机隐私路径。
+人工验收应记录版本、提交标识、候选程序 SHA-256、Windows build、DPI/显示器、安装方式、结果分类和脱敏截图。长循环与 DPI 结果使用脚手架生成的 `result.json`，先通过 JSON schema 和 `validate-result` 算术校验；未测项目明确保留 **pending real-machine**。截图、metrics、数据库、日志与账本不得提交，截图也不得包含真实剪贴板、账户名、聊天记录或本机隐私路径。

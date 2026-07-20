@@ -147,9 +147,10 @@ describe('QuickPaste quick panel', () => {
     wrapper.unmount()
   })
 
-  it('pins a clipboard row and exposes the updated accessible state', async () => {
+  it('pins a manager row and exposes the updated accessible state', async () => {
     const wrapper = mount(App)
-    const pinButton = wrapper.get('[data-testid="pin-clip-clip-1"]')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const pinButton = wrapper.get('[data-testid="manager-pin-clip-1"]')
 
     expect(pinButton.attributes('aria-pressed')).toBe('false')
     await pinButton.trigger('click')
@@ -211,7 +212,7 @@ describe('QuickPaste quick panel', () => {
 
     expect((wrapper.get('[data-testid="capture-protection-toggle"]').element as HTMLInputElement).checked).toBe(false)
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
-      settingsVersion: 3,
+      settingsVersion: 5,
       hideDuringSharing: false,
       retentionDays: '90',
     })
@@ -250,10 +251,11 @@ describe('QuickPaste quick panel', () => {
     expect(wrapper.get('[data-clip-id="clip-1"]').classes()).toContain('is-selected')
   })
 
-  it('offers undo after deleting a clipboard row', async () => {
+  it('offers undo after deleting a manager row', async () => {
     const wrapper = mount(App)
 
-    await wrapper.get('[data-testid="delete-clip-clip-1"]').trigger('click')
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await wrapper.get('[data-testid="manager-delete-clip-1"]').trigger('click')
     expect(wrapper.text()).not.toContain('周会跟进事项')
     expect(wrapper.get('[data-testid="undo-delete"]').text()).toContain('撤销')
 
@@ -648,6 +650,37 @@ describe('QuickPaste quick panel', () => {
     expect(wrapper.text()).not.toContain('周会跟进事项')
     expect(wrapper.text()).toContain('Tauri 开发命令')
     expect(wrapper.find('[data-testid="clear-history-dialog"]').exists()).toBe(false)
+  })
+
+  it('counts and clears only ordinary history while preserving permanent snippets', async () => {
+    const copiedAt = new Date().toISOString()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
+      {
+        id: 'ordinary', kind: 'text', title: '普通记录', content: 'remove', sourceApp: 'QA',
+        copiedAt, pinned: false, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'pinned', kind: 'text', title: '固定记录', content: 'keep pinned', sourceApp: 'QA',
+        copiedAt, pinned: true, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'permanent', kind: 'text', title: '永久片段', content: 'keep permanent', sourceApp: 'QuickPaste',
+        copiedAt, updatedAt: copiedAt, pinned: false, permanent: true, searchTerms: [], formats: ['text'],
+      },
+    ]))
+    const wrapper = mount(App)
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    expect(wrapper.get('[data-testid="clear-history"]').text()).toContain('普通记录')
+
+    await wrapper.get('[data-testid="clear-history"]').trigger('click')
+    const confirmation = wrapper.get('[data-testid="clear-history-dialog"]')
+    expect(confirmation.text()).toContain('1 条普通记录')
+    expect(confirmation.text()).toContain('永久片段')
+    await wrapper.get('[data-testid="confirm-clear-history"]').trigger('click')
+
+    expect(wrapper.find('[data-manager-clip-id="ordinary"]').exists()).toBe(false)
+    expect(wrapper.get('[data-manager-clip-id="pinned"]').text()).toContain('固定记录')
+    expect(wrapper.get('[data-manager-clip-id="permanent"]').text()).toContain('永久片段')
   })
 
   it('focuses the safe action in clear-history confirmation and restores its trigger', async () => {

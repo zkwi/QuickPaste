@@ -11,27 +11,34 @@ QuickPaste 采用 Windows 优先的 Tauri 模块化单体：Vue 负责交互，R
 
 ## 代码边界
 
-- `src/domain/`：剪贴板解析、筛选、搜索高亮、快捷键等纯 TypeScript 规则。
-- `src/platform/`：封装 Tauri IPC、系统剪贴板、原生设置、历史和窗口操作，并提供失败降级。
+- `src/domain/`：剪贴板格式模型、类型化动作、组合查询、集合/批量选择、代码语言识别、搜索高亮和快捷键等纯 TypeScript 规则。
+- `src/platform/`：封装 Tauri IPC、系统剪贴板、增量历史、WinRT OCR、类型化系统动作、原生设置和窗口操作，并提供失败降级。
 - `src/App.vue`：快速面板、管理页、设置页、模态框、焦点与会话生命周期编排。少量 UI 偏好目前直接持久化到 WebView localStorage。
-- `src-tauri/src/lib.rs`：Windows API、SQLite、全局快捷键、托盘、窗口定位和粘贴能力。
+- `src-tauri/src/lib.rs`：Tauri 命令、Windows 事件、全局快捷键、托盘、窗口定位和粘贴编排。
+- `src-tauri/src/history.rs`：版本化 SQLite schema、增量 mutation、FTS5、容量、集合、备份恢复、损坏隔离和存储统计。
+- `src-tauri/src/clipboard_formats.rs`：plain text、HTML、RTF、图片与 `CF_HDROP` 的 Windows 格式包读取和写回。
+- `src-tauri/src/ocr.rs`：有界单工 WinRT OCR 运行时；只使用 Windows 已安装语言。
+- `src-tauri/src/system_actions.rs`：链接、文件和图片动作的原生验证与执行。
+- `src-tauri/src/metrics.rs`：仅显式验收模式可用的内容无关本地指标。
 
 前端不得绕过 `src/platform/` 散布 Tauri 调用；可独立测试的规则不得留在组件事件中。只有出现明确维护或测试收益时才继续拆模块。
 
 ## 运行时数据流
 
-1. Rust 原生层监听 Windows 剪贴板，并读取完整文本或图片内容以及可识别的来源应用。
-2. 原生层通过进程内 Tauri 事件把完整载荷发送给前端；这里没有“脱敏”步骤，但默认也没有网络上传。
-3. platform 层把事件和命令转换为前端稳定类型；domain 层校验持久化记录并完成合并、去重、筛选和高亮。
-4. UI 渲染当前会话状态，并通过 platform 层执行复制、粘贴、原生设置和历史命令。
-5. Rust 将历史写入应用数据目录下的 `history.sqlite3`；文本元数据存为 JSON，图片主体存为 BLOB。
+1. Rust 原生层按剪贴板序列监听变化，一次打开剪贴板读取可用的 plain text、HTML、RTF、图片或 `CF_HDROP` 文件列表，并记录明确的遗漏格式。读取前先探测载荷大小；plain text、HTML、RTF 的单格式上限为 8 MiB，图片源与持久化图片上限为 64 MiB，图片还必须满足单边不超过 8192 像素且总像素不超过 4000 万。
+2. platform/domain 严格校验进程内 Tauri 事件，按格式载荷而非仅按显示文本去重。新捕获先通过串行增量 mutation 写入 SQLite，成功后才安排图片 OCR。
+3. OCR 开启时，前端只向原生层发送记录 ID 和图片 SHA-256；原生层从数据库读取 PNG，在有界 WinRT 队列中识别，并仅在 ID、哈希、状态和 gate 仍匹配时条件写回 OCR 元数据及 FTS 投影。
+4. 搜索和组合筛选由 SQLite FTS5 与普通索引执行，使用 keyset 游标返回不含大正文的摘要；HTML、RTF、图片和 OCR 正文只在预览或粘贴时按 ID 加载。
+5. 粘贴前按记录类型组装 preserve/plain/files/image 格式包，写回后复核剪贴板序列，再复用普通窗口或一次性管理员 helper 的既有回贴链路。
+6. 管理页的集合、永久片段、批量操作、备份恢复和容量管理均走窄 IPC；快速面板仍只负责搜索、选择、预览和粘贴。
 
 ## 持久化边界
 
-- 原生桌面运行时：SQLite 历史是唯一真值。读取失败期间 UI 保持只读，不能以空数组覆盖数据库。
+- 原生桌面运行时：SQLite 历史是唯一真值。`application_id` 与逐版 `user_version` 迁移在事务中推进；写入只 upsert/delete 受影响记录，读取失败期间 UI 保持只读，不能以空数组覆盖数据库。
 - 浏览器演示运行时：构造历史和 UI 设置使用 localStorage；损坏 JSON 或不符合 schema 的历史会被拒绝并回退到安全演示数据。
-- UI 设置：主题、语言、保留期限、快捷键等轻量偏好使用 localStorage；原生相关设置通过 platform 层同步到 Windows/Tauri 能力。
-- `mypaste-*-v1` localStorage key 及管理员 helper 的旧协议命名只作为升级兼容标识保留，不是当前用户可见品牌；修改它们必须提供显式迁移或双读协议。
+- UI 设置：主题、语言、数量/图片字节/期限容量、OCR 开关和快捷键等轻量偏好使用 localStorage；原生相关设置通过 platform 层同步到 Windows/Tauri 能力。
+- 普通历史按记录数、图片逻辑字节数和期限稳定裁剪；固定项与永久片段不参与自动裁剪。数据库、WAL 和 SHM 的物理占用单独统计，不与逻辑容量混淆。
+- 备份是未加密 SQLite 文件。导出校验后原子替换，恢复先准备并校验、再以事务提交；失败保留现库。损坏数据库及其 WAL/SHM 会移入隔离目录并向 UI 报告位置。
 - 数据库没有 QuickPaste 应用层加密；操作系统账户、磁盘加密和文件权限仍是本机数据保护的一部分。
 - 数据库、WAL/SHM、日志、截图和签名材料均不得进入 Git。
 
@@ -42,6 +49,8 @@ QuickPaste 采用 Windows 优先的 Tauri 模块化单体：Vue 负责交互，R
 - 授权取消、通信超时、对端身份不符或目标复核失败时保留可手动粘贴的副本，不得换用旧版文件 proof 或自动重试到未知窗口。
 - 敏感应用排除依赖可获得的剪贴板所有者/应用名，只是尽力匹配，不能保证识别所有应用或密码控件。
 - 屏幕捕获保护默认关闭，使用 Windows `SetWindowDisplayAffinity` 作为用户主动开启的可选能力。开启后窗口可能在截图或屏幕共享中隐藏或显示空白；它只覆盖受支持的系统捕获路径，不是 DRM，也不能阻止相机拍摄或所有第三方捕获方式。
+- 剪贴板正文、文件路径、图片哈希和 OCR 结果不得进入网络请求。普通运行没有远程遥测，也不写验收指标；显式验收模式只能在隔离临时配置中记录固定白名单的计数与耗时。
+- 文件剪贴板只保存路径和元数据，不复制原文件；链接、文件和图片动作必须在 Rust 边界重新验证输入。
 
 ## 必须保持的交互行为
 
@@ -51,12 +60,16 @@ QuickPaste 采用 Windows 优先的 Tauri 模块化单体：Vue 负责交互，R
 - 旧异步请求不能覆盖新会话；目标事件和模式切换必须带有可识别的会话/代次语义。
 - 管理员粘贴不得提升主进程权限，失败时保留用户可手动粘贴的副本。
 - 历史加载失败期间保持只读；持久化记录必须先经过运行时 schema 校验。
+- 快速列表只能消费摘要，不能携带图片、HTML、RTF、OCR 正文或来源图标；大载荷必须按需读取。
+- 超限剪贴板格式必须形成终止性省略，不能触发无限重试；读取 SQLite 完整载荷时必须先用 `length(...)` 校验正文/BLOB，再复制到 Rust 内存。写入侧任何载荷校验失败都必须回滚整笔 mutation。
+- 关闭 OCR 必须使排队及在途代次失效，禁止迟到结果写库；重复图片只复用同一哈希的终态结果。
+- 管理页跨页批量操作必须使用冻结的查询上界与排除 ID，不能用当前页 ID 假装代表全库。
 
 ## 测试策略
 
 - domain/platform：使用 Vitest 验证纯规则、持久化边界、IPC 契约和错误降级。
 - UI：验证搜索、焦点、键盘、删除撤销、模态框和窗口生命周期。
-- Rust：验证定位、DPI、Windows 输入、SQLite、安全授权和重试策略。
-- 发布前：在真实 Windows 环境检查紧凑尺寸、深浅主题、多显示器、管理员目标和 NSIS 安装。
+- Rust：验证逐版迁移、事务回滚、FTS5、容量、备份恢复、损坏隔离、OCR 队列、定位/DPI、Windows 输入、安全授权和重试策略。
+- 发布前：运行 10,000 条历史 release 基准与隔离验收工具，并在真实 Windows 环境检查紧凑尺寸、100%–250% DPI、多显示器、管理员目标和 NSIS 安装。
 
 命令和人工矩阵见 [testing.md](testing.md)。

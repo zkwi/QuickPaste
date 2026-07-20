@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.2.0` 采用未签名 GitHub Pre-release 分发。后续版本仍须完成以下所有阻断项，才可发布对应构建。
+`0.6.0` 是当前未签名 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.6.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须醒目标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
 
 ## 版本定级
 
@@ -16,7 +16,8 @@
 - 已选定公开源码许可证，或明确以 `UNLICENSED`/保留全部权利方式公开源码；未选择许可证时不得对外宣称开源。
 - `SECURITY.md` 已提供真实、可验证的私密漏洞报告渠道和响应时间。
 - 当前个人项目阶段明确发布未签名的 GitHub Pre-release，并在下载页、安装提示和更新界面清楚标注；不得把 SHA-256 描述为发布者签名。
-- 已运行 `npm run check:privacy`，确认候选文件和 Git 历史不包含真实用户路径、邮箱、剪贴板数据、数据库、日志、截图、Token、证书或构建产物。
+- 已运行 `npm run check:privacy`，确认当前候选文件不包含真实用户路径、邮箱、剪贴板数据、数据库、日志、截图、Token、证书或构建产物。
+- `THIRD_PARTY_NOTICES.md`、npm/Rust/native 三份完整许可证清单与两个锁文件一致，并由 `npm run check:licenses` 验证均已配置为 Tauri bundle resources；完整 NSIS 归档仍按产物核验步骤独立检查。
 
 ## 2. 构建环境与质量门禁
 
@@ -29,6 +30,17 @@ rustc -vV
 ```
 
 `rustc -vV` 的 host 必须是 `x86_64-pc-windows-msvc`。随后执行：
+
+若锁文件或依赖发生变化，先安装固定的发布期许可证工具并重新生成三份声明：
+
+```powershell
+cargo install cargo-about --version 0.9.1 --locked --features cli
+npm run licenses:npm
+npm run licenses:rust
+npm run licenses:native
+```
+
+`cargo-about` 只用于生成发布材料，不属于 QuickPaste 构建或运行时依赖。常规质量门禁与构建命令为：
 
 ```powershell
 npm ci
@@ -77,14 +89,31 @@ foreach ($artifact in $artifacts) {
 完整执行 [测试与验收矩阵](testing.md)，发布至少覆盖：
 
 - Windows 10/11 x64 标准用户的安装、覆盖安装、启动、卸载和重装。
-- 100%、125%、150% DPI，多显示器不同缩放和任务栏边界。
+- 100%、125%、150%、175%、200%、225%、250% DPI，多显示器不同缩放、负坐标和四个任务栏边界。
 - 文本/图片历史、重启恢复、固定项、保留期限和安全清理。
 - 普通窗口、管理员窗口、UAC 取消、目标失效和手动粘贴降级。
 - 中文输入法、全局快捷键冲突、开机启动、托盘和单实例。
 - 敏感应用排除以及受支持捕获路径中的窗口排除。
 - 卸载不意外删除历史；需要彻底删除时，文档指向 `SECURITY.md` 的数据生命周期说明。
 
-任一关键场景失败都必须阻止发布，不能只记录为“已知问题”后继续上传。
+任一关键场景明确失败都必须阻止发布，不能只记录为“已知问题”后继续上传。尚未执行的真实机长循环必须保留 `pending real-machine`，只能发布醒目标注的 Pre-release，并阻止提升为稳定版本。
+
+### 证据分级与长循环门槛
+
+- **automated proof** 只证明测试覆盖的规则和安全边界；**synthetic benchmark** 只证明固定种子受控负载。两者都不能替代 **pending real-machine** 项目的真实机记录。
+- 按 [验收脚手架协议](../scripts/acceptance/README.md) 分别使用新的临时 profile 完成：50 次预热 + 500 次暖唤起采样、10,000 次外部普通权限目标验证粘贴、100,000 次独立 writer/expected-ID ledger 捕获与 DB/事件对账，以及 1.0–2.5 七档混合 DPI 矩阵。
+- metrics 只在显式 `--acceptance-metrics` 与有效临时 `QUICKPASTE_ACCEPTANCE_PROFILE` 同时存在时启用；缺少 profile 必须失败，不能回落真实 app-data。paste/capture counters 是诊断信息，不能作为普通目标确实收到内容或 100k 写入无遗漏的唯一证据。
+- 未执行、样本不足、helper 不独立、临时 profile 边界不确定、账本/哈希缺失或 DPI 行不完整时，结果必须保留 **pending real-machine**，不得在发布说明中写成“达到阈值”。
+
+对每个 `<run-root>\result.json` 运行：
+
+```powershell
+Test-Json -LiteralPath '<run-root>\result.json' `
+  -SchemaFile 'scripts\acceptance\acceptance-result.schema.json'
+node scripts/acceptance/acceptance.mjs validate-result --file '<run-root>\result.json'
+```
+
+只有 schema 和算术校验均通过、且独立原始证据可追溯到同一候选程序 SHA-256 时，才记录真实机 pass/fail。运行产生的 `result.json`、metrics、数据库、日志、账本和截图只留在系统临时验收目录，不得提交到仓库或打入安装包。
 
 ## 6. 发布纪律
 

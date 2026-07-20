@@ -14,7 +14,7 @@ const SAFE_RASTER_IMAGE = /^src-tauri\/icons\//i
 const PUBLISHABLE_BINARY = /\.(?:exe|msi|msix|appx|dll|pdb|dmp|zip|7z|rar|tar|gz|js\.map)$/i
 const PRIVATE_KEY_FILE = /(^|\/)(?:id_(?:rsa|dsa|ecdsa|ed25519)|[^/]+\.(?:pfx|p12|pvk|pem|key))$/i
 const ENVIRONMENT_FILE = /(^|\/)\.env(?:\..+)?$/i
-const EMAIL_EXEMPT_FILE = /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|cargo\.lock|pnpm-lock\.yaml|yarn\.lock)$/i
+const EMAIL_EXEMPT_FILE = /(^|\/)(?:package-lock\.json|npm-shrinkwrap\.json|cargo\.lock|pnpm-lock\.yaml|yarn\.lock|THIRD_PARTY_LICENSES_(?:NPM|RUST|NATIVE)\.md)$/i
 const WINDOWS_USER_PATH = /(?:\b[a-z]:[\\/]+|\\\\[^\\/\s]+[\\/]+)users[\\/]+([^\\/\s"'`<>:]+)(?=[\\/])/gi
 const EMAIL = /[a-z\d.!#$%&'*+/=?^_`{|}~-]+@[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?)*\.[a-z]{2,63}\b/gi
 const PRIVATE_KEY_MARKER = /-----BEGIN (?:(?:[A-Z0-9]+ )?PRIVATE KEY|PGP PRIVATE KEY BLOCK)-----/i

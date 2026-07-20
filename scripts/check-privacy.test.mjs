@@ -70,6 +70,10 @@ test('scanTextPrivacy allows documentation examples, GitHub URLs and noreply ide
     scanTextPrivacy('package-lock.json', ['dependency-owner', 'vendor.dev'].join('@')),
     [],
   )
+  assert.deepEqual(
+    scanTextPrivacy('THIRD_PARTY_LICENSES_RUST.md', ['upstream-author', 'project.dev'].join('@')),
+    [],
+  )
 })
 
 test('scanCandidatePath rejects local data, screenshots and generated artifacts', () => {
