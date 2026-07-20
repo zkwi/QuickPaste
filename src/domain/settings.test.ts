@@ -10,10 +10,16 @@ import {
 describe('stored settings normalization', () => {
   it('defaults OCR on when the setting is missing, malformed, or storage is corrupt', () => {
     expect(defaultStoredSettings().ocrEnabled).toBe(true)
+    expect(defaultStoredSettings().onboardingPracticePending).toBe(false)
     expect(normalizeStoredSettings({}).ocrEnabled).toBe(true)
     expect(normalizeStoredSettings({ ocrEnabled: 'false' }).ocrEnabled).toBe(true)
     expect(normalizeStoredSettings({ ocrEnabled: null }).ocrEnabled).toBe(true)
     expect(parseStoredSettingsJson('{not json')).toEqual(defaultStoredSettings())
+  })
+
+  it('preserves only an explicit pending onboarding practice choice', () => {
+    expect(normalizeStoredSettings({ onboardingPracticePending: true }).onboardingPracticePending).toBe(true)
+    expect(normalizeStoredSettings({ onboardingPracticePending: 'true' }).onboardingPracticePending).toBe(false)
   })
 
   it.each([0, 1, 2, 4, SETTINGS_SCHEMA_VERSION])(

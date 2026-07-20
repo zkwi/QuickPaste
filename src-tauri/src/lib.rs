@@ -3826,6 +3826,52 @@ fn clear_paste_target_and_notify(app: &AppHandle, target: &PasteTarget) {
     let _ = app.emit(PASTE_TARGET_EVENT, cleared_paste_target_payload(session_id));
 }
 
+fn activate_quick_panel_from_foreground(app: &AppHandle, sample_started_at: Option<Instant>) {
+    let (visible, minimized) = app
+        .get_webview_window("main")
+        .map(|window| {
+            (
+                window.is_visible().unwrap_or(false),
+                // 状态未知时按“可能已最小化”处理，避免误把窗口隐藏。
+                window.is_minimized().unwrap_or(true),
+            )
+        })
+        .unwrap_or((false, false));
+    let mode = app.state::<CurrentWindowMode>().get();
+    let paste_target = app.state::<PasteTarget>();
+    if should_toggle_quick_panel_on_hotkey(mode, visible, minimized) {
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.hide();
+        }
+        clear_paste_target_and_notify(app, &paste_target);
+        return;
+    }
+
+    let snapshot = capture_foreground_paste_target(app);
+    let target_identity = snapshot.as_ref().map(|snapshot| snapshot.identity.clone());
+    let (source_app, elevated) = match snapshot {
+        Some(snapshot) => {
+            paste_target.remember_with_pid_and_focus(
+                snapshot.identity.window_handle,
+                snapshot.identity.process_id,
+                snapshot.identity.focus_window_handle,
+            );
+            (snapshot.source_app, snapshot.elevated)
+        }
+        None => {
+            paste_target.clear();
+            (None, false)
+        }
+    };
+    show_quick_panel(
+        app,
+        target_identity,
+        source_app,
+        elevated,
+        sample_started_at,
+    );
+}
+
 fn show_main_window(app: &AppHandle) {
     if let Some(target) = app.try_state::<PasteTarget>() {
         clear_paste_target_and_notify(app, &target);
@@ -4937,7 +4983,6 @@ pub fn run() {
     let current_quick_panel_session = CurrentQuickPanelSession::default();
     let quick_panel_pinned = QuickPanelPinned::default();
     let paste_target = PasteTarget::default();
-    let shortcut_target = paste_target.clone();
     let open_shortcut = parse_configured_shortcut(DEFAULT_GLOBAL_SHORTCUT)
         .expect("default global shortcut must remain valid");
 
@@ -4966,50 +5011,7 @@ pub fn run() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, _shortcut, event| {
                     if event.state == ShortcutState::Pressed {
-                        let (visible, minimized) = app
-                            .get_webview_window("main")
-                            .map(|window| {
-                                (
-                                    window.is_visible().unwrap_or(false),
-                                    // 状态未知时按“可能已最小化”处理，避免误把窗口隐藏。
-                                    window.is_minimized().unwrap_or(true),
-                                )
-                            })
-                            .unwrap_or((false, false));
-                        let mode = app.state::<CurrentWindowMode>().get();
-                        if should_toggle_quick_panel_on_hotkey(mode, visible, minimized) {
-                            if let Some(window) = app.get_webview_window("main") {
-                                let _ = window.hide();
-                            }
-                            clear_paste_target_and_notify(app, &shortcut_target);
-                            return;
-                        }
-
-                        let sample_started_at = Instant::now();
-                        let snapshot = capture_foreground_paste_target(app);
-                        let target_identity =
-                            snapshot.as_ref().map(|snapshot| snapshot.identity.clone());
-                        let (source_app, elevated) = match snapshot {
-                            Some(snapshot) => {
-                                shortcut_target.remember_with_pid_and_focus(
-                                    snapshot.identity.window_handle,
-                                    snapshot.identity.process_id,
-                                    snapshot.identity.focus_window_handle,
-                                );
-                                (snapshot.source_app, snapshot.elevated)
-                            }
-                            None => {
-                                shortcut_target.clear();
-                                (None, false)
-                            }
-                        };
-                        show_quick_panel(
-                            app,
-                            target_identity,
-                            source_app,
-                            elevated,
-                            Some(sample_started_at),
-                        );
+                        activate_quick_panel_from_foreground(app, Some(Instant::now()));
                     }
                 })
                 .build(),
@@ -5066,7 +5068,7 @@ pub fn run() {
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
-                    "show" => show_main_window(app),
+                    "show" => activate_quick_panel_from_foreground(app, Some(Instant::now())),
                     "toggle-capture" => {
                         let control = app.state::<CaptureControl>();
                         let paused = !control.0.fetch_xor(true, Ordering::Relaxed);
@@ -5087,7 +5089,10 @@ pub fn run() {
                         ..
                     } = event
                     {
-                        show_main_window(tray.app_handle());
+                        activate_quick_panel_from_foreground(
+                            tray.app_handle(),
+                            Some(Instant::now()),
+                        );
                     }
                 });
             if let Some(icon) = app.default_window_icon() {
@@ -6762,6 +6767,29 @@ mod tests {
                 QuickPanelHotkeyAction::ShowAndSample,
             );
         }
+    }
+
+    #[test]
+    fn tray_click_and_shortcut_share_the_foreground_activation_path() {
+        let source = include_str!("lib.rs");
+        let shortcut_handler = source
+            .split_once(".with_handler(move |app, _shortcut, event| {")
+            .expect("shortcut handler")
+            .1
+            .split_once("                })\n                .build(),")
+            .expect("shortcut handler end")
+            .0;
+        let tray_handler = source
+            .split_once(".on_tray_icon_event(|tray, event| {")
+            .expect("tray handler")
+            .1
+            .split_once("                });")
+            .expect("tray handler end")
+            .0;
+
+        assert!(shortcut_handler.contains("activate_quick_panel_from_foreground("));
+        assert!(tray_handler.contains("activate_quick_panel_from_foreground("));
+        assert!(!tray_handler.contains("show_main_window("));
     }
 
     #[test]

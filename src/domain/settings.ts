@@ -23,12 +23,13 @@ export interface StoredSettings {
   excludedApps: string[]
   globalShortcut: string
   onboardingCompleted: boolean
+  onboardingPracticePending: boolean
   quickPanelPinned: boolean
   autoCheckUpdates: boolean
   ocrEnabled: boolean
 }
 
-export const SETTINGS_SCHEMA_VERSION = 5
+export const SETTINGS_SCHEMA_VERSION = 6
 export const DEFAULT_HISTORY_POLICY: Readonly<CapacityPolicy> = Object.freeze({
   maxRecords: 500,
   maxImageBytes: 256 * 1024 * 1024,
@@ -94,6 +95,7 @@ export function defaultStoredSettings(): StoredSettings {
     excludedApps: ['1Password', 'Bitwarden'],
     globalShortcut: DEFAULT_GLOBAL_SHORTCUT,
     onboardingCompleted: false,
+    onboardingPracticePending: false,
     quickPanelPinned: false,
     autoCheckUpdates: true,
     ocrEnabled: true,
@@ -143,6 +145,10 @@ export function normalizeStoredSettings(value: unknown): StoredSettings {
       ? value.globalShortcut
       : defaults.globalShortcut,
     onboardingCompleted: storedBoolean(value.onboardingCompleted, defaults.onboardingCompleted),
+    onboardingPracticePending: storedBoolean(
+      value.onboardingPracticePending,
+      defaults.onboardingPracticePending,
+    ),
     quickPanelPinned: storedBoolean(value.quickPanelPinned, defaults.quickPanelPinned),
     autoCheckUpdates: storedBoolean(value.autoCheckUpdates, defaults.autoCheckUpdates),
     // OCR 是本地能力且默认开启；只有真正的布尔 false 才代表用户关闭。

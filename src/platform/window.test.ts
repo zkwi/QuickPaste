@@ -6,8 +6,26 @@ import {
   type DesktopWindow,
   type WindowInvoke,
 } from './window'
+import * as windowModule from './window'
 
 describe('desktop window actions', () => {
+  it('centers first-run UI and starts dragging through explicit native window methods', async () => {
+    const center = vi.fn().mockResolvedValue(undefined)
+    const startDragging = vi.fn().mockResolvedValue(undefined)
+    const desktopWindow = { center, startDragging }
+    const platform = windowModule as unknown as {
+      centerCurrentWindow?: (resolveWindow: () => Promise<unknown>) => Promise<boolean>
+      startWindowDragging?: (resolveWindow: () => Promise<unknown>) => Promise<boolean>
+    }
+
+    expect(platform.centerCurrentWindow).toEqual(expect.any(Function))
+    expect(platform.startWindowDragging).toEqual(expect.any(Function))
+    await expect(platform.centerCurrentWindow?.(async () => desktopWindow)).resolves.toBe(true)
+    await expect(platform.startWindowDragging?.(async () => desktopWindow)).resolves.toBe(true)
+    expect(center).toHaveBeenCalledOnce()
+    expect(startDragging).toHaveBeenCalledOnce()
+  })
+
   it('runs the requested action against the resolved desktop window', async () => {
     const minimize = vi.fn().mockResolvedValue(undefined)
     const close = vi.fn().mockResolvedValue(undefined)

@@ -148,7 +148,15 @@ import {
 import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
 import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setLaunchAtStartup, setScreenCaptureProtection } from './platform/settings'
 import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
-import { observeWindowMaximizedState, runWindowAction, setQuickPanelPinned, setWindowMode, type WindowAction } from './platform/window'
+import {
+  centerCurrentWindow,
+  observeWindowMaximizedState,
+  runWindowAction,
+  setQuickPanelPinned,
+  setWindowMode,
+  startWindowDragging,
+  type WindowAction,
+} from './platform/window'
 import { checkForUpdate, connectUpdateCheckRequested, downloadUpdate, getCurrentVersion, installDownloadedUpdate, type UpdateProgress, type UpdateStatus } from './platform/updater'
 import ClipContextMenu from './components/ClipContextMenu.vue'
 import ClipImageThumbnail from './components/ClipImageThumbnail.vue'
@@ -208,6 +216,7 @@ const EVENT_SUBSCRIPTION_ATTEMPTS = 3
 const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
+const ONBOARDING_SAMPLE_ID = 'quickpaste-onboarding-sample-v1'
 const AUTO_UPDATE_CHECK_DELAY_MS = 15_000
 const nativeRuntime = isTauriRuntime()
 
@@ -325,7 +334,9 @@ const globalShortcut = ref(storedSettings.globalShortcut)
 const globalShortcutAvailable = ref(!nativeRuntime)
 const shortcutRecording = ref(false)
 const onboardingCompleted = ref(storedSettings.onboardingCompleted)
+const onboardingPracticePending = ref(storedSettings.onboardingPracticePending)
 const onboardingStep = ref(storedSettings.onboardingCompleted ? -1 : 0)
+const onboardingSampleBusy = ref(false)
 const targetApp = ref<string | null>(null)
 const targetAppIcon = ref<string | null>(null)
 const targetElevated = ref(false)
@@ -444,6 +455,9 @@ const onboardingSteps = computed(() => [
 ] as const)
 
 const currentOnboardingStep = computed(() => onboardingSteps.value[onboardingStep.value] ?? onboardingSteps.value[0])
+const onboardingPracticeVisible = computed(() => (
+  onboardingStep.value < 0 && onboardingPracticePending.value
+))
 
 const visibleItems = computed(() => nativeRuntime
   ? items.value
@@ -965,7 +979,7 @@ watch(theme, (value) => {
   document.documentElement.dataset.theme = value
 }, { immediate: true })
 
-watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, historyRetentionDays, launchAtStartup, hideDuringSharing, elevatedPasteEnabled, capturePaused, excludedApps, globalShortcut, onboardingCompleted, quickPanelPinned, autoCheckUpdates, ocrEnabled], () => {
+watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, historyRetentionDays, launchAtStartup, hideDuringSharing, elevatedPasteEnabled, capturePaused, excludedApps, globalShortcut, onboardingCompleted, onboardingPracticePending, quickPanelPinned, autoCheckUpdates, ocrEnabled], () => {
   writeStoredValue(SETTINGS_STORAGE_KEY, {
     settingsVersion: SETTINGS_SCHEMA_VERSION,
     theme: theme.value,
@@ -979,6 +993,7 @@ watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, hi
     excludedApps: excludedApps.value,
     globalShortcut: globalShortcut.value,
     onboardingCompleted: onboardingCompleted.value,
+    onboardingPracticePending: onboardingPracticePending.value,
     quickPanelPinned: quickPanelPinned.value,
     autoCheckUpdates: autoCheckUpdates.value,
     ocrEnabled: ocrEnabled.value,
@@ -2328,7 +2343,10 @@ function resetQuickSession(focusSearch = true) {
   quickSearchComposing.value = false
   managerSearchComposing.value = false
   restoreResultFocusAfterPreview = false
-  selectedId.value = items.value[0]?.id ?? ''
+  selectedId.value = onboardingPracticePending.value
+    && items.value.some((clip) => clip.id === ONBOARDING_SAMPLE_ID)
+    ? ONBOARDING_SAMPLE_ID
+    : items.value[0]?.id ?? ''
   nextTick(() => {
     const list = document.querySelector<HTMLElement>('.clip-list')
     if (list) list.scrollTop = 0
@@ -2449,6 +2467,9 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
           ? await pasteImage(payload.imageUrl)
           : await pasteText(payload.content)
     if (sessionGeneration !== quickSessionGeneration) return
+    if (payload.id === ONBOARDING_SAMPLE_ID && result.pasted) {
+      onboardingPracticePending.value = false
+    }
     showToast(result.requiresElevation
       ? t('elevatedPasteApprovalRequired')
       : result.pasted
@@ -3027,9 +3048,75 @@ function handleWindowBlur() {
   }
 }
 
+function handleTitlebarPointerDown(event: PointerEvent) {
+  if (event.button !== 0 || event.isPrimary === false || event.defaultPrevented) return
+  const target = event.target instanceof Element ? event.target : null
+  if (target?.closest('button, a, input, select, textarea, [role="button"]')) return
+  void startWindowDragging()
+}
+
 function finishOnboarding() {
+  onboardingPracticePending.value = false
   onboardingCompleted.value = true
   onboardingStep.value = -1
+  nextTick(() => searchInput.value?.focus())
+}
+
+function createOnboardingSample(): LoadedClipboardItem {
+  return createClipboardItem({
+    kind: 'text',
+    content: locale.value === 'zh-CN'
+      ? '欢迎使用闪电剪贴板！这是你的第一次快捷粘贴。'
+      : 'Welcome to QuickPaste! This is your first quick paste.',
+    capturedAt: new Date().toISOString(),
+    sourceApp: 'QuickPaste',
+    formats: ['text'],
+  }, ONBOARDING_SAMPLE_ID)
+}
+
+async function addOnboardingSample(): Promise<boolean> {
+  const existing = items.value.find((clip) => clip.id === ONBOARDING_SAMPLE_ID)
+  if (existing) {
+    selectedId.value = existing.id
+    return true
+  }
+
+  const sample = createOnboardingSample()
+  if (!nativeRuntime) {
+    items.value = [sample, ...items.value]
+    selectedId.value = sample.id
+    return true
+  }
+
+  const result = await runSerializedManagerOperation(() => applyNativeHistoryMutation({
+    upserts: [sample],
+    deleteIds: [],
+    policy: currentHistoryPolicy(),
+  }), 0)
+  if (result.status === 'failed') return false
+  selectedId.value = ONBOARDING_SAMPLE_ID
+  return true
+}
+
+async function finishOnboardingWithSample() {
+  if (onboardingSampleBusy.value) return
+  onboardingSampleBusy.value = true
+  try {
+    if (!await addOnboardingSample()) {
+      showToast(t('onboardingSampleFailed'), true)
+      return
+    }
+    onboardingPracticePending.value = true
+    onboardingCompleted.value = true
+    onboardingStep.value = -1
+    nextTick(() => searchInput.value?.focus())
+  } finally {
+    onboardingSampleBusy.value = false
+  }
+}
+
+function dismissOnboardingPractice() {
+  onboardingPracticePending.value = false
   nextTick(() => searchInput.value?.focus())
 }
 
@@ -3484,6 +3571,7 @@ onMounted(() => {
   relativeTimeTimer = setInterval(() => {
     relativeTimeNow.value = new Date()
   }, 60_000)
+  if (nativeRuntime && !onboardingCompleted.value) void centerCurrentWindow()
   // 会话和目标事件必须先于设置/历史加载订阅，避免冷启动期间丢失第一次唤起。
   void connectSessionBridges()
   void connectClipboardBridge()
@@ -3540,7 +3628,7 @@ onBeforeUnmount(() => {
   >
     <Transition name="panel-swap" mode="out-in" @after-enter="focusCurrentView">
       <section v-if="currentView === 'quick'" key="quick" class="quick-panel" :aria-label="`${t('productName')} ${t('quickPanel')}`" :inert="onboardingStep >= 0 || modalOverlayOpen">
-        <header class="panel-chrome" data-tauri-drag-region>
+        <header class="panel-chrome" @pointerdown="handleTitlebarPointerDown">
           <div class="brand-lockup">
             <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
             <span class="brand-name">{{ t('productName') }}</span>
@@ -3655,6 +3743,20 @@ onBeforeUnmount(() => {
             <span v-if="filter.id === 'pinned'" class="chip-count">{{ pinnedCount }}</span>
           </button>
         </nav>
+
+        <Transition name="notice">
+          <aside
+            v-if="onboardingPracticeVisible"
+            data-testid="onboarding-practice"
+            class="onboarding-practice"
+            role="status"
+            aria-live="polite"
+          >
+            <Keyboard :size="17" aria-hidden="true" />
+            <span><strong>{{ t('onboardingPracticeTitle') }}</strong>{{ t('onboardingPracticeDescription', { shortcut: displayShortcut(globalShortcut) }) }}</span>
+            <button type="button" :aria-label="t('dismissOnboardingPractice')" @click="dismissOnboardingPractice"><X :size="14" /></button>
+          </aside>
+        </Transition>
 
         <div class="content-stage">
           <Transition name="preview-swap" mode="out-in" @after-enter="focusCurrentQuickContent">
@@ -4264,14 +4366,23 @@ onBeforeUnmount(() => {
               type="button"
               @click="advanceOnboarding"
             >{{ t('next') }}</button>
-            <button
-              v-else
-              ref="onboardingPrimary"
-              data-testid="onboarding-finish"
-              class="primary-button onboarding-next"
-              type="button"
-              @click="finishOnboarding"
-            >{{ t('getStarted') }}</button>
+            <div v-else class="onboarding-choice-actions">
+              <button
+                data-testid="onboarding-skip-sample"
+                class="secondary-button onboarding-next"
+                type="button"
+                :disabled="onboardingSampleBusy"
+                @click="finishOnboarding"
+              >{{ t('onboardingSkipSample') }}</button>
+              <button
+                ref="onboardingPrimary"
+                data-testid="onboarding-add-sample"
+                class="primary-button onboarding-next"
+                type="button"
+                :disabled="onboardingSampleBusy || (nativeRuntime && historyState !== 'ready')"
+                @click="finishOnboardingWithSample"
+              >{{ onboardingSampleBusy ? t('onboardingAddingSample') : t('onboardingAddSample') }}</button>
+            </div>
           </footer>
         </section>
       </div>

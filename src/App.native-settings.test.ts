@@ -25,10 +25,12 @@ const desktopMocks = vi.hoisted(() => ({
 }))
 
 const windowMocks = vi.hoisted(() => ({
+  centerCurrentWindow: vi.fn().mockResolvedValue(true),
   observeWindowMaximizedState: vi.fn().mockResolvedValue(() => undefined),
   runWindowAction: vi.fn().mockResolvedValue(true),
   setQuickPanelPinned: vi.fn().mockResolvedValue(true),
   setWindowMode: vi.fn().mockResolvedValue(true),
+  startWindowDragging: vi.fn().mockResolvedValue(true),
 }))
 
 const historyMocks = vi.hoisted(() => ({
@@ -179,9 +181,11 @@ describe('native setting reliability', () => {
     desktopMocks.exitNativeApp.mockResolvedValue(true)
     desktopMocks.getNativeCaptureAvailability.mockResolvedValue({ available: true, initialized: true })
     windowMocks.setQuickPanelPinned.mockReset().mockResolvedValue(true)
+    windowMocks.centerCurrentWindow.mockReset().mockResolvedValue(true)
     windowMocks.observeWindowMaximizedState.mockReset().mockResolvedValue(() => undefined)
     windowMocks.runWindowAction.mockReset().mockResolvedValue(true)
     windowMocks.setWindowMode.mockReset().mockResolvedValue(true)
+    windowMocks.startWindowDragging.mockReset().mockResolvedValue(true)
     historyMocks.loadNativeHistory.mockReset().mockResolvedValue([])
     historyMocks.queryNativeHistory.mockReset().mockImplementation(async (query) => {
       if (legacyHistory === null) {
@@ -263,6 +267,94 @@ describe('native setting reliability', () => {
     updaterMocks.downloadUpdate.mockReset().mockResolvedValue(null)
     updaterMocks.getCurrentVersion.mockReset().mockResolvedValue('0.1.0')
     updaterMocks.installDownloadedUpdate.mockReset().mockResolvedValue(null)
+  })
+
+  it('centers first-run onboarding and drags the title bar only from non-interactive space', async () => {
+    localStorage.clear()
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+
+    expect(windowMocks.centerCurrentWindow).toHaveBeenCalledOnce()
+    const titlebar = wrapper.get('.panel-chrome')
+    await titlebar.trigger('pointerdown', { button: 0, isPrimary: true })
+    expect(windowMocks.startWindowDragging).toHaveBeenCalledOnce()
+
+    await titlebar.get('[data-testid="window-minimize"]').trigger('pointerdown', { button: 0, isPrimary: true })
+    expect(windowMocks.startWindowDragging).toHaveBeenCalledOnce()
+  })
+
+  it('does not recenter the quick panel after onboarding is complete', async () => {
+    localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
+    mount(App)
+    await flushPromises()
+
+    expect(windowMocks.centerCurrentWindow).not.toHaveBeenCalled()
+  })
+
+  it('optionally inserts one onboarding record without replacing history or touching the system clipboard', async () => {
+    localStorage.clear()
+    historyMocks.loadNativeHistory.mockResolvedValueOnce([{
+      id: 'existing-user-record',
+      kind: 'text',
+      title: '用户原有记录',
+      content: '必须保留',
+      sourceApp: 'Notepad',
+      copiedAt: '2026-07-20T08:00:00.000Z',
+      pinned: false,
+      searchTerms: [],
+      formats: ['text'],
+    }])
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
+    await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
+    historyMocks.applyNativeHistoryMutation.mockClear()
+    vi.mocked(clipboardMocks.copyImage).mockClear()
+    vi.mocked(clipboardMocks.copyText).mockClear()
+    clipboardMocks.pasteFiles.mockClear()
+    clipboardMocks.pasteFormats.mockClear()
+    clipboardMocks.pasteImage.mockClear()
+    clipboardMocks.pasteText.mockClear()
+
+    await wrapper.get('[data-testid="onboarding-add-sample"]').trigger('click')
+    await flushPromises()
+
+    const sampleMutation = historyMocks.applyNativeHistoryMutation.mock.calls
+      .map(([mutation]) => mutation)
+      .find((mutation) => mutation.upserts?.some((item: { id: string }) => item.id === 'quickpaste-onboarding-sample-v1'))
+    expect(sampleMutation).toMatchObject({ deleteIds: [] })
+    expect(sampleMutation.upserts[0]).toMatchObject({
+      id: 'quickpaste-onboarding-sample-v1',
+      kind: 'text',
+      sourceApp: 'QuickPaste',
+      formats: ['text'],
+    })
+    expect(sampleMutation.upserts[0].content).toContain('第一次快捷粘贴')
+    expect(wrapper.text()).toContain('用户原有记录')
+    expect(wrapper.find('[data-testid="onboarding-dialog"]').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="onboarding-practice"]').text()).toContain('Ctrl + Shift + V')
+    expect(clipboardMocks.copyImage).not.toHaveBeenCalled()
+    expect(clipboardMocks.copyText).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteFiles).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteFormats).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteImage).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+  })
+
+  it('lets first-run users skip the sample without writing history', async () => {
+    localStorage.clear()
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
+    await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
+    historyMocks.applyNativeHistoryMutation.mockClear()
+
+    await wrapper.get('[data-testid="onboarding-skip-sample"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="onboarding-dialog"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="onboarding-practice"]').exists()).toBe(false)
+    expect(historyMocks.applyNativeHistoryMutation).not.toHaveBeenCalled()
   })
 
   it('defaults Windows-local OCR on, preserves explicit false, and keeps the control manager-only', async () => {

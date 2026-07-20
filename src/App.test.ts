@@ -19,7 +19,7 @@ describe('QuickPaste quick panel', () => {
     await wrapper.get('[data-testid="onboarding-next"]').trigger('click')
     expect(wrapper.get('[data-testid="onboarding-dialog"]').text()).toContain('隐私由你掌控')
     expect(wrapper.get('[data-testid="onboarding-dialog"]').text()).not.toContain('随时暂停')
-    await wrapper.get('[data-testid="onboarding-finish"]').trigger('click')
+    await wrapper.get('[data-testid="onboarding-skip-sample"]').trigger('click')
 
     expect(wrapper.find('[data-testid="onboarding-dialog"]').exists()).toBe(false)
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({ onboardingCompleted: true })
@@ -232,7 +232,7 @@ describe('QuickPaste quick panel', () => {
 
     expect((wrapper.get('[data-testid="capture-protection-toggle"]').element as HTMLInputElement).checked).toBe(false)
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
-      settingsVersion: 5,
+      settingsVersion: 6,
       hideDuringSharing: false,
       retentionDays: '90',
     })

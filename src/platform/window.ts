@@ -3,12 +3,40 @@ export type WindowMode = 'quick' | 'library'
 export type WindowInvoke = (command: string, args: Record<string, unknown>) => Promise<unknown>
 
 export interface DesktopWindow {
+  center?(): Promise<void>
   minimize(): Promise<void>
   close(): Promise<void>
   hide(): Promise<void>
+  startDragging?(): Promise<void>
   toggleMaximize(): Promise<void>
   isMaximized(): Promise<boolean>
   onResized(listener: () => void): Promise<() => void>
+}
+
+export async function centerCurrentWindow(
+  resolveWindow: WindowResolver = resolveTauriWindow,
+): Promise<boolean> {
+  try {
+    const desktopWindow = await resolveWindow()
+    if (!desktopWindow?.center) return false
+    await desktopWindow.center()
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function startWindowDragging(
+  resolveWindow: WindowResolver = resolveTauriWindow,
+): Promise<boolean> {
+  try {
+    const desktopWindow = await resolveWindow()
+    if (!desktopWindow?.startDragging) return false
+    await desktopWindow.startDragging()
+    return true
+  } catch {
+    return false
+  }
 }
 
 type WindowResolver = () => Promise<DesktopWindow | null>
