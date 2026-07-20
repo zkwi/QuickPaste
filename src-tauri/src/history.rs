@@ -18,7 +18,7 @@ use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
 
 const APPLICATION_ID: i64 = 0x5150_5354;
-const SCHEMA_VERSION: i64 = 9;
+const SCHEMA_VERSION: i64 = 10;
 const SOURCE_APP_ICON_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 const SOURCE_APP_ICON_PNG_MAX_BYTES: usize = 32 * 1024;
 const HISTORY_DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -773,6 +773,7 @@ fn initialize_history_schema(
             6 => migrate_to_v7(transaction)?,
             7 => migrate_to_v8(transaction)?,
             8 => migrate_to_v9(transaction)?,
+            9 => migrate_to_v10(transaction)?,
             _ => {
                 return Err(contract_failure(format!(
                     "不支持的历史数据库版本 {version}"
@@ -1134,6 +1135,35 @@ fn migrate_to_v9(transaction: &Transaction<'_>) -> Result<(), HistoryInitializat
         [],
     )?;
     for id in legacy_ocr_ids {
+        refresh_search_projection(transaction, &id)?;
+    }
+    Ok(())
+}
+
+fn migrate_to_v10(transaction: &Transaction<'_>) -> Result<(), HistoryInitializationFailure> {
+    // v0.10 及更早版本可能使用用户配置中的英文 OCR 引擎处理中文图片。
+    // 仅重排已有终态结果；从未启用 OCR 的图片保持原样，尊重用户设置。
+    let stale_ocr_ids = {
+        let mut statement = transaction.prepare(
+            "SELECT id FROM clips
+             WHERE kind = 'image' AND image_hash IS NOT NULL
+               AND (ocr_text IS NOT NULL
+                    OR (ocr_status IS NOT NULL AND ocr_status <> 'pending'))
+             ORDER BY id",
+        )?;
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        ids
+    };
+    transaction.execute(
+        "UPDATE clips SET ocr_text = NULL, ocr_status = 'pending'
+         WHERE kind = 'image' AND image_hash IS NOT NULL
+           AND (ocr_text IS NOT NULL
+                OR (ocr_status IS NOT NULL AND ocr_status <> 'pending'))",
+        [],
+    )?;
+    for id in stale_ocr_ids {
         refresh_search_projection(transaction, &id)?;
     }
     Ok(())
@@ -6646,6 +6676,16 @@ mod tests {
         transaction.commit().expect("commit v8 fixture");
     }
 
+    fn create_v9_schema(database: &mut Connection) {
+        create_v8_schema(database);
+        let transaction = database.transaction().expect("begin v9 fixture");
+        migrate_to_v9(&transaction).expect("create v9 schema");
+        transaction
+            .execute_batch("PRAGMA user_version = 9")
+            .expect("set v9 schema version");
+        transaction.commit().expect("commit v9 fixture");
+    }
+
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -6660,13 +6700,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_uses_version_nine_with_one_default_settings_row() {
+    fn fresh_schema_uses_version_ten_with_one_default_settings_row() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
 
         initialize_history_database(&mut database).expect("initialize fresh database");
 
         assert_eq!(pragma_i64(&database, "application_id"), 0x5150_5354);
-        assert_eq!(pragma_i64(&database, "user_version"), 9);
+        assert_eq!(pragma_i64(&database, "user_version"), 10);
         assert_eq!(pragma_i64(&database, "foreign_keys"), 1);
         assert!(column_exists(&database, "clips", "omitted_formats"));
         for table in [
@@ -6756,7 +6796,7 @@ mod tests {
             .expect("insert valid v7 collection");
 
         initialize_history_database(&mut database).expect("migrate valid v7 collection");
-        assert_eq!(pragma_i64(&database, "user_version"), 9);
+        assert_eq!(pragma_i64(&database, "user_version"), 10);
         assert_eq!(
             list_history_collections(&database)
                 .expect("list migrated collections")
@@ -6814,7 +6854,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v8 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 9);
+        assert_eq!(pragma_i64(&database, "user_version"), 10);
         let migrated = get_clip_payload(&database, "legacy-image")
             .expect("load migrated image")
             .expect("legacy image remains");
@@ -6839,6 +6879,65 @@ mod tests {
                 [],
             )
             .expect("validate migrated FTS index");
+    }
+
+    #[test]
+    fn v10_migration_requeues_hashed_images_and_removes_stale_ocr_from_search() {
+        let mut database = Connection::open_in_memory().expect("open v9 OCR fixture");
+        create_v9_schema(&mut database);
+        let image_bytes = b"current-image-payload".to_vec();
+        let image_hash = "a".repeat(64);
+        database
+            .execute(
+                "INSERT INTO clips(
+                   id, kind, title, plain_text, source_app, copied_at, updated_at,
+                   pinned, search_terms, ocr_text, ocr_status, logical_bytes,
+                   color, dimensions, permanent, collection_id, omitted_formats, image_hash
+                 ) VALUES(
+                   'current-image', 'image', '当前图片', '保留的图片记录', 'Test App',
+                   '2026-07-20T00:00:00.000Z', '2026-07-20T00:00:00.000Z',
+                   0, '[]', 'wrongenglishocr', 'completed', ?1,
+                   '#123456', '10 × 10', 0, NULL, '[]', ?2
+                 )",
+                params![
+                    i64::try_from(image_bytes.len()).expect("payload length"),
+                    image_hash
+                ],
+            )
+            .expect("insert v9 image metadata");
+        database
+            .execute(
+                "INSERT INTO clip_formats(clip_id, format, mime, data)
+                 VALUES ('current-image', 'image', 'image/png', ?1)",
+                [&image_bytes],
+            )
+            .expect("insert v9 image payload");
+        database
+            .execute(
+                "INSERT INTO clip_search(clip_id, normalized_text)
+                 VALUES ('current-image', '当前图片 保留的图片记录 test app wrongenglishocr')",
+                [],
+            )
+            .expect("insert v9 OCR search projection");
+
+        initialize_history_database(&mut database).expect("migrate v9 OCR fixture");
+
+        assert_eq!(pragma_i64(&database, "user_version"), 10);
+        let migrated = get_clip_payload(&database, "current-image")
+            .expect("load migrated image")
+            .expect("current image remains");
+        assert_eq!(migrated.ocr_status.as_deref(), Some("pending"));
+        assert_eq!(migrated.ocr_text, None);
+        assert_eq!(migrated.image_hash.as_deref(), Some(image_hash.as_str()));
+        assert_eq!(
+            migrated.image_url.as_deref(),
+            Some(data_url_bytes(&image_bytes).as_str())
+        );
+        assert!(query_ids(&database, history_query("wrongenglishocr")).is_empty());
+        assert_eq!(
+            query_ids(&database, history_query("保留的图片记录")),
+            vec!["current-image"]
+        );
     }
 
     #[test]
@@ -7778,11 +7877,11 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_is_v9_and_rejects_noncanonical_image_hashes() {
+    fn current_schema_is_v10_and_rejects_noncanonical_image_hashes() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         initialize_history_database(&mut database).expect("initialize current schema");
 
-        assert_eq!(SCHEMA_VERSION, 9);
+        assert_eq!(SCHEMA_VERSION, 10);
         let image_hash_column = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'image_hash'",

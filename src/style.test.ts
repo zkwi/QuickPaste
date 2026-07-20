@@ -53,12 +53,12 @@ describe('quick-panel density contract', () => {
 
   it('stacks source and time in one narrow right-side metadata track', () => {
     expect(cssRule('.clip-meta')).toMatch(/display:\s*flex/)
-    expect(cssRule('.clip-meta')).toMatch(/width:\s*104px/)
+    expect(cssRule('.clip-meta')).toMatch(/width:\s*92px/)
     expect(cssRule('.clip-meta')).toMatch(/flex-direction:\s*column/)
-    expect(cssRule('.source-app')).toMatch(/grid-template-columns:\s*16px\s+minmax\(0,\s*1fr\)/)
+    expect(cssRule('.source-app')).toMatch(/grid-template-columns:\s*14px\s+minmax\(0,\s*1fr\)/)
     expect(cssRule('.clip-time')).toMatch(/font-variant-numeric:\s*tabular-nums/)
-    expect(cssRule('.app-dot')).toMatch(/width:\s*16px/)
-    expect(cssRule('.app-dot')).toMatch(/height:\s*16px/)
+    expect(cssRule('.app-dot')).toMatch(/width:\s*14px/)
+    expect(cssRule('.app-dot')).toMatch(/height:\s*14px/)
   })
 
   it('keeps metadata visible on primary keyboard focus and only replaces it inside row actions', () => {
@@ -124,12 +124,24 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/display:\s*flex/)
     expect(cssRule('.preview-body.image-preview-body')).toMatch(/overflow:\s*hidden/)
     expect(cssRule('.image-preview-content')).toMatch(/display:\s*grid/)
-    expect(cssRule('.image-preview-content')).toMatch(/grid-template-columns:\s*minmax\(0,\s*1\.25fr\)\s+minmax\(180px,\s*0\.75fr\)/)
-    expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*0/)
+    expect(cssRule('.image-preview-content')).toMatch(/grid-template-rows:\s*minmax\(140px,\s*1fr\)\s+auto/)
+    expect(cssRule('.image-preview-body .preview-image')).toMatch(/min-height:\s*140px/)
     expect(cssRule('.image-preview-body .preview-image')).toMatch(/max-height:\s*none/)
+    expect(cssRule('.preview-ocr-text')).toMatch(/max-height:\s*72px/)
+    expect(cssRule('.preview-ocr-text')).toMatch(/grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)/)
     expect(cssRule('.image-preview-heading')).toMatch(/min-height:\s*0/)
     expect(cssRule('.image-preview-heading')).toMatch(/margin-bottom:\s*6px/)
     expect(cssRule('.image-preview-heading .kind-icon')).toMatch(/display:\s*none/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-content\s*\{[\s\S]*?grid-template-rows:\s*minmax\(72px,\s*1fr\)\s+auto/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.image-preview-body \.preview-image\s*\{[\s\S]*?min-height:\s*72px/)
+    expect(styles).toMatch(/@media \(max-height:\s*520px\)[\s\S]*?\.preview-ocr-text\s*\{[\s\S]*?max-height:\s*42px/)
+  })
+
+  it('keeps manager controls and row metadata on stable compact tracks', () => {
+    expect(cssRule('.manager-toolbar')).toMatch(/display:\s*grid/)
+    expect(cssRule('.manager-toolbar')).toMatch(/grid-template-columns:\s*minmax\(220px,\s*1fr\)\s+auto\s+auto/)
+    expect(cssRule('.manager-toolbar-actions')).toMatch(/display:\s*flex/)
+    expect(cssRule('.manager-row')).toMatch(/grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+96px\s+90px/)
   })
 
   it('keeps update actions in a dismissible bottom-right notice', () => {

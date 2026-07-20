@@ -5,7 +5,7 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
 SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：[`0.10.0` GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.10.0)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包。
+> 当前版本：[`0.11.0` GitHub Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.11.0)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包或绿色版 ZIP。
 
 ## 界面预览
 
@@ -26,7 +26,7 @@ SQLite 中；没有云同步或远程遥测。
 - 固定、删除和撤销；单层集合、可编辑永久文本/代码片段，以及管理页跨页批量固定、移动和删除。
 - 按记录数量、图片逻辑字节数和保留期限共同裁剪普通历史；固定项与永久片段不参与自动裁剪。
 - 设置页只展示数据库总占用（MB）和数据条数两项核心指标，同时保留安全压缩、SQLite 备份、原子恢复及损坏数据库隔离恢复。
-- 对已进入历史的剪贴板图片默认启用 Windows 本地 OCR，可随时关闭；只使用系统已安装语言，不下载或捆绑模型，也不上传图片或识别文字。
+- 对已进入历史的剪贴板图片默认启用 Windows 本地 OCR，可随时关闭；会优先选择系统已安装的简体中文识别器并在引擎升级后安全重跑旧结果，不下载或捆绑模型，也不上传图片或识别文字。
 - 代码预览按需加载 `highlight.js` core 与命中的语言模块；失败或超限时回退为转义纯文本，不向快速面板加入代码工具箱。
 - 默认使用 `Ctrl + Shift + V` 唤起；快速面板优先靠近文本插入点右下方，并受当前显示器工作区约束。
 - 记住并复核原顶层窗口与实际输入焦点子窗口，恢复目标后自动回贴；目标失效或修饰键未释放时安全降级为仅复制。
@@ -70,7 +70,7 @@ npm run tauri dev
 npm run build:windows
 ```
 
-产物位于 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis`。本地构建、上传后摘要核对和正式发布门槛见 [docs/release.md](docs/release.md)；真实机长循环尚未完成的版本只能标记为 Pre-release，不能表述为稳定版已全面验收。
+NSIS 产物位于 `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis`，同一 release 可执行文件可连同第三方声明打包为绿色版 ZIP。本地构建、上传后摘要核对和发布门槛见 [docs/release.md](docs/release.md)；真实机长循环尚未完成时必须继续披露 `pending real-machine`，不能表述为已全面验收。
 
 ## 项目结构
 
@@ -89,7 +89,7 @@ npm run build:windows
 - [docs/release.md](docs/release.md)：Windows 发布清单。
 - [SECURITY.md](SECURITY.md)：数据生命周期、安全边界和报告策略。
 - [CHANGELOG.md](CHANGELOG.md)：版本历史与用户可感知变化。
-- [docs/releases/v0.10.0.md](docs/releases/v0.10.0.md)：v0.10.0 高密度界面、精简管理与更新通知的发布说明。
+- [docs/releases/v0.11.0.md](docs/releases/v0.11.0.md)：v0.11.0 中文 OCR、图片预览与列表对齐修复的发布说明。
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方声明总索引、锁文件指纹和 MPL 源码入口。
 - [THIRD_PARTY_LICENSES_NPM.md](THIRD_PARTY_LICENSES_NPM.md)：npm production 依赖及许可证原文。
 - [THIRD_PARTY_LICENSES_RUST.md](THIRD_PARTY_LICENSES_RUST.md)：Windows Rust 依赖及许可证原文。

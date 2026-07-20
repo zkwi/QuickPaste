@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.10.0` 是当前 GitHub Pre-release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.10.0>。本清单把“可公开测试的 Pre-release”和“可宣称全面验收的稳定版本”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须标为 Pre-release，并保留 `pending real-machine`，不得推广为稳定版。
+`0.11.0` 是当前 GitHub Release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.11.0>。本清单把“GitHub 发布渠道”和“验证完成度”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须保留 `pending real-machine`，不得宣称已经全面验收。是否使用 Pre-release 由维护者在发布时明确决定，不能用渠道标签替代验证证据。
 
 ## 版本定级
 
@@ -96,7 +96,7 @@ foreach ($artifact in $artifacts) {
 - 敏感应用排除以及受支持捕获路径中的窗口排除。
 - 卸载不意外删除历史；需要彻底删除时，文档指向 `SECURITY.md` 的数据生命周期说明。
 
-任一关键场景明确失败都必须阻止发布，不能只记录为“已知问题”后继续上传。尚未执行的真实机长循环必须保留 `pending real-machine`，只能发布醒目标注的 Pre-release，并阻止提升为稳定版本。
+任一关键场景明确失败都必须阻止发布，不能只记录为“已知问题”后继续上传。尚未执行的真实机长循环必须保留 `pending real-machine` 并在发布说明中醒目标注；即使维护者选择标准 GitHub Release，也不得表述为稳定版已全面验收。
 
 ### 证据分级与长循环门槛
 

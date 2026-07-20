@@ -625,7 +625,7 @@ button:disabled {
   display: grid;
   flex: 1 1 auto;
   min-width: 0;
-  padding: 2px 118px 2px 7px;
+  padding: 2px 104px 2px 7px;
   border: 0;
   grid-template-columns: 26px minmax(0, 1fr);
   column-gap: 7px;
@@ -829,14 +829,14 @@ button:disabled {
 .clip-meta {
   position: absolute;
   top: 50%;
-  right: 8px;
+  right: 7px;
   display: flex;
-  width: 104px;
+  width: 92px;
   align-items: stretch;
   gap: 1px;
   flex-direction: column;
   color: var(--text-faint);
-  font-size: 9.25px;
+  font-size: 8.75px;
   pointer-events: none;
   transform: translateY(-50%);
   transition: opacity 80ms ease;
@@ -846,7 +846,7 @@ button:disabled {
   display: grid;
   width: 100%;
   align-items: center;
-  grid-template-columns: 16px minmax(0, 1fr);
+  grid-template-columns: 14px minmax(0, 1fr);
   column-gap: 4px;
   min-width: 0;
   flex: 1 1 auto;
@@ -861,7 +861,7 @@ button:disabled {
 }
 
 .clip-time {
-  padding-left: 20px;
+  padding-left: 18px;
   flex: 0 0 auto;
   text-align: left;
   white-space: nowrap;
@@ -869,12 +869,12 @@ button:disabled {
 }
 
 .app-dot {
-  --source-app-icon-size: 16px;
+  --source-app-icon-size: 14px;
   display: inline-grid;
   place-items: center;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
   border-radius: 4px;
   color: #fff;
   font-size: 7px;
@@ -1029,12 +1029,12 @@ button:disabled {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 1.25fr) minmax(180px, 0.75fr);
-  gap: 10px;
+  grid-template-rows: minmax(140px, 1fr) auto;
+  gap: 8px;
 }
 
 .image-preview-content:not(:has(.preview-ocr-text)) {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(140px, 1fr);
 }
 
 .image-preview-heading {
@@ -1228,21 +1228,22 @@ button:disabled {
 }
 
 .image-preview-body .preview-image {
-  min-height: 0;
+  min-height: 140px;
   max-height: none;
   height: 100%;
 }
 
 .preview-ocr-text {
-  display: flex;
+  display: grid;
   min-width: 0;
   min-height: 0;
+  max-height: 72px;
   margin: 0;
   padding: 10px 11px;
-  overflow: auto;
+  overflow: hidden;
   align-items: flex-start;
-  gap: 6px;
-  flex-direction: column;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
   border: 1px solid var(--border);
   border-radius: 12px;
   color: var(--text-faint);
@@ -1257,6 +1258,9 @@ button:disabled {
 }
 
 .preview-ocr-text span {
+  min-width: 0;
+  max-height: 50px;
+  overflow: auto;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -1818,18 +1822,25 @@ kbd {
 }
 
 .manager-toolbar {
-  display: flex;
+  display: grid;
   min-height: 30px;
-  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
   margin: 0 2px 8px;
   color: var(--text-faint);
   font-size: 9.5px;
 }
 
-.manager-toolbar > span {
-  margin-left: auto;
+.manager-toolbar-actions {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.manager-toolbar-actions > span {
   white-space: nowrap;
 }
 
@@ -1894,9 +1905,8 @@ kbd {
 
 .manager-search {
   display: flex;
-  width: min(300px, 42%);
+  width: 100%;
   min-width: 150px;
-  flex: 1 1 240px;
   height: 29px;
   align-items: center;
   gap: 7px;
@@ -1985,8 +1995,8 @@ kbd {
   min-height: 54px;
   padding: 5px 9px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  grid-template-columns: 42px minmax(0, 1fr) 116px 94px;
-  column-gap: 10px;
+  grid-template-columns: 42px minmax(0, 1fr) 96px 90px;
+  column-gap: 8px;
   align-items: center;
 }
 
@@ -3611,7 +3621,7 @@ kbd {
   }
 
   .manager-filters {
-    order: 3;
+    grid-column: 1 / -1;
     width: 100%;
     overflow-x: auto;
     padding-bottom: 1px;
@@ -3655,14 +3665,6 @@ kbd {
     min-height: 0;
   }
 
-  .image-preview-content {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(0, 1fr) auto;
-  }
-
-  .preview-ocr-text {
-    max-height: 82px;
-  }
 }
 
 @media (max-width: 520px) {
@@ -3761,8 +3763,35 @@ kbd {
     padding: 12px 16px;
   }
 
+  .preview-body.image-preview-body {
+    padding: 6px 10px 8px;
+  }
+
+  .image-preview-content {
+    grid-template-rows: minmax(72px, 1fr) auto;
+    gap: 6px;
+  }
+
+  .image-preview-body .preview-image {
+    min-height: 72px;
+  }
+
+  .preview-ocr-text {
+    max-height: 42px;
+    padding: 6px 8px;
+    gap: 7px;
+  }
+
+  .preview-ocr-text span {
+    max-height: 28px;
+  }
+
   .preview-heading {
     margin-bottom: 14px;
+  }
+
+  .image-preview-heading {
+    margin-bottom: 4px;
   }
 
   .preview-actions {

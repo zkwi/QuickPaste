@@ -3750,8 +3750,8 @@ onBeforeUnmount(() => {
                           </template>
                         </span>
                         <span v-if="isOcrOnlyMatch(clip)" class="ocr-match">{{ t('ocrMatch') }}</span>
-                        <span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span>
                         <span v-else-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span>
+                        <span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span>
                         <span v-if="hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span>
                       </span>
                     </span>
@@ -3892,19 +3892,21 @@ onBeforeUnmount(() => {
                 v-model:kinds="managerKinds"
                 :locale="locale"
               />
-              <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
-              <button v-if="nativeRuntime" data-testid="new-snippet" class="manager-primary-action" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet"><Plus :size="14" />{{ t('managerNewSnippet') }}</button>
-              <button
-                v-if="librarySection === 'all' && !nativeRuntime"
-                ref="clearHistoryTrigger"
-                data-testid="clear-history"
-                class="manager-clear"
-                type="button"
-                :disabled="ordinaryHistoryCount === 0"
-                @click="requestClearHistory"
-              >
-                <Trash2 :size="14" />{{ ordinaryClearLabel }}
-              </button>
+              <div class="manager-toolbar-actions">
+                <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
+                <button v-if="nativeRuntime" data-testid="new-snippet" class="manager-primary-action" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet"><Plus :size="14" />{{ t('managerNewSnippet') }}</button>
+                <button
+                  v-if="librarySection === 'all' && !nativeRuntime"
+                  ref="clearHistoryTrigger"
+                  data-testid="clear-history"
+                  class="manager-clear"
+                  type="button"
+                  :disabled="ordinaryHistoryCount === 0"
+                  @click="requestClearHistory"
+                >
+                  <Trash2 :size="14" />{{ ordinaryClearLabel }}
+                </button>
+              </div>
             </div>
             <ManagerBulkToolbar
               v-if="nativeRuntime"
@@ -3952,8 +3954,8 @@ onBeforeUnmount(() => {
                   <component v-else :is="kindIcon(clip.kind)" :size="17" />
                 </span>
                 <div>
-                  <strong><span class="manager-title-text"><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="isOcrOnlyMatch(clip, true)" class="ocr-match">{{ t('ocrMatch') }}</span><span v-else-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-if="hasMissingFiles(clip)" :data-testid="`manager-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span></strong>
-                  <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template><span v-if="clip.kind === 'image' && clip.ocrStatus" :data-testid="`manager-ocr-status-${clip.id}`" class="ocr-status">{{ ocrStatusLabel(clip) }}</span></p>
+                  <strong><span class="manager-title-text"><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="isOcrOnlyMatch(clip, true)" class="ocr-match">{{ t('ocrMatch') }}</span><span v-else-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-else-if="clip.kind === 'image' && clip.ocrStatus" :data-testid="`manager-ocr-status-${clip.id}`" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span><span v-if="hasMissingFiles(clip)" :data-testid="`manager-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span></strong>
+                  <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p>
                 </div>
                 <div class="manager-meta">
                   <span class="manager-source"><SourceAppIcon class="manager-app-icon" :source="clip.sourceApp" :icon="clip.sourceAppIcon" :fallback-color="clip.color" /><span><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.sourceApp)" :key="`manager-source-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span></span>

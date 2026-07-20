@@ -17,6 +17,7 @@ const OCR_DECODER_MAX_BYTES: u64 = 192 * 1024 * 1024;
 pub(crate) const OCR_TEXT_MAX_BYTES: usize = 256 * 1024;
 const OCR_RUNTIME_CAPACITY: usize = 8;
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+const OCR_LANGUAGE_PRIORITY: [&str; 5] = ["zh-Hans-CN", "zh-CN", "zh-Hans", "en-US", "en"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OcrFailure {
@@ -136,7 +137,38 @@ pub(crate) fn normalize_ocr_text(value: &str) -> String {
     if normalized.ends_with('\r') {
         normalized.pop();
     }
-    normalized
+    remove_artificial_cjk_spaces(&normalized)
+}
+
+fn remove_artificial_cjk_spaces(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    while let Some(character) = characters.next() {
+        if character == ' '
+            && output.chars().next_back().is_some_and(is_cjk_character)
+            && characters.peek().copied().is_some_and(is_cjk_character)
+        {
+            continue;
+        }
+        output.push(character);
+    }
+    output
+}
+
+fn is_cjk_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3400}'..='\u{4DBF}' | '\u{4E00}'..='\u{9FFF}' | '\u{F900}'..='\u{FAFF}'
+    )
+}
+
+fn preferred_ocr_language(available_languages: &[String]) -> Option<&str> {
+    OCR_LANGUAGE_PRIORITY.iter().find_map(|preferred| {
+        available_languages
+            .iter()
+            .find(|available| available.eq_ignore_ascii_case(preferred))
+            .map(String::as_str)
+    })
 }
 
 pub(crate) fn ocr_text_is_canonical(value: &str) -> bool {
@@ -430,18 +462,44 @@ impl OcrEngineAdapter for PlatformAdapter {
 
     fn recognize_gray8(&mut self, image: &PreparedImage) -> Result<Option<String>, OcrFailure> {
         use windows::{
-            core::Interface,
+            core::{Interface, HSTRING},
+            Globalization::Language,
             Graphics::Imaging::{BitmapPixelFormat, SoftwareBitmap},
             Media::Ocr::OcrEngine,
             Storage::Streams::DataWriter,
         };
 
-        let engine = match OcrEngine::TryCreateFromUserProfileLanguages() {
-            Ok(engine) => engine,
-            // The projection represents WinRT's null "no compatible language"
-            // result as E_POINTER. This is an expected local-unavailable state.
-            Err(error) if error.code().0 == 0x8000_4003_u32 as i32 => return Ok(None),
-            Err(_) => return Err(OcrFailure::Winrt),
+        let languages = OcrEngine::AvailableRecognizerLanguages().map_err(|_| OcrFailure::Winrt)?;
+        let language_count = languages.Size().map_err(|_| OcrFailure::Winrt)?;
+        let mut available_languages = Vec::with_capacity(language_count as usize);
+        for index in 0..language_count {
+            let language = languages.GetAt(index).map_err(|_| OcrFailure::Winrt)?;
+            let tag = language.LanguageTag().map_err(|_| OcrFailure::Winrt)?;
+            available_languages.push(tag.to_string());
+        }
+
+        let preferred_engine = preferred_ocr_language(&available_languages)
+            .map(|tag| {
+                let language =
+                    Language::CreateLanguage(&HSTRING::from(tag)).map_err(|_| OcrFailure::Winrt)?;
+                if !OcrEngine::IsLanguageSupported(&language).map_err(|_| OcrFailure::Winrt)? {
+                    return Ok(None);
+                }
+                OcrEngine::TryCreateFromLanguage(&language)
+                    .map(Some)
+                    .map_err(|_| OcrFailure::Winrt)
+            })
+            .transpose()?
+            .flatten();
+        let engine = match preferred_engine {
+            Some(engine) if !Interface::as_raw(&engine).is_null() => engine,
+            _ => match OcrEngine::TryCreateFromUserProfileLanguages() {
+                Ok(engine) => engine,
+                // The projection represents WinRT's null "no compatible language"
+                // result as E_POINTER. This is an expected local-unavailable state.
+                Err(error) if error.code().0 == 0x8000_4003_u32 as i32 => return Ok(None),
+                Err(_) => return Err(OcrFailure::Winrt),
+            },
         };
         if Interface::as_raw(&engine).is_null() {
             return Ok(None);
@@ -507,6 +565,26 @@ mod tests {
         let cr_at_limit = format!("{}\nx", "a".repeat(OCR_TEXT_MAX_BYTES - 1));
         let normalized = normalize_ocr_text(&cr_at_limit);
         assert!(!normalized.ends_with('\r'));
+    }
+
+    #[test]
+    fn prefers_installed_simplified_chinese_before_english_or_profile_fallback() {
+        let available = vec!["en-US".to_owned(), "ZH-hans".to_owned(), "fr-FR".to_owned()];
+
+        assert_eq!(preferred_ocr_language(&available), Some("ZH-hans"));
+        assert_eq!(
+            preferred_ocr_language(&["en-GB".to_owned(), "en-US".to_owned()]),
+            Some("en-US")
+        );
+        assert_eq!(preferred_ocr_language(&["fr-FR".to_owned()]), None);
+    }
+
+    #[test]
+    fn output_normalization_removes_only_artificial_spaces_between_cjk_characters() {
+        assert_eq!(
+            normalize_ocr_text("屏 幕 OCR 上 下 文\nQuick Paste"),
+            "屏幕 OCR 上下文\r\nQuick Paste"
+        );
     }
 
     #[test]
