@@ -114,6 +114,7 @@ pub enum ClipboardFormat {
     Rtf,
     Image,
     Files,
+    Object,
 }
 
 impl ClipboardFormat {
@@ -124,6 +125,7 @@ impl ClipboardFormat {
             Self::Rtf => "rtf",
             Self::Image => "image",
             Self::Files => "files",
+            Self::Object => "object",
         }
     }
 }
@@ -8805,19 +8807,30 @@ mod tests {
     #[test]
     fn history_item_serde_canonicalizes_omitted_formats_and_uses_camel_case() {
         let mut item = text_item("serde", "2026-07-01T00:00:00.000Z");
-        item.omitted_formats = vec![ClipboardFormat::Rtf, ClipboardFormat::Html];
+        item.omitted_formats = vec![
+            ClipboardFormat::Object,
+            ClipboardFormat::Rtf,
+            ClipboardFormat::Html,
+        ];
 
         let value = serde_json::to_value(&item).expect("serialize history item");
-        assert_eq!(value["omittedFormats"], serde_json::json!(["html", "rtf"]));
+        assert_eq!(
+            value["omittedFormats"],
+            serde_json::json!(["html", "rtf", "object"])
+        );
         assert!(value.get("omitted_formats").is_none());
 
         let mut unsorted = value;
-        unsorted["omittedFormats"] = serde_json::json!(["rtf", "html"]);
+        unsorted["omittedFormats"] = serde_json::json!(["object", "rtf", "html"]);
         let decoded: HistoryItem =
             serde_json::from_value(unsorted).expect("deserialize known omitted formats");
         assert_eq!(
             decoded.omitted_formats,
-            vec![ClipboardFormat::Html, ClipboardFormat::Rtf]
+            vec![
+                ClipboardFormat::Html,
+                ClipboardFormat::Rtf,
+                ClipboardFormat::Object,
+            ]
         );
     }
 

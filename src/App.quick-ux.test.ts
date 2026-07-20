@@ -236,6 +236,7 @@ describe('quick panel high-frequency interaction', () => {
     }]))
     wrapper = mount(App, { attachTo: document.body })
 
+    expect(wrapper.get('[data-clip-id="ocr-visible"] .clip-content').text()).toBe('InvoiceOCR 已完成')
     expect(wrapper.get('[data-clip-id="ocr-visible"] .ocr-status').text()).toContain('OCR 已完成')
     await wrapper.get('[data-testid="preview-clip-ocr-visible"]').trigger('click')
 
@@ -387,15 +388,32 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).toHaveBeenCalledTimes(2)
   })
 
-  it('highlights case-insensitive literal matches in result titles and previews', async () => {
+  it('highlights case-insensitive literal matches in the single content line', async () => {
     const search = wrapper.get('[data-testid="search-input"]')
     await search.setValue('TAURI security')
 
     const result = wrapper.get('[data-clip-id="clip-3"]')
-    expect(result.get('.clip-title').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['Tauri'])
-    expect(result.get('.clip-preview').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['tauri', 'security'])
-    expect(result.get('.clip-title').text()).toBe('Tauri capabilities')
-    expect(result.get('.clip-preview').text()).toBe('https://v2.tauri.app/security/capabilities/')
+    expect(result.findAll('.clip-title')).toHaveLength(0)
+    expect(result.findAll('.clip-preview')).toHaveLength(0)
+    expect(result.get('.clip-content').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['tauri', 'security'])
+    expect(result.get('.clip-content').text()).toBe('https://v2.tauri.app/security/capabilities/')
+  })
+
+  it('shows repeated title and body content only once in each compact result', () => {
+    const result = wrapper.get('[data-clip-id="clip-1"]')
+
+    expect(result.get('.clip-content').text()).toContain('Windows 版本')
+    expect(result.findAll('.clip-title')).toHaveLength(0)
+    expect(result.findAll('.clip-preview')).toHaveLength(0)
+    expect(result.text().split('Windows 版本')).toHaveLength(2)
+  })
+
+  it('keeps a meaningful distinct title and body on the same compact line', () => {
+    const row = wrapper.get('[data-clip-id="clip-1"]')
+    const result = row.get('.clip-content')
+
+    expect(result.text()).toMatch(/^周会跟进事项 · 今天的会议重点/)
+    expect(row.findAll('.clip-content')).toHaveLength(1)
   })
 
   it('highlights a direct source-app match without changing its label', async () => {
@@ -434,8 +452,7 @@ describe('quick panel high-frequency interaction', () => {
     await wrapper.get('[data-testid="search-input"]').setValue('ＴＡＵＲＩ')
 
     const result = wrapper.get('[data-clip-id="clip-3"]')
-    expect(result.get('.clip-title').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['Tauri'])
-    expect(result.get('.clip-preview').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['tauri'])
+    expect(result.get('.clip-content').findAll('mark.search-highlight').map((mark) => mark.text())).toEqual(['tauri'])
   })
 
   it('keeps contextual Unicode case folding consistent between filtering and highlighting', async () => {
@@ -455,9 +472,9 @@ describe('quick panel high-frequency interaction', () => {
 
     await wrapper.get('[data-testid="search-input"]').setValue('ΟΣ')
 
-    const title = wrapper.get('[data-clip-id="clip-greek"] .clip-title')
-    expect(title.get('mark.search-highlight').text()).toBe('ΟΣ')
-    expect(title.text()).toBe('ΟΣ')
+    const contentLine = wrapper.get('[data-clip-id="clip-greek"] .clip-content')
+    expect(contentLine.get('mark.search-highlight').text()).toBe('ΟΣ')
+    expect(contentLine.text()).toBe('ΟΣ')
   })
 
   it('centers a compact preview around a match near the end of long content', async () => {
@@ -478,7 +495,7 @@ describe('quick panel high-frequency interaction', () => {
 
     await wrapper.get('[data-testid="search-input"]').setValue('needle')
 
-    const preview = wrapper.get('[data-clip-id="clip-long"] .clip-preview')
+    const preview = wrapper.get('[data-clip-id="clip-long"] .clip-content')
     expect(preview.get('mark.search-highlight').text()).toBe('needle')
     expect(preview.text()).toMatch(/^….*needle.*…$/)
     expect(preview.text().length).toBeLessThan(content.length)

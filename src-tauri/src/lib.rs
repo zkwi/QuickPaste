@@ -75,6 +75,8 @@ const ELEVATED_REQUEST_MAX_BYTES: usize = 256;
 const ELEVATED_HELPER_PROTOCOL_FLAG: &str = "--mypaste-elevated-paste";
 const ELEVATED_PIPE_NAMESPACE: &str = "MyPaste.ElevatedPaste";
 const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(800);
+const FOREGROUND_ACTIVATION_ATTEMPTS: usize = 50;
+const FOREGROUND_ACTIVATION_RETRY_DELAY: Duration = Duration::from_millis(10);
 const CLIPBOARD_INITIALIZATION_ATTEMPTS: usize = 4;
 const CLIPBOARD_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CLIPBOARD_READ_ATTEMPTS: usize = 4;
@@ -898,6 +900,7 @@ fn run_with_timeout<T: Send + 'static>(
 #[derive(Clone, Debug)]
 struct PasteTargetIdentity {
     window_handle: isize,
+    focus_window_handle: Option<isize>,
     process_id: u32,
     captured_at: Instant,
 }
@@ -932,9 +935,10 @@ impl PasteTarget {
             return;
         }
 
-        self.remember_with_pid(
+        self.remember_with_pid_and_focus(
             window_handle,
             window_process_id(window_handle).unwrap_or_default(),
+            None,
         );
     }
 
@@ -943,10 +947,16 @@ impl PasteTarget {
         self.take_identity().map(|identity| identity.window_handle)
     }
 
-    fn remember_with_pid(&self, window_handle: isize, process_id: u32) {
+    fn remember_with_pid_and_focus(
+        &self,
+        window_handle: isize,
+        process_id: u32,
+        focus_window_handle: Option<isize>,
+    ) {
         if let Ok(mut current) = self.0.lock() {
             *current = Some(PasteTargetIdentity {
                 window_handle,
+                focus_window_handle,
                 process_id,
                 captured_at: Instant::now(),
             });
@@ -985,6 +995,7 @@ impl PasteTarget {
         };
         let matches_activation = current.as_ref().is_some_and(|candidate| {
             candidate.window_handle == identity.window_handle
+                && candidate.focus_window_handle == identity.focus_window_handle
                 && candidate.process_id == identity.process_id
                 && candidate.captured_at == identity.captured_at
         });
@@ -2529,6 +2540,38 @@ fn window_is_elevated(window_handle: isize) -> Option<bool> {
 }
 
 #[cfg(target_os = "windows")]
+fn focused_child_window(window_handle: isize, process_id: u32) -> Option<isize> {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GetGUIThreadInfo, GetWindowThreadProcessId, IsWindow, GUITHREADINFO,
+        },
+    };
+
+    let target = HWND(window_handle as *mut core::ffi::c_void);
+    let thread_id = unsafe { GetWindowThreadProcessId(target, None) };
+    if thread_id == 0 {
+        return None;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetGUIThreadInfo(thread_id, &mut info) }.is_err() {
+        return None;
+    }
+    let focused = if info.hwndFocus.0.is_null() {
+        target
+    } else {
+        info.hwndFocus
+    };
+    let focused_handle = focused.0 as isize;
+    (unsafe { IsWindow(Some(focused)) }.as_bool()
+        && window_process_id(focused_handle) == Some(process_id))
+    .then_some(focused_handle)
+}
+
+#[cfg(target_os = "windows")]
 fn capture_foreground_paste_target(app: &AppHandle) -> Option<ForegroundPasteTargetSnapshot> {
     let window_handle = foreground_window_handle()?;
     let process_id = window_process_id(window_handle)?;
@@ -2548,6 +2591,7 @@ fn capture_foreground_paste_target(app: &AppHandle) -> Option<ForegroundPasteTar
     Some(ForegroundPasteTargetSnapshot {
         identity: PasteTargetIdentity {
             window_handle,
+            focus_window_handle: focused_child_window(window_handle, process_id),
             process_id,
             captured_at: Instant::now(),
         },
@@ -2687,6 +2731,36 @@ fn target_identity_is_current(_identity: &PasteTargetIdentity) -> bool {
 }
 
 #[cfg(target_os = "windows")]
+fn restore_target_focus(identity: &PasteTargetIdentity) -> bool {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::{
+            Input::KeyboardAndMouse::SetFocus,
+            WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow},
+        },
+    };
+
+    let Some(focus_window_handle) = identity.focus_window_handle else {
+        return true;
+    };
+    let focus = HWND(focus_window_handle as *mut core::ffi::c_void);
+    if !unsafe { IsWindow(Some(focus)) }.as_bool()
+        || window_process_id(focus_window_handle) != Some(identity.process_id)
+    {
+        return false;
+    }
+    if focus_window_handle == identity.window_handle {
+        return true;
+    }
+    let target = HWND(identity.window_handle as *mut core::ffi::c_void);
+    let target_thread_id = unsafe { GetWindowThreadProcessId(target, None) };
+    let Some(_attachment) = ThreadInputAttachment::new(target_thread_id) else {
+        return false;
+    };
+    unsafe { SetFocus(Some(focus)) }.is_ok()
+}
+
+#[cfg(target_os = "windows")]
 fn focus_target_and_send_ctrl_v(
     identity: &PasteTargetIdentity,
     deadline_ms: Option<u64>,
@@ -2696,7 +2770,10 @@ fn focus_target_and_send_ctrl_v(
         Foundation::HWND,
         UI::{
             Input::KeyboardAndMouse::{SendInput, INPUT},
-            WindowsAndMessaging::{GetForegroundWindow, SetForegroundWindow},
+            WindowsAndMessaging::{
+                BringWindowToTop, GetForegroundWindow, IsIconic, SetForegroundWindow, ShowWindow,
+                SW_RESTORE,
+            },
         },
     };
 
@@ -2707,21 +2784,24 @@ fn focus_target_and_send_ctrl_v(
         return false;
     }
     let target = HWND(identity.window_handle as *mut core::ffi::c_void);
-    if !unsafe { SetForegroundWindow(target) }.as_bool() {
-        return false;
+    if unsafe { IsIconic(target) }.as_bool() {
+        let _ = unsafe { ShowWindow(target, SW_RESTORE) };
     }
 
-    let focused = (0..18).any(|_| {
+    let focused = (0..FOREGROUND_ACTIVATION_ATTEMPTS).any(|_| {
+        let _ = unsafe { BringWindowToTop(target) };
+        let _ = unsafe { SetForegroundWindow(target) };
         if unsafe { GetForegroundWindow() } == target {
             true
         } else {
-            thread::sleep(Duration::from_millis(10));
+            thread::sleep(FOREGROUND_ACTIVATION_RETRY_DELAY);
             false
         }
     });
     if !focused
         || !target_identity_is_current(identity)
         || unsafe { GetForegroundWindow() } != target
+        || !restore_target_focus(identity)
         || expected_clipboard_sequence
             .is_some_and(|expected| !clipboard_sequence_matches(expected, clipboard_sequence()))
     {
@@ -2732,6 +2812,7 @@ fn focus_target_and_send_ctrl_v(
     if !wait_for_physical_modifiers_released(deadline_ms)
         || !target_identity_is_current(identity)
         || unsafe { GetForegroundWindow() } != target
+        || !restore_target_focus(identity)
         || deadline_ms.is_some_and(|deadline| {
             unix_time_millis().is_none_or(|now| !helper_deadline_allows_injection(deadline, now))
         })
@@ -2826,6 +2907,7 @@ fn launch_elevated_paste_helper_blocking(
     };
     let request = ElevatedPasteRequest {
         window_handle: identity.window_handle,
+        focus_window_handle: identity.focus_window_handle,
         process_id: identity.process_id,
         deadline_ms,
         nonce: nonce.clone(),
@@ -2966,6 +3048,7 @@ fn launch_elevated_paste_helper(
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ElevatedPasteRequest {
     window_handle: isize,
+    focus_window_handle: Option<isize>,
     process_id: u32,
     deadline_ms: u64,
     nonce: String,
@@ -3000,8 +3083,9 @@ fn elevated_pipe_name(nonce: &str) -> Option<String> {
 
 fn elevated_request_message(request: &ElevatedPasteRequest) -> String {
     format!(
-        "{}\n{}\n{}\n{}\n{}\n",
+        "{}\n{}\n{}\n{}\n{}\n{}\n",
         request.window_handle,
+        request.focus_window_handle.unwrap_or_default(),
         request.process_id,
         request.deadline_ms,
         request.clipboard_sequence,
@@ -3014,15 +3098,17 @@ fn parse_elevated_request_message(value: &str) -> Option<ElevatedPasteRequest> {
         return None;
     }
     let lines = value.lines().collect::<Vec<_>>();
-    if lines.len() != 5 || !valid_request_nonce(lines[4]) {
+    if lines.len() != 6 || !valid_request_nonce(lines[5]) {
         return None;
     }
+    let focus_window_handle = lines[1].parse::<isize>().ok()?;
     let request = ElevatedPasteRequest {
         window_handle: lines[0].parse().ok()?,
-        process_id: lines[1].parse().ok()?,
-        deadline_ms: lines[2].parse().ok()?,
-        clipboard_sequence: lines[3].parse().ok()?,
-        nonce: lines[4].into(),
+        focus_window_handle: (focus_window_handle != 0).then_some(focus_window_handle),
+        process_id: lines[2].parse().ok()?,
+        deadline_ms: lines[3].parse().ok()?,
+        clipboard_sequence: lines[4].parse().ok()?,
+        nonce: lines[5].into(),
     };
     (request.window_handle != 0
         && request.process_id != 0
@@ -3300,6 +3386,7 @@ fn maybe_run_elevated_paste_helper() -> Option<i32> {
     };
     let identity = PasteTargetIdentity {
         window_handle: request.window_handle,
+        focus_window_handle: request.focus_window_handle,
         process_id: request.process_id,
         captured_at: Instant::now(),
     };
@@ -4904,9 +4991,10 @@ pub fn run() {
                             snapshot.as_ref().map(|snapshot| snapshot.identity.clone());
                         let (source_app, elevated) = match snapshot {
                             Some(snapshot) => {
-                                shortcut_target.remember_with_pid(
+                                shortcut_target.remember_with_pid_and_focus(
                                     snapshot.identity.window_handle,
                                     snapshot.identity.process_id,
+                                    snapshot.identity.focus_window_handle,
                                 );
                                 (snapshot.source_app, snapshot.elevated)
                             }
@@ -5800,6 +5888,19 @@ mod tests {
     }
 
     #[test]
+    fn paste_target_remembers_the_exact_focused_child_window() {
+        let target = PasteTarget::default();
+        target.remember_with_pid_and_focus(4242, 777, Some(4343));
+
+        let identity = target
+            .identity_for_activation(false)
+            .expect("paste target should exist");
+        assert_eq!(identity.window_handle, 4242);
+        assert_eq!(identity.process_id, 777);
+        assert_eq!(identity.focus_window_handle, Some(4343));
+    }
+
+    #[test]
     fn pinned_success_keeps_the_same_target_for_continuous_paste() {
         let target = PasteTarget::default();
         target.remember(4242);
@@ -6025,6 +6126,7 @@ mod tests {
     fn elevated_pipe_request_is_bound_to_the_exact_session() {
         let request = ElevatedPasteRequest {
             window_handle: 4242,
+            focus_window_handle: Some(4343),
             process_id: 77,
             deadline_ms: 123456,
             nonce: "00112233445566778899aabbccddeeff".into(),
@@ -6142,6 +6244,7 @@ mod tests {
         let deadline_ms = unix_time_millis().expect("system clock should be available") + 5_000;
         let request = ElevatedPasteRequest {
             window_handle: 4242,
+            focus_window_handle: Some(4343),
             process_id: 77,
             deadline_ms,
             nonce: nonce.clone(),

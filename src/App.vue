@@ -507,6 +507,37 @@ function searchPreviewText(text: string): string {
   return directSearchHighlighter.value.preview(text)
 }
 
+function quickClipText(clip: ClipboardItem): string {
+  const title = clip.title.trim()
+  const content = clip.content.trim()
+  if (!content) return title
+
+  if (isPhoneticOnlyMatch(clip)) return title || content
+
+  const highlighter = directSearchHighlighter.value
+  const titleMatches = highlighter.segments(title).some((segment) => segment.matched)
+  const contentMatches = highlighter.segments(content).some((segment) => segment.matched)
+  if (highlighter.hasTerms) {
+    return searchPreviewText(titleMatches && !contentMatches ? title : content)
+  }
+
+  if (clip.kind === 'image') return title
+  if (clip.kind === 'link') return searchPreviewText(content)
+  if (clip.kind === 'file') {
+    return (clip.files?.length ?? 0) > 1
+      ? `${title} · ${searchPreviewText(content)}`
+      : searchPreviewText(content)
+  }
+
+  const comparableTitle = title.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ')
+  const comparableContent = content.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ')
+  const titleRepeatsContent = !comparableTitle
+    || comparableTitle === comparableContent
+    || comparableContent.startsWith(comparableTitle)
+    || comparableTitle.startsWith(comparableContent)
+  return titleRepeatsContent ? searchPreviewText(content) : `${title} · ${searchPreviewText(content)}`
+}
+
 const selectedIndex = computed(() => visibleItems.value.findIndex((clip) => clip.id === selectedId.value))
 const selectedClip = computed(() => visibleItems.value.find((clip) => clip.id === selectedId.value) ?? null)
 const selectionAnnouncement = computed(() => {
@@ -3742,9 +3773,9 @@ onBeforeUnmount(() => {
                       <component v-else :is="kindIcon(clip.kind)" :size="18" />
                     </span>
                     <span class="clip-copy">
-                      <span class="clip-title">
-                        <span class="clip-title-text">
-                          <template v-for="(segment, segmentIndex) in highlightSegments(clip.title)" :key="`title-${segmentIndex}`">
+                      <span class="clip-content">
+                        <span class="clip-content-text">
+                          <template v-for="(segment, segmentIndex) in highlightSegments(quickClipText(clip))" :key="`content-${segmentIndex}`">
                             <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
                             <template v-else>{{ segment.text }}</template>
                           </template>
@@ -3753,12 +3784,6 @@ onBeforeUnmount(() => {
                         <span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span>
                         <span v-else-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span>
                         <span v-if="hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span>
-                      </span>
-                      <span class="clip-preview">
-                        <template v-for="(segment, segmentIndex) in highlightSegments(searchPreviewText(clip.content))" :key="`preview-${segmentIndex}`">
-                          <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
-                          <template v-else>{{ segment.text }}</template>
-                        </template>
                       </span>
                     </span>
                     <span class="clip-meta">

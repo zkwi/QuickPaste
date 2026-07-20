@@ -5,11 +5,11 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
 SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：[`0.8.0` GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.8.0)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包。
+> 当前版本：[`0.9.0` GitHub Pre-release](https://github.com/zkwi/QuickPaste/releases/tag/v0.9.0)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包。
 
 ## 当前能力
 
-- 监听 Windows 文本、HTML/RTF 富文本、图片及 `CF_HDROP` 文件/多文件剪贴板；文件记录只保存路径和元数据，不复制原文件。
+- 监听 Windows 文本、HTML/RTF 富文本、图片及 `CF_HDROP` 文件/多文件剪贴板；Office 等复杂对象保留可安全读取的标准表示，并明确标记未持久化的不透明 OLE/注册格式；文件记录只保存路径和元数据，不复制原文件。
 - 同一条富文本记录保留 plain text、HTML 与 RTF，可明确选择“保留格式粘贴”或“纯文本粘贴”；图片和多文件也按原生类型写回。
 - 文本、代码、链接、图片和文件使用统一的类型化动作规则：链接显式打开、图片另存为、文件打开/定位，缺失文件安全禁用。
 - SQLite FTS5 支持中文子串、拼音/首字母、OCR、文件名及正文搜索，并可组合类型、来源、集合和固定状态筛选；结果使用稳定游标分页。
@@ -19,7 +19,7 @@ SQLite 中；没有云同步或远程遥测。
 - 对已进入历史的剪贴板图片默认启用 Windows 本地 OCR，可随时关闭；只使用系统已安装语言，不下载或捆绑模型，也不上传图片或识别文字。
 - 代码预览按需加载 `highlight.js` core 与命中的语言模块；失败或超限时回退为转义纯文本，不向快速面板加入代码工具箱。
 - 默认使用 `Ctrl + Shift + V` 唤起；快速面板优先靠近文本插入点右下方，并受当前显示器工作区约束。
-- 记住并复核原窗口后尽力自动回贴；目标失效或修饰键未释放时安全降级为仅复制。
+- 记住并复核原顶层窗口与实际输入焦点子窗口，恢复目标后自动回贴；目标失效或修饰键未释放时安全降级为仅复制。
 - 管理员窗口使用带时限、进程互认且绑定剪贴板版本的一次性 UAC helper，目标请求不落盘；主程序若被以管理员身份启动会提示并退出。
 - Enter、双击和 Alt + 数字快速粘贴，支持键盘导航和中文输入法组合态保护。
 - 浅色/深色主题、紧凑快速面板、管理页、设置页和首次启动引导。
@@ -79,7 +79,7 @@ npm run build:windows
 - [docs/release.md](docs/release.md)：Windows 发布清单。
 - [SECURITY.md](SECURITY.md)：数据生命周期、安全边界和报告策略。
 - [CHANGELOG.md](CHANGELOG.md)：版本历史与用户可感知变化。
-- [docs/releases/v0.8.0.md](docs/releases/v0.8.0.md)：v0.8.0 体验改进、隐私边界和验收证据状态。
+- [docs/releases/v0.9.0.md](docs/releases/v0.9.0.md)：v0.9.0 直接回贴、紧凑列表、格式边界和验收证据状态。
 - [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)：第三方声明总索引、锁文件指纹和 MPL 源码入口。
 - [THIRD_PARTY_LICENSES_NPM.md](THIRD_PARTY_LICENSES_NPM.md)：npm production 依赖及许可证原文。
 - [THIRD_PARTY_LICENSES_RUST.md](THIRD_PARTY_LICENSES_RUST.md)：Windows Rust 依赖及许可证原文。

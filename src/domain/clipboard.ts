@@ -1,7 +1,7 @@
 import { pinyin } from 'pinyin-pro'
 
 export type ClipKind = 'text' | 'code' | 'link' | 'image' | 'file'
-export type ClipboardFormat = 'text' | 'html' | 'rtf' | 'image' | 'files'
+export type ClipboardFormat = 'text' | 'html' | 'rtf' | 'image' | 'files' | 'object'
 export type OcrStatus = 'pending' | 'completed' | 'unavailable' | 'failed' | 'oversized'
 export type HistoryMatchSource = 'none' | 'direct' | 'index' | 'ocr'
 
@@ -86,7 +86,7 @@ const PINYIN_INDEX_MAX_CHARACTERS = 4096
 const HAN_CHARACTER = /\p{Script=Han}/u
 const SEARCH_QUERY_WHITESPACE = /[\p{White_Space}\uFEFF]+/gu
 const SEARCH_EDGE_WHITESPACE = /^[\p{White_Space}\uFEFF]+|[\p{White_Space}\uFEFF]+$/gu
-const CLIPBOARD_FORMAT_ORDER: readonly ClipboardFormat[] = ['text', 'html', 'rtf', 'image', 'files']
+const CLIPBOARD_FORMAT_ORDER: readonly ClipboardFormat[] = ['text', 'html', 'rtf', 'image', 'files', 'object']
 const MAX_HISTORY_CURSOR_UTF16 = 512
 export const MAX_OCR_TEXT_BYTES = 256 * 1024
 const CURSOR_ID_PREFIX = '-9223372036854775808\n'
@@ -176,7 +176,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isClipboardFormat(value: unknown): value is ClipboardFormat {
-  return value === 'text' || value === 'html' || value === 'rtf' || value === 'image' || value === 'files'
+  return value === 'text' || value === 'html' || value === 'rtf' || value === 'image' || value === 'files' || value === 'object'
 }
 
 export function isValidImageHash(value: unknown): value is string {

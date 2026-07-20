@@ -589,7 +589,7 @@ describe('clipboard model', () => {
   })
 
   it('normalizes captured omitted formats and rejects overlap or unknown values', () => {
-    const readonlyOmissions = ['rtf', 'html', 'rtf'] as const
+    const readonlyOmissions = ['object', 'rtf', 'html', 'rtf'] as const
     const captured = createClipboardItem({
       kind: 'text',
       content: '降级后的纯文本',
@@ -604,8 +604,8 @@ describe('clipboard model', () => {
       omittedFormats: [],
     }, 'captured-no-omissions')
 
-    expect(captured.omittedFormats).toEqual(['html', 'rtf'])
-    expect(readonlyOmissions).toEqual(['rtf', 'html', 'rtf'])
+    expect(captured.omittedFormats).toEqual(['html', 'rtf', 'object'])
+    expect(readonlyOmissions).toEqual(['object', 'rtf', 'html', 'rtf'])
     expect(withoutOmissions).not.toHaveProperty('omittedFormats')
     expect(parseClipboardItems([captured, withoutOmissions])).not.toBeNull()
     expect(() => createClipboardItem({

@@ -21,6 +21,7 @@ pub(crate) enum ClipboardFormatKind {
     Rtf,
     Image,
     Files,
+    Object,
 }
 
 impl ClipboardFormatKind {
@@ -31,6 +32,7 @@ impl ClipboardFormatKind {
             Self::Rtf => 2,
             Self::Image => 3,
             Self::Files => 4,
+            Self::Object => 5,
         }
     }
 }
@@ -118,6 +120,9 @@ pub(crate) trait ClipboardFormatReader {
     fn probe_image(&self) -> ClipboardFormatProbe<usize>;
     fn probe_files(&self) -> ClipboardFormatProbe<usize>;
     fn read_files(&self) -> Result<Option<Vec<String>>, ()>;
+    fn probe_objects(&self) -> ClipboardFormatProbe<usize> {
+        ClipboardFormatProbe::Absent
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -272,6 +277,12 @@ pub(crate) fn capture_package_from(
         if package.rtf.take().is_some() {
             push_omitted(&mut package, ClipboardFormatKind::Rtf);
         }
+    }
+
+    if !matches!(reader.probe_objects(), ClipboardFormatProbe::Absent) {
+        // 注册格式可能由 OLE IDataObject 延迟渲染，或承载进程相关句柄。这里保留同一
+        // 剪贴板对象可安全读取的标准表示，并明确记录未持久化的不透明对象格式。
+        push_omitted(&mut package, ClipboardFormatKind::Object);
     }
 
     Ok(package)
@@ -655,6 +666,27 @@ struct WindowsClipboardReader {
 }
 
 #[cfg(target_os = "windows")]
+fn registered_object_format_count(excluded: &[u32]) -> usize {
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn EnumClipboardFormats(format: u32) -> u32;
+    }
+
+    const REGISTERED_FORMAT_MIN: u32 = 0xC000;
+    let mut count = 0_usize;
+    let mut format = 0_u32;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            return count;
+        }
+        if format >= REGISTERED_FORMAT_MIN && !excluded.contains(&format) {
+            count = count.saturating_add(1);
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
 impl ClipboardFormatReader for WindowsClipboardReader {
     fn probe_plain_text(&self) -> ClipboardFormatProbe<usize> {
         use clipboard_win::formats;
@@ -764,6 +796,21 @@ impl ClipboardFormatReader for WindowsClipboardReader {
         let mut files = Vec::new();
         clipboard_win::raw::get_file_list(&mut files).map_err(|_| ())?;
         Ok(Some(files))
+    }
+
+    fn probe_objects(&self) -> ClipboardFormatProbe<usize> {
+        let excluded = [
+            self.html_format
+                .as_ref()
+                .map(|format| format.code())
+                .unwrap_or_default(),
+            self.rtf_format.unwrap_or_default(),
+            self.png_format.unwrap_or_default(),
+        ];
+        match registered_object_format_count(&excluded) {
+            0 => ClipboardFormatProbe::Absent,
+            count => ClipboardFormatProbe::Present(count),
+        }
     }
 }
 
@@ -884,6 +931,7 @@ mod tests {
         rtf: Result<Option<Vec<u8>>, ()>,
         image_probe: ClipboardFormatProbe<usize>,
         file_probe: ClipboardFormatProbe<usize>,
+        object_probe: ClipboardFormatProbe<usize>,
         files: Result<Option<Vec<String>>, ()>,
         plain_reads: Cell<usize>,
         html_reads: Cell<usize>,
@@ -902,6 +950,7 @@ mod tests {
                 rtf: Ok(None),
                 image_probe: ClipboardFormatProbe::Absent,
                 file_probe: ClipboardFormatProbe::Absent,
+                object_probe: ClipboardFormatProbe::Absent,
                 files: Ok(None),
                 plain_reads: Cell::new(0),
                 html_reads: Cell::new(0),
@@ -959,6 +1008,10 @@ mod tests {
         fn read_files(&self) -> Result<Option<Vec<String>>, ()> {
             self.file_reads.set(self.file_reads.get() + 1);
             self.files.clone()
+        }
+
+        fn probe_objects(&self) -> ClipboardFormatProbe<usize> {
+            self.object_probe
         }
     }
 
@@ -1106,6 +1159,23 @@ mod tests {
                 ClipboardFormatKind::Files,
             ]
         );
+    }
+
+    #[test]
+    fn opaque_registered_objects_keep_standard_fallbacks_and_are_marked_omitted() {
+        let reader = FakeReader {
+            plain: Ok(Some("可搜索文本".into())),
+            html_probe: ClipboardFormatProbe::Present(24),
+            html: Ok(Some("<b>可搜索文本</b>".into())),
+            object_probe: ClipboardFormatProbe::Present(3),
+            ..FakeReader::default()
+        };
+
+        let package = capture_package_from(&reader).expect("standard representations survive");
+
+        assert_eq!(package.plain_text.as_deref(), Some("可搜索文本"));
+        assert_eq!(package.html.as_deref(), Some("<b>可搜索文本</b>"));
+        assert_eq!(package.omitted_formats, vec![ClipboardFormatKind::Object]);
     }
 
     #[test]

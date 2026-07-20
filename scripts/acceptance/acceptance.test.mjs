@@ -320,6 +320,8 @@ test('tracked JSON schemas parse and PowerShell acceptance scripts have valid sy
   assert.match(launcher, /SetEnvironmentVariable\('WEBVIEW2_USER_DATA_FOLDER', \$prepared\.webView2UserDataDirectory/u)
   assert.match(launcher, /RunRoot = \$prepared\.runRoot/u)
   assert.match(launcher, /ProfileRoot = \$prepared\.profileRoot/u)
+  assert.match(launcher, /@\(\(Compare-Object \$markerKeys/u)
+  assert.match(launcher, /\[System\.Text\.Json\.JsonDocument\]::Parse/u)
 
   const contractValidationIndex = launcher.indexOf('$candidateBytes = [IO.File]::ReadAllBytes')
   const runningProcessGuardIndex = launcher.indexOf("$runningQuickPaste = Get-Process -Name 'quickpaste'")

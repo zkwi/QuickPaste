@@ -33,27 +33,29 @@ function cssRule(selector: string): string {
 }
 
 describe('quick-panel density contract', () => {
-  it('shows at least eight readable two-line clips in the standard shell', () => {
+  it('shows at least ten readable single-line clips in the standard shell', () => {
     const rowHeight = quickPanelMetric('--quick-row-height', 'standard')
 
-    expect(rowHeight).toBeGreaterThanOrEqual(44)
+    expect(rowHeight).toBeGreaterThanOrEqual(34)
+    expect(rowHeight).toBeLessThanOrEqual(38)
     expect(quickPanelMetric('--quick-search-control-height', 'standard')).toBeGreaterThanOrEqual(32)
-    expect(visibleClipRows(quickPanelMetric('--quick-shell-height', 'standard'), 'standard')).toBeGreaterThanOrEqual(8)
+    expect(visibleClipRows(quickPanelMetric('--quick-shell-height', 'standard'), 'standard')).toBeGreaterThanOrEqual(10)
   })
 
-  it('keeps six clips visible when native positioning selects the compact 640 by 440 window', () => {
+  it('keeps seven clips visible when native positioning selects the compact 640 by 440 window', () => {
     const compactVisibleShellHeight = 440 - 2 * 16
 
-    expect(quickPanelMetric('--quick-row-height', 'compact')).toBeGreaterThanOrEqual(40)
+    expect(quickPanelMetric('--quick-row-height', 'compact')).toBeGreaterThanOrEqual(34)
+    expect(quickPanelMetric('--quick-row-height', 'compact')).toBeLessThanOrEqual(36)
     expect(quickPanelMetric('--quick-search-control-height', 'compact')).toBeGreaterThanOrEqual(32)
-    expect(visibleClipRows(compactVisibleShellHeight, 'compact')).toBeGreaterThanOrEqual(6)
+    expect(visibleClipRows(compactVisibleShellHeight, 'compact')).toBeGreaterThanOrEqual(7)
   })
 
-  it('keeps source icons and timestamps on fixed right-side alignment tracks', () => {
-    expect(cssRule('.clip-meta')).toMatch(/display:\s*grid/)
-    expect(cssRule('.clip-meta')).toMatch(/width:\s*96px/)
+  it('keeps source and time on one compact right-side metadata track', () => {
+    expect(cssRule('.clip-meta')).toMatch(/display:\s*flex/)
+    expect(cssRule('.clip-meta')).toMatch(/width:\s*132px/)
     expect(cssRule('.source-app')).toMatch(/grid-template-columns:\s*16px\s+minmax\(0,\s*1fr\)/)
-    expect(cssRule('.clip-time')).toMatch(/justify-self:\s*end/)
+    expect(cssRule('.clip-time')).toMatch(/margin-left:\s*auto/)
     expect(cssRule('.clip-time')).toMatch(/font-variant-numeric:\s*tabular-nums/)
     expect(cssRule('.app-dot')).toMatch(/width:\s*16px/)
     expect(cssRule('.app-dot')).toMatch(/height:\s*16px/)
@@ -130,10 +132,10 @@ describe('quick-panel density contract', () => {
   })
 
   it('reserves visible title space for degraded multi-file availability badges', () => {
-    const titleTextRules = cssRule('.clip-title-text,\n.manager-title-text')
-    expect(cssRule('.clip-title')).toMatch(/display:\s*flex/)
-    expect(titleTextRules).toMatch(/min-width:\s*0/)
-    expect(titleTextRules).toMatch(/text-overflow:\s*ellipsis/)
+    const contentTextRules = cssRule('.clip-content-text')
+    expect(cssRule('.clip-content')).toMatch(/display:\s*flex/)
+    expect(contentTextRules).toMatch(/min-width:\s*0/)
+    expect(contentTextRules).toMatch(/text-overflow:\s*ellipsis/)
     expect(cssRule('.manager-row strong')).toMatch(/display:\s*flex/)
     expect(cssRule('.file-availability')).toMatch(/flex:\s*0\s+0\s+auto/)
   })

@@ -93,11 +93,24 @@ while (-not (Test-Path -LiteralPath $prepared.acceptanceProfileMarkerPath -PathT
   Start-Sleep -Milliseconds 100
 }
 
-$profileMarker = Get-Content -LiteralPath $prepared.acceptanceProfileMarkerPath -Raw | ConvertFrom-Json
-$markerKeys = @($profileMarker.PSObject.Properties.Name | Sort-Object)
-if ((Compare-Object $markerKeys @('createdAt', 'formatVersion') -SyncWindow 0).Count -ne 0 `
-  -or $profileMarker.formatVersion -ne 1 `
-  -or $profileMarker.createdAt -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$') {
+$markerDocument = $null
+$markerValid = $false
+try {
+  $profileMarkerJson = Get-Content -LiteralPath $prepared.acceptanceProfileMarkerPath -Raw
+  $profileMarker = $profileMarkerJson | ConvertFrom-Json
+  $markerKeys = @($profileMarker.PSObject.Properties.Name | Sort-Object)
+  $markerDocument = [System.Text.Json.JsonDocument]::Parse($profileMarkerJson)
+  $formatVersion = $markerDocument.RootElement.GetProperty('formatVersion').GetInt32()
+  $createdAt = $markerDocument.RootElement.GetProperty('createdAt').GetString()
+  $markerValid = @((Compare-Object $markerKeys @('createdAt', 'formatVersion') -SyncWindow 0)).Count -eq 0 `
+    -and $formatVersion -eq 1 `
+    -and $createdAt -match '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$'
+} catch {
+  $markerValid = $false
+} finally {
+  if ($null -ne $markerDocument) { $markerDocument.Dispose() }
+}
+if (-not $markerValid) {
   Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
   throw '验收 profile marker 字段无效；已终止本次启动。'
 }
