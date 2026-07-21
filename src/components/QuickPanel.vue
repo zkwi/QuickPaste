@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Database, Eye, Keyboard, LayoutList, Minus, Moon, PanelTopClose, PanelTopOpen, Pin, Search, Settings2, ShieldCheck, Sun, X } from 'lucide-vue-next'
 import { formatRelativeTime, type ClipboardItem, type ClipKindFilter } from '../domain/clipboard'
 import { displayShortcut } from '../domain/shortcut'
@@ -30,14 +30,58 @@ const emit = defineEmits<{
   selectClip: [id: string]
   useClip: [clip: ClipboardItem]
   previewClip: [id: string]
+  hoverPreviewClip: [id: string | null]
   pinClip: [id: string]
   loadMore: []
   searchElement: [element: HTMLInputElement | null]
 }>()
 
 const searchInput = ref<HTMLInputElement | null>(null)
+const HOVER_PREVIEW_DELAY_MS = 200
+const HOVER_PREVIEW_TEXT_LIMIT = 4_096
+let hoverPreviewTimer: ReturnType<typeof setTimeout> | undefined
+let pendingHoverClipId: string | null = null
+
 onMounted(() => emit('searchElement', searchInput.value))
-onBeforeUnmount(() => emit('searchElement', null))
+onBeforeUnmount(() => {
+  clearHoverPreview()
+  emit('searchElement', null)
+})
+
+function clearHoverPreview() {
+  if (hoverPreviewTimer) clearTimeout(hoverPreviewTimer)
+  hoverPreviewTimer = undefined
+  pendingHoverClipId = null
+  emit('hoverPreviewClip', null)
+}
+
+function scheduleHoverPreview(clip: ClipboardItem) {
+  clearHoverPreview()
+  if (props.state.previewActive || !['text', 'image'].includes(clip.kind)) return
+
+  pendingHoverClipId = clip.id
+  hoverPreviewTimer = setTimeout(() => {
+    hoverPreviewTimer = undefined
+    if (pendingHoverClipId === clip.id) emit('hoverPreviewClip', clip.id)
+  }, HOVER_PREVIEW_DELAY_MS)
+}
+
+function hoverPreviewText(clip: ClipboardItem) {
+  const text = clip.content || clip.title
+  return text.length > HOVER_PREVIEW_TEXT_LIMIT
+    ? `${text.slice(0, HOVER_PREVIEW_TEXT_LIMIT)}…`
+    : text
+}
+
+watch(
+  [
+    () => props.state.previewActive,
+    () => props.state.query,
+    () => props.state.activeFilter,
+    () => props.state.quickSourceFilter,
+  ],
+  clearHoverPreview,
+)
 
 function updateQuery(event: Event) {
   if (event.target instanceof HTMLInputElement) emit('updateQuery', event.target.value)
@@ -105,8 +149,8 @@ function updateQuery(event: Event) {
           <div v-else-if="state.historyState === 'error'" data-testid="history-error" class="empty-state history-state error" role="alert"><span class="empty-symbol"><ShieldCheck :size="25" /></span><h2>{{ helpers.t('historyUnavailable') }}</h2><p>{{ helpers.t('historyLoadFailed') }}</p><button data-testid="history-retry" class="secondary-button" type="button" @click="emit('retryHistory')">{{ helpers.t('retryHistory') }}</button></div>
           <template v-else-if="state.visibleItems.length">
             <div id="clipboard-results" class="clip-list" role="list" :aria-label="helpers.t('clipboardResults')">
-              <article v-for="(clip, index) in state.visibleItems" :id="helpers.clipResultId(clip.id)" :key="clip.id" :data-clip-id="clip.id" class="clip-row" :class="{ 'is-selected': state.selectedId === clip.id }" role="listitem" :aria-current="state.selectedId === clip.id ? 'true' : undefined">
-                <button class="clip-primary" type="button" :title="helpers.directPasteTooltip(index)" :tabindex="state.selectedId === clip.id ? 0 : -1" :aria-keyshortcuts="helpers.directPasteAriaShortcuts(index)" @mousedown.left.prevent @click="emit('selectClip', clip.id)" @dblclick="emit('useClip', clip)">
+              <article v-for="(clip, index) in state.visibleItems" :id="helpers.clipResultId(clip.id)" :key="clip.id" :data-clip-id="clip.id" class="clip-row" :class="{ 'is-selected': state.selectedId === clip.id }" role="listitem" :aria-current="state.selectedId === clip.id ? 'true' : undefined" @mouseenter="scheduleHoverPreview(clip)" @mouseleave="clearHoverPreview">
+                <button class="clip-primary" type="button" :tabindex="state.selectedId === clip.id ? 0 : -1" :aria-keyshortcuts="helpers.directPasteAriaShortcuts(index)" @mousedown.left.prevent @click="emit('selectClip', clip.id)" @dblclick="emit('useClip', clip)">
                   <span v-if="index < 10" class="quick-number" aria-hidden="true">{{ helpers.directPasteLabel(index) }}</span>
                   <span class="kind-icon" :style="{ '--source-color': clip.color }"><ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" /><component v-else :is="helpers.kindIcon(clip.kind)" :size="18" /></span>
                   <span class="clip-copy"><span class="clip-content"><span class="clip-content-text"><template v-for="(segment, segmentIndex) in helpers.highlightSegments(helpers.quickClipText(clip))" :key="`content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="helpers.isOcrOnlyMatch(clip)" class="ocr-match">{{ helpers.t('ocrMatch') }}</span><span v-else-if="helpers.isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ helpers.t(state.nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ helpers.ocrStatusLabel(clip) }}</span><span v-if="helpers.hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ helpers.fileAvailabilityLabel(clip) }}</span></span></span>
@@ -123,6 +167,25 @@ function updateQuery(event: Event) {
           <div v-else-if="state.itemsCount === 0 && !state.query && state.activeFilter === 'all'" data-testid="empty-history" class="empty-state"><span class="empty-symbol"><Database :size="25" /></span><h2>{{ helpers.t('emptyHistory') }}</h2><p>{{ helpers.t('emptyHistoryHint') }}</p></div>
           <div v-else data-testid="no-results" class="empty-state"><span class="empty-symbol"><Search :size="25" /></span><h2>{{ helpers.t('noResults') }}</h2><p>{{ helpers.t('noResultsHint') }}</p><button class="secondary-button" type="button" @click="emit('clearSearch', true)">{{ helpers.t('clearFilters') }}</button></div>
         </div>
+      </Transition>
+      <Transition name="hover-preview">
+        <aside
+          v-if="!state.previewActive && state.hoverPreviewClip"
+          data-testid="clip-hover-preview"
+          class="clip-hover-preview"
+          :data-hover-clip-id="state.hoverPreviewClip.id"
+          :style="{ '--source-color': state.hoverPreviewClip.color }"
+          aria-hidden="true"
+        >
+          <div class="clip-hover-preview-heading">
+            <component :is="helpers.kindIcon(state.hoverPreviewClip.kind)" :size="15" />
+            <span>{{ state.hoverPreviewClip.title }}</span>
+          </div>
+          <div v-if="state.hoverPreviewClip.kind === 'image'" data-testid="clip-hover-preview-image" class="clip-hover-preview-image">
+            <ClipImageThumbnail :clip-id="state.hoverPreviewClip.id" :image-url="state.hoverPreviewClip.imageUrl" :image-hash="state.hoverPreviewClip.imageHash" />
+          </div>
+          <p v-else data-testid="clip-hover-preview-text" class="clip-hover-preview-text">{{ hoverPreviewText(state.hoverPreviewClip) }}</p>
+        </aside>
       </Transition>
     </div>
   </section>

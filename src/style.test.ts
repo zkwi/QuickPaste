@@ -85,6 +85,16 @@ describe('quick-panel density contract', () => {
     expect(styles).toContain('.clip-row:has(.row-actions:focus-within) .clip-meta')
   })
 
+  it('uses hover space for readable content previews instead of shortcut badges', () => {
+    expect(cssRule('.clip-hover-preview')).toMatch(/position:\s*absolute/)
+    expect(cssRule('.clip-hover-preview')).toMatch(/pointer-events:\s*none/)
+    expect(cssRule('.clip-hover-preview-text')).toMatch(/-webkit-line-clamp:\s*8/)
+    expect(cssRule('.clip-hover-preview-text')).toMatch(/overflow-wrap:\s*anywhere/)
+    expect(cssRule('.clip-hover-preview-image')).toMatch(/min-height:\s*180px/)
+    expect(cssRule('.clip-hover-preview-image img,\n.clip-hover-preview-image > svg')).toMatch(/object-fit:\s*contain/)
+    expect(styles).not.toContain('.clip-row:hover .quick-number')
+  })
+
   it('keeps the compact title bar free of the old footer allocation', () => {
     expect(styles).not.toContain('--quick-footer-height')
     expect(styles).not.toContain('.panel-footer')

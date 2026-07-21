@@ -183,7 +183,8 @@ describe('quick panel high-frequency interaction', () => {
 
     expect(pin.attributes('aria-pressed')).toBe('false')
     expect(pin.attributes('title')).toContain('固定内容')
-    expect(primary.attributes('title')).toContain('Enter')
+    expect(primary.attributes('title')).toBeUndefined()
+    expect(primary.attributes('aria-keyshortcuts')).toContain('Alt+1')
     expect(first.get('[data-testid="preview-clip-clip-1"]').attributes('title')).toContain('Space')
     expect(first.find('[data-testid="delete-clip-clip-1"]').exists()).toBe(false)
 
@@ -950,6 +951,65 @@ describe('quick panel high-frequency interaction', () => {
   it('does not change the keyboard selection merely because the panel opens under the pointer', async () => {
     await wrapper.get('[data-clip-id="clip-2"]').trigger('mouseenter')
     expect(wrapper.get('[data-clip-id="clip-1"]').classes()).toContain('is-selected')
+  })
+
+  it('shows a delayed text hover preview without changing keyboard selection', async () => {
+    vi.useFakeTimers()
+    const row = wrapper.get('[data-clip-id="clip-4"]')
+
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(199)
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(1)
+    await wrapper.vm.$nextTick()
+    const preview = wrapper.get('[data-testid="clip-hover-preview"]')
+    expect(preview.attributes('data-hover-clip-id')).toBe('clip-4')
+    expect(preview.get('[data-testid="clip-hover-preview-text"]').text())
+      .toContain('这次更新重点优化了搜索速度、窗口定位和中文输入法下的快捷键体验。')
+    expect(wrapper.get('[data-clip-id="clip-1"]').classes()).toContain('is-selected')
+    expect(row.classes()).not.toContain('is-selected')
+
+    await row.trigger('mouseleave')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
+  })
+
+  it('bounds long hover preview text before mounting it in the panel', async () => {
+    wrapper.unmount()
+    vi.useFakeTimers()
+    const content = '长'.repeat(5_000)
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'long-hover-text',
+      kind: 'text',
+      title: '超长文本',
+      content,
+      sourceApp: 'Editor',
+      copiedAt: '2026-07-21T00:00:00.000Z',
+      pinned: false,
+      searchTerms: [],
+      formats: ['text'],
+    }]))
+    wrapper = mount(App, { attachTo: document.body })
+
+    await wrapper.get('[data-clip-id="long-hover-text"]').trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
+
+    expect(wrapper.get('[data-testid="clip-hover-preview-text"]').text())
+      .toBe(`${'长'.repeat(4_096)}…`)
+  })
+
+  it('shows a larger image area after image hover intent settles', async () => {
+    vi.useFakeTimers()
+    const row = wrapper.get('[data-clip-id="clip-5"]')
+
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(200)
+    await wrapper.vm.$nextTick()
+
+    const image = wrapper.get('[data-testid="clip-hover-preview-image"] img')
+    expect(image.attributes('src')).toBe('/sample-layout.svg')
   })
 
   it('refreshes relative timestamps while the panel stays open', async () => {

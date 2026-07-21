@@ -30,6 +30,7 @@ export interface QuickPanelState {
   onboardingPracticeVisible: boolean
   globalShortcut: string
   previewActive: boolean
+  hoverPreviewClip: ClipboardItem | null
   historyState: 'loading' | 'ready' | 'error'
   selectionAnnouncement: string
   visibleItems: ClipboardItem[]
@@ -53,7 +54,6 @@ export interface QuickPanelHelpers {
   hasMissingFiles: (clip: ClipboardItem) => boolean
   fileAvailabilityLabel: (clip: ClipboardItem) => string
   clipResultId: (id: string) => string
-  directPasteTooltip: (index: number) => string
   directPasteAriaShortcuts: (index: number) => string | undefined
   directPasteLabel: (index: number) => string
 }

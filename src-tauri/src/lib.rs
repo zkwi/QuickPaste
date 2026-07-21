@@ -1990,6 +1990,33 @@ impl Drop for AccessibilityQueryGuard {
 }
 
 #[cfg(target_os = "windows")]
+fn accessibility_caret_rect(
+    left: i32,
+    top: i32,
+    width: i32,
+    height: i32,
+    fallback_height: i32,
+) -> Option<ScreenRect> {
+    if width < 0 || height < 0 {
+        return None;
+    }
+    // Chrome 等 MSAA 提供程序偶尔只返回光标点。沿用 Ditto 的固定行高回退，
+    // 避免把有效光标误判为缺失后退回鼠标位置。
+    let height = if height == 0 {
+        fallback_height.max(1)
+    } else {
+        height
+    };
+    let rect = ScreenRect::new(
+        left,
+        top,
+        left.saturating_add(width),
+        top.saturating_add(height),
+    );
+    rect.is_valid_caret().then_some(rect)
+}
+
+#[cfg(target_os = "windows")]
 fn caret_rect_from_msaa(window_handle: isize) -> Option<ScreenRect> {
     use std::mem::ManuallyDrop;
     use windows::{
@@ -2002,6 +2029,7 @@ fn caret_rect_from_msaa(window_handle: isize) -> Option<ScreenRect> {
             },
             UI::{
                 Accessibility::{AccessibleObjectFromWindow, IAccessible},
+                HiDpi::GetDpiForWindow,
                 WindowsAndMessaging::{CHILDID_SELF, OBJID_CARET},
             },
         },
@@ -2041,17 +2069,9 @@ fn caret_rect_from_msaa(window_handle: isize) -> Option<ScreenRect> {
     let mut width = 0;
     let mut height = 0;
     unsafe { accessible.accLocation(&mut left, &mut top, &mut width, &mut height, &child) }.ok()?;
-    if width < 0 || height <= 0 {
-        return None;
-    }
-
-    let rect = ScreenRect::new(
-        left,
-        top,
-        left.saturating_add(width),
-        top.saturating_add(height),
-    );
-    rect.is_valid_caret().then_some(rect)
+    let dpi = unsafe { GetDpiForWindow(HWND(window_handle as *mut core::ffi::c_void)) };
+    let fallback_height = ((20.0 * f64::from(dpi.max(96)) / 96.0).round() as i32).max(1);
+    accessibility_caret_rect(left, top, width, height, fallback_height)
 }
 
 #[cfg(target_os = "windows")]
@@ -6861,6 +6881,15 @@ mod tests {
         assert!(!ScreenRect::new(i32::MIN, 320, i32::MIN, 344).is_valid_caret());
         assert!(!ScreenRect::new(640, 320, 1_200, 344).is_valid_caret());
         assert!(!ScreenRect::new(640, 320, 641, 1_500).is_valid_caret());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn msaa_caret_uses_a_fallback_line_height_when_the_provider_reports_zero_height() {
+        assert_eq!(
+            accessibility_caret_rect(640, 320, 0, 0, 30),
+            Some(ScreenRect::new(640, 320, 640, 350))
+        );
     }
 
     #[test]

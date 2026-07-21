@@ -256,6 +256,7 @@ const snippetLoading = ref(false)
 const activeFilter = ref<ClipKindFilter>('all')
 const selectedId = ref(items.value[0]?.id ?? '')
 const previewId = ref<string | null>(null)
+const hoverPreviewClip = ref<ClipboardItem | null>(null)
 const qrScanState = ref<'idle' | 'scanning' | 'complete'>('idle')
 const qrResults = ref<string[]>([])
 const clipContextMenu = ref<ClipContextMenuState | null>(null)
@@ -335,6 +336,7 @@ let nativeRefreshAfterExclusive = false
 let nativeRefreshAfterExclusiveForced = false
 let suppressRetentionPolicySync = false
 let previewLoadGeneration = 0
+let hoverPreviewLoadGeneration = 0
 let suppressedNativeHistoryItems: ClipboardItem[] | null = null
 let quickSessionGeneration = 0
 let qrScanGeneration = 0
@@ -468,9 +470,13 @@ const {
   },
   onPayloadsInvalidated: () => {
     previewLoadGeneration += 1
+    hoverPreviewLoadGeneration += 1
+    hoverPreviewClip.value = null
   },
   onQueryStarted: () => {
     previewId.value = null
+    hoverPreviewLoadGeneration += 1
+    hoverPreviewClip.value = null
   },
   applyPage: applyNativeHistoryPage,
 })
@@ -790,6 +796,7 @@ const quickPanelState = computed(() => ({
   onboardingPracticeVisible: onboardingPracticeVisible.value,
   globalShortcut: globalShortcut.value,
   previewActive: previewClip.value !== null,
+  hoverPreviewClip: hoverPreviewClip.value,
   historyState: historyState.value,
   selectionAnnouncement: selectionAnnouncement.value,
   visibleItems: visibleItems.value,
@@ -813,7 +820,6 @@ const quickPanelHelpers: QuickPanelHelpers = {
   hasMissingFiles,
   fileAvailabilityLabel,
   clipResultId,
-  directPasteTooltip,
   directPasteAriaShortcuts,
   directPasteLabel,
 }
@@ -2097,6 +2103,7 @@ async function toggleQuickPanelPinned() {
 }
 
 async function openPreview(id: string) {
+  showHoverPreview(null)
   selectedId.value = id
   const clip = items.value.find((candidate) => candidate.id === id)
   if (!clip) return
@@ -2119,6 +2126,29 @@ async function openPreview(id: string) {
   }
   previewId.value = id
   restoreResultFocusAfterPreview = false
+}
+
+async function showHoverPreview(id: string | null) {
+  const generation = ++hoverPreviewLoadGeneration
+  if (!id || previewId.value) {
+    hoverPreviewClip.value = null
+    return
+  }
+
+  const clip = items.value.find((candidate) => candidate.id === id)
+  if (!clip || !['text', 'image'].includes(clip.kind)) {
+    hoverPreviewClip.value = null
+    return
+  }
+
+  hoverPreviewClip.value = cachedPayload(clip) ?? clip
+  const payload = await resolveClipPayload(clip)
+  if (!payload
+    || appUnmounted
+    || generation !== hoverPreviewLoadGeneration
+    || previewId.value !== null
+    || !items.value.some((candidate) => candidate.id === id)) return
+  hoverPreviewClip.value = payload
 }
 
 function closePreview() {
@@ -2327,12 +2357,6 @@ function directPasteAriaShortcuts(index: number): string | undefined {
   if (index >= DIRECT_PASTE_ITEM_COUNT) return undefined
   const key = directPasteNumber(index)
   return `Alt+${key} Control+${key}`
-}
-
-function directPasteTooltip(index: number): string {
-  return index < DIRECT_PASTE_ITEM_COUNT
-    ? t('clipPasteHintDirect', { shortcut: directPasteLabel(index) })
-    : t('clipPasteHint')
 }
 
 function focusManagerIndex(index: number) {
@@ -3204,6 +3228,7 @@ onBeforeUnmount(() => {
         @select-clip="selectedId = $event"
         @use-clip="useClipFromDoubleClick"
         @preview-clip="openPreview"
+        @hover-preview-clip="showHoverPreview"
         @pin-clip="pinClip($event, 'quick')"
         @load-more="loadMoreNativeHistory"
         @search-element="setQuickSearchElement"

@@ -519,6 +519,24 @@ describe('native setting reliability', () => {
     wrapper.unmount()
   })
 
+  it('hydrates the original native image for the delayed hover preview', async () => {
+    vi.useFakeTimers()
+    const thumbnail = 'data:image/png;base64,dGh1bWJuYWls'
+    const original = 'data:image/png;base64,b3JpZ2luYWw='
+    legacyHistory = [{ ...pendingOcrImage('hover-image', 'e'.repeat(64)), content: original, imageUrl: original }]
+    historyMocks.loadNativeClipThumbnail.mockResolvedValue(thumbnail)
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-clip-id="hover-image"]').trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(200)
+    await flushPromises()
+
+    expect(historyMocks.loadNativeClipPayload).toHaveBeenCalledWith('hover-image')
+    expect(wrapper.get('[data-testid="clip-hover-preview-image"] img').attributes('src')).toBe(original)
+    wrapper.unmount()
+  })
+
   it('requires confirmation for permanent snippet deletion from both the button and Delete key', async () => {
     const snippet = {
       id: 'snippet-delete',
@@ -3176,6 +3194,8 @@ describe('native setting reliability', () => {
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    await vi.waitFor(() => expect(historyMocks.queryNativeHistory).toHaveBeenCalledOnce())
     await flushPromises()
 
     const order: string[] = []
