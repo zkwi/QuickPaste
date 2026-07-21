@@ -169,6 +169,7 @@ import SnippetEditor from './components/SnippetEditor.vue'
 import SourceAppIcon from './components/SourceAppIcon.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ClipPreview from './components/ClipPreview.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
@@ -308,9 +309,7 @@ const managerSearchInput = ref<HTMLInputElement | null>(null)
 const libraryContent = ref<HTMLElement | null>(null)
 const sensitiveAppInput = ref<HTMLInputElement | null>(null)
 const sensitiveAppsTrigger = ref<HTMLButtonElement | null>(null)
-const clearHistoryCancel = ref<HTMLButtonElement | null>(null)
 const clearHistoryTrigger = ref<HTMLButtonElement | null>(null)
-const retentionChangeCancel = ref<HTMLButtonElement | null>(null)
 const retentionSelect = ref<HTMLSelectElement | null>(null)
 const undoButton = ref<HTMLButtonElement | null>(null)
 const libraryBackButton = ref<HTMLButtonElement | null>(null)
@@ -1958,7 +1957,7 @@ function closeSensitiveApps() {
 function requestClearHistory() {
   if (ordinaryHistoryCount.value <= 0) return
   clearHistoryOpen.value = true
-  nextTick(() => clearHistoryCancel.value?.focus())
+  nextTick(() => document.querySelector<HTMLElement>('[data-testid="cancel-clear-history"]')?.focus())
 }
 
 function closeClearHistory() {
@@ -2001,7 +2000,7 @@ function requestRetentionChange(event: Event) {
   }
 
   pendingRetentionChange.value = { value, removedCount }
-  nextTick(() => retentionChangeCancel.value?.focus())
+  nextTick(() => document.querySelector<HTMLElement>('[data-testid="cancel-retention-change"]')?.focus())
 }
 
 function closeRetentionChange() {
@@ -3991,33 +3990,47 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="modal">
-      <div v-if="collectionDeleteTarget" class="settings-modal-backdrop" @click.self="closeDeleteCollection">
-        <section data-testid="manager-collection-delete-confirmation" class="settings-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="manager-collection-delete-title" aria-describedby="manager-collection-delete-description" @keydown="trapModalFocus">
-          <header>
-            <div><Trash2 :size="19" /><span><strong id="manager-collection-delete-title">{{ t('managerDeleteCollectionTitle') }}</strong><small id="manager-collection-delete-description">{{ t('managerDeleteCollectionDescription', { name: collectionDeleteTarget.name }) }}</small></span></div>
-          </header>
-          <div class="confirm-actions">
-            <button data-testid="manager-cancel-delete-collection" class="secondary-button" type="button" :disabled="managerOperationBusy" @click="closeDeleteCollection">{{ t('cancel') }}</button>
-            <button data-testid="manager-confirm-delete-collection" class="danger-button" type="button" :disabled="managerOperationBusy" @click="confirmDeleteCollection">{{ t('managerDeleteCollectionConfirm') }}</button>
-          </div>
-          <p v-if="collectionError" data-testid="manager-collection-delete-error" role="alert">{{ collectionError }}</p>
-        </section>
-      </div>
+      <ConfirmDialog
+        v-if="collectionDeleteTarget"
+        test-id="manager-collection-delete-confirmation"
+        title-id="manager-collection-delete-title"
+        description-id="manager-collection-delete-description"
+        :title="t('managerDeleteCollectionTitle')"
+        :description="t('managerDeleteCollectionDescription', { name: collectionDeleteTarget.name })"
+        :cancel-label="t('cancel')"
+        :confirm-label="t('managerDeleteCollectionConfirm')"
+        cancel-test-id="manager-cancel-delete-collection"
+        confirm-test-id="manager-confirm-delete-collection"
+        role="alertdialog"
+        :busy="managerOperationBusy"
+        :error-message="collectionError"
+        error-test-id="manager-collection-delete-error"
+        @cancel="closeDeleteCollection"
+        @confirm="confirmDeleteCollection"
+        @keydown="trapModalFocus"
+      />
     </Transition>
 
     <Transition name="modal">
-      <div v-if="permanentSnippetDeleteTarget" class="settings-modal-backdrop" @click.self="closeDeletePermanentSnippet">
-        <section data-testid="manager-permanent-delete-confirmation" class="settings-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="manager-permanent-delete-title" aria-describedby="manager-permanent-delete-description" @keydown="trapModalFocus">
-          <header>
-            <div><Trash2 :size="19" /><span><strong id="manager-permanent-delete-title">{{ t('managerPermanentDeleteTitle') }}</strong><small id="manager-permanent-delete-description">{{ t('managerPermanentDeleteDescription', { title: permanentSnippetDeleteTarget.title }) }}</small></span></div>
-          </header>
-          <div class="confirm-actions">
-            <button data-testid="manager-cancel-delete-permanent" class="secondary-button" type="button" :disabled="managerOperationBusy" @click="closeDeletePermanentSnippet">{{ t('cancel') }}</button>
-            <button data-testid="manager-confirm-delete-permanent" class="danger-button" type="button" :disabled="managerOperationBusy" @click="confirmDeletePermanentSnippet">{{ t('managerConfirmDelete') }}</button>
-          </div>
-          <p v-if="permanentSnippetDeleteError" data-testid="manager-permanent-delete-error" role="alert">{{ permanentSnippetDeleteError }}</p>
-        </section>
-      </div>
+      <ConfirmDialog
+        v-if="permanentSnippetDeleteTarget"
+        test-id="manager-permanent-delete-confirmation"
+        title-id="manager-permanent-delete-title"
+        description-id="manager-permanent-delete-description"
+        :title="t('managerPermanentDeleteTitle')"
+        :description="t('managerPermanentDeleteDescription', { title: permanentSnippetDeleteTarget.title })"
+        :cancel-label="t('cancel')"
+        :confirm-label="t('managerConfirmDelete')"
+        cancel-test-id="manager-cancel-delete-permanent"
+        confirm-test-id="manager-confirm-delete-permanent"
+        role="alertdialog"
+        :busy="managerOperationBusy"
+        :error-message="permanentSnippetDeleteError"
+        error-test-id="manager-permanent-delete-error"
+        @cancel="closeDeletePermanentSnippet"
+        @confirm="confirmDeletePermanentSnippet"
+        @keydown="trapModalFocus"
+      />
     </Transition>
 
     <Transition name="modal">
@@ -4044,31 +4057,39 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="modal">
-      <div v-if="clearHistoryOpen" class="settings-modal-backdrop" @click.self="closeClearHistory">
-        <section data-testid="clear-history-dialog" class="settings-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="clear-history-title" aria-describedby="clear-history-description" @keydown="trapModalFocus">
-          <header>
-            <div><Trash2 :size="19" /><span><strong id="clear-history-title">{{ t('clearHistoryTitle') }}</strong><small id="clear-history-description">{{ ordinaryClearDescription }}</small></span></div>
-          </header>
-          <div class="confirm-actions">
-            <button ref="clearHistoryCancel" data-testid="cancel-clear-history" class="secondary-button" type="button" @click="closeClearHistory">{{ t('cancel') }}</button>
-            <button data-testid="confirm-clear-history" class="danger-button" type="button" @click="confirmClearHistory">{{ t('confirmClear') }}</button>
-          </div>
-        </section>
-      </div>
+      <ConfirmDialog
+        v-if="clearHistoryOpen"
+        test-id="clear-history-dialog"
+        title-id="clear-history-title"
+        description-id="clear-history-description"
+        :title="t('clearHistoryTitle')"
+        :description="ordinaryClearDescription"
+        :cancel-label="t('cancel')"
+        :confirm-label="t('confirmClear')"
+        cancel-test-id="cancel-clear-history"
+        confirm-test-id="confirm-clear-history"
+        @cancel="closeClearHistory"
+        @confirm="confirmClearHistory"
+        @keydown="trapModalFocus"
+      />
     </Transition>
 
     <Transition name="modal">
-      <div v-if="pendingRetentionChange" class="settings-modal-backdrop" @click.self="closeRetentionChange">
-        <section data-testid="retention-change-dialog" class="settings-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="retention-change-title" aria-describedby="retention-change-description" @keydown="trapModalFocus">
-          <header>
-            <div><Trash2 :size="19" /><span><strong id="retention-change-title">{{ t('retentionChangeTitle') }}</strong><small id="retention-change-description">{{ t('retentionChangeDescription', { count: pendingRetentionChange.removedCount, period: retentionPeriodLabel(pendingRetentionChange.value) }) }}</small></span></div>
-          </header>
-          <div class="confirm-actions">
-            <button ref="retentionChangeCancel" data-testid="cancel-retention-change" class="secondary-button" type="button" @click="closeRetentionChange">{{ t('cancel') }}</button>
-            <button data-testid="confirm-retention-change" class="danger-button" type="button" @click="confirmRetentionChange">{{ t('confirmRetentionChange') }}</button>
-          </div>
-        </section>
-      </div>
+      <ConfirmDialog
+        v-if="pendingRetentionChange"
+        test-id="retention-change-dialog"
+        title-id="retention-change-title"
+        description-id="retention-change-description"
+        :title="t('retentionChangeTitle')"
+        :description="t('retentionChangeDescription', { count: pendingRetentionChange.removedCount, period: retentionPeriodLabel(pendingRetentionChange.value) })"
+        :cancel-label="t('cancel')"
+        :confirm-label="t('confirmRetentionChange')"
+        cancel-test-id="cancel-retention-change"
+        confirm-test-id="confirm-retention-change"
+        @cancel="closeRetentionChange"
+        @confirm="confirmRetentionChange"
+        @keydown="trapModalFocus"
+      />
     </Transition>
 
     <Transition name="toast">
