@@ -53,6 +53,39 @@ function ciActions(workflow) {
   return [...(workflow ?? '').matchAll(/^\s*(?:uses|["']uses["'])\s*:\s*([^\s#]+)/gm)].map(([, action]) => action)
 }
 
+function ciNamedSteps(workflow) {
+  const steps = []
+  let current = []
+  for (const line of (workflow ?? '').split(/\r?\n/u)) {
+    if (/^\s*-\s+name\s*:/u.test(line) && current.length > 0) {
+      steps.push(current.join('\n'))
+      current = []
+    }
+    if (current.length > 0 || /^\s*-\s+name\s*:/u.test(line)) current.push(line)
+  }
+  if (current.length > 0) steps.push(current.join('\n'))
+  return steps
+}
+
+function stepHasEnvironmentValue(step, key, expected) {
+  const lines = step.split(/\r?\n/u)
+  const stepIndent = lines[0].search(/\S/u)
+  const envIndex = lines.findIndex((line) => (
+    /^\s*env\s*:\s*$/u.test(line)
+    && line.search(/\S/u) === stepIndent + 2
+  ))
+  if (envIndex < 0) return false
+  const envIndent = lines[envIndex].search(/\S/u)
+  for (const line of lines.slice(envIndex + 1)) {
+    if (!line.trim()) continue
+    const indent = line.search(/\S/u)
+    if (indent <= envIndent) return false
+    const match = line.trim().match(new RegExp(`^${key}\\s*:\\s*["']?([^"']+?)["']?\\s*$`, 'u'))
+    if (match) return match[1] === expected
+  }
+  return false
+}
+
 export function validateProjectMetadata(metadata) {
   const issues = []
   const packageSection = tomlSection(metadata.cargoManifest, 'package')
@@ -99,6 +132,13 @@ export function validateProjectMetadata(metadata) {
   }
   for (const action of ciActions(metadata.ciWorkflow)) {
     if (!approvedCiActions.has(action)) issues.push(`CI 使用未批准的 GitHub Action：${action}`)
+  }
+  for (const step of ciNamedSteps(metadata.ciWorkflow)) {
+    if (step.includes('actions/setup-node@v6')
+      && /^\s*cache\s*:\s*npm\s*$/mu.test(step)
+      && !stepHasEnvironmentValue(step, 'npm_config_force', 'true')) {
+      issues.push('使用 npm 缓存的 setup-node 步骤必须临时设置 npm_config_force: true')
+    }
   }
 
   if (!metadata.updaterSource?.includes('https://api.github.com/repos/zkwi/QuickPaste/releases?per_page=10')) {

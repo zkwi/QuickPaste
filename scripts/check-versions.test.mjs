@@ -173,6 +173,39 @@ test('validateProjectMetadata recognizes whitespace and quoted YAML uses keys', 
   ])
 })
 
+test('validateProjectMetadata protects setup-node npm cache bootstrap from the preinstalled npm version', () => {
+  const metadata = validMetadata()
+  metadata.ciWorkflow += `\n${[
+    '      - name: Set up Node.js',
+    '        uses: actions/setup-node@v6',
+    '        with:',
+    '          node-version-file: .nvmrc',
+    '          cache: npm',
+    '          cache-dependency-path: package-lock.json',
+  ].join('\n')}`
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    '使用 npm 缓存的 setup-node 步骤必须临时设置 npm_config_force: true',
+  ])
+})
+
+test('validateProjectMetadata rejects npm_config_force nested under setup-node with options', () => {
+  const metadata = validMetadata()
+  metadata.ciWorkflow += `\n${[
+    '      - name: Set up Node.js',
+    '        uses: actions/setup-node@v6',
+    '        with:',
+    '          node-version-file: .nvmrc',
+    '          cache: npm',
+    '          env:',
+    '            npm_config_force: true',
+  ].join('\n')}`
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    '使用 npm 缓存的 setup-node 步骤必须临时设置 npm_config_force: true',
+  ])
+})
+
 test('validateProjectMetadata requires every custom titlebar window permission', () => {
   const metadata = validMetadata()
   metadata.tauriCapabilities.permissions = metadata.tauriCapabilities.permissions.filter(
