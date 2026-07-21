@@ -18,7 +18,7 @@ use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
 
 const APPLICATION_ID: i64 = 0x5150_5354;
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 const SOURCE_APP_ICON_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 const SOURCE_APP_ICON_PNG_MAX_BYTES: usize = 32 * 1024;
 const HISTORY_DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -34,6 +34,8 @@ const MAX_BATCH_TARGET_IDS: usize = 10_000;
 const OCR_STORED_PNG_MAX_BYTES: i64 = 64 * 1024 * 1024;
 const HISTORY_IMAGE_BLOB_MAX_BYTES: usize = 64 * 1024 * 1024;
 const HISTORY_THUMBNAIL_MAX_DIMENSION: u32 = 96;
+const HISTORY_THUMBNAIL_PNG_MAX_BYTES: usize = 64 * 1024;
+const HISTORY_THUMBNAIL_DECODE_MAX_ALLOC_BYTES: u64 = 4 * 1024 * 1024;
 const HISTORY_IMAGE_MAX_DIMENSION: u32 = 8_192;
 const HISTORY_IMAGE_DECODE_MAX_ALLOC_BYTES: u64 = 256 * 1024 * 1024;
 static HISTORY_TEMPORARY_FILE_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -777,6 +779,7 @@ fn initialize_history_schema(
             7 => migrate_to_v8(transaction)?,
             8 => migrate_to_v9(transaction)?,
             9 => migrate_to_v10(transaction)?,
+            10 => migrate_to_v11(transaction)?,
             _ => {
                 return Err(contract_failure(format!(
                     "不支持的历史数据库版本 {version}"
@@ -1169,6 +1172,19 @@ fn migrate_to_v10(transaction: &Transaction<'_>) -> Result<(), HistoryInitializa
     for id in stale_ocr_ids {
         refresh_search_projection(transaction, &id)?;
     }
+    Ok(())
+}
+
+fn migrate_to_v11(transaction: &Transaction<'_>) -> Result<(), HistoryInitializationFailure> {
+    transaction.execute_batch(
+        "CREATE TABLE clip_thumbnails (
+           clip_id TEXT PRIMARY KEY NOT NULL REFERENCES clips(id) ON DELETE CASCADE,
+           thumbnail_png BLOB NOT NULL CHECK(
+             typeof(thumbnail_png) = 'blob'
+             AND length(thumbnail_png) BETWEEN 1 AND 65536
+           )
+         ) WITHOUT ROWID;",
+    )?;
     Ok(())
 }
 
@@ -2493,6 +2509,7 @@ fn upsert_history_item(
             item.image_hash,
         ],
     )?;
+    transaction.execute("DELETE FROM clip_thumbnails WHERE clip_id = ?1", [&item.id])?;
     transaction.execute("DELETE FROM clip_formats WHERE clip_id = ?1", [&item.id])?;
     transaction.execute("DELETE FROM clip_files WHERE clip_id = ?1", [&item.id])?;
 
@@ -2530,7 +2547,17 @@ fn upsert_history_item(
                 let (mime, data) = image
                     .map(|(mime, data)| (Some(mime), Some(data)))
                     .unwrap_or((None, None));
+                let thumbnail_png = match (mime.as_deref(), data.as_deref()) {
+                    (Some("image/png"), Some(png)) => generate_thumbnail_png(png).ok(),
+                    _ => None,
+                };
                 insert_format(transaction, &item.id, "image", mime.as_deref(), data)?;
+                if let Some(thumbnail_png) = thumbnail_png {
+                    transaction.execute(
+                        "INSERT INTO clip_thumbnails(clip_id, thumbnail_png) VALUES (?1, ?2)",
+                        params![item.id, thumbnail_png],
+                    )?;
+                }
             }
             _ => {
                 return Err(write_contract_failure(format!(
@@ -2979,6 +3006,95 @@ pub(crate) fn get_clip_payload(
     Ok(Some(item))
 }
 
+fn decode_png_with_limits(
+    png: &[u8],
+    max_dimension: u32,
+    max_alloc: u64,
+) -> Result<image::DynamicImage, String> {
+    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(max_dimension);
+    limits.max_image_height = Some(max_dimension);
+    limits.max_alloc = Some(max_alloc);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|_| "无法解码历史图片缩略图".to_owned())
+}
+
+fn thumbnail_png_is_safe(png: &[u8]) -> bool {
+    if png.is_empty() || png.len() > HISTORY_THUMBNAIL_PNG_MAX_BYTES {
+        return false;
+    }
+    decode_png_with_limits(
+        png,
+        HISTORY_THUMBNAIL_MAX_DIMENSION,
+        HISTORY_THUMBNAIL_DECODE_MAX_ALLOC_BYTES,
+    )
+    .is_ok_and(|image| {
+        image.width() > 0
+            && image.height() > 0
+            && image.width() <= HISTORY_THUMBNAIL_MAX_DIMENSION
+            && image.height() <= HISTORY_THUMBNAIL_MAX_DIMENSION
+    })
+}
+
+fn generate_thumbnail_png(png: &[u8]) -> Result<Vec<u8>, String> {
+    if png.is_empty() || png.len() > HISTORY_IMAGE_BLOB_MAX_BYTES {
+        return Err("图片缩略图源数据超过安全边界".to_owned());
+    }
+    let image = decode_png_with_limits(
+        png,
+        HISTORY_IMAGE_MAX_DIMENSION,
+        HISTORY_IMAGE_DECODE_MAX_ALLOC_BYTES,
+    )?;
+    let thumbnail = image.thumbnail(
+        HISTORY_THUMBNAIL_MAX_DIMENSION,
+        HISTORY_THUMBNAIL_MAX_DIMENSION,
+    );
+    let mut output = Cursor::new(Vec::new());
+    thumbnail
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|_| "无法生成历史图片缩略图".to_owned())?;
+    let thumbnail_png = output.into_inner();
+    if !thumbnail_png_is_safe(&thumbnail_png) {
+        return Err("生成的历史图片缩略图超过安全边界".to_owned());
+    }
+    Ok(thumbnail_png)
+}
+
+fn cached_thumbnail_png(connection: &Connection, id: &str) -> Result<Option<Vec<u8>>, String> {
+    let metadata = connection
+        .query_row(
+            "SELECT typeof(clip_thumbnails.thumbnail_png),
+                    length(clip_thumbnails.thumbnail_png)
+             FROM clips
+             JOIN clip_thumbnails ON clip_thumbnails.clip_id = clips.id
+             WHERE clips.id = ?1 AND clips.kind = 'image'",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some((storage_class, Some(length))) = metadata else {
+        return Ok(None);
+    };
+    if storage_class != "blob" || !(1..=HISTORY_THUMBNAIL_PNG_MAX_BYTES as i64).contains(&length) {
+        return Ok(None);
+    }
+    let png = connection
+        .query_row(
+            "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = ?1",
+            [id],
+            |row| row.get::<_, Vec<u8>>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    Ok(png.filter(|png| {
+        usize::try_from(length).ok() == Some(png.len()) && thumbnail_png_is_safe(png)
+    }))
+}
+
 pub(crate) fn get_clip_thumbnail(
     connection: &Connection,
     id: &str,
@@ -2986,6 +3102,13 @@ pub(crate) fn get_clip_thumbnail(
     if !history_id_is_cursor_safe(id) {
         return Ok(None);
     }
+    if let Some(thumbnail_png) = cached_thumbnail_png(connection, id)? {
+        return Ok(Some(format!(
+            "data:image/png;base64,{}",
+            STANDARD.encode(thumbnail_png)
+        )));
+    }
+
     let stored = connection
         .query_row(
             "SELECT length(clip_formats.data), clip_formats.data
@@ -3012,26 +3135,15 @@ pub(crate) fn get_clip_thumbnail(
         return Err("图片缩略图源数据超过安全边界".to_owned());
     }
 
-    let mut reader = ImageReader::with_format(Cursor::new(png), ImageFormat::Png);
-    let mut limits = image::Limits::default();
-    limits.max_image_width = Some(HISTORY_IMAGE_MAX_DIMENSION);
-    limits.max_image_height = Some(HISTORY_IMAGE_MAX_DIMENSION);
-    limits.max_alloc = Some(HISTORY_IMAGE_DECODE_MAX_ALLOC_BYTES);
-    reader.limits(limits);
-    let image = reader
-        .decode()
-        .map_err(|_| "无法解码历史图片缩略图".to_owned())?;
-    let thumbnail = image.thumbnail(
-        HISTORY_THUMBNAIL_MAX_DIMENSION,
-        HISTORY_THUMBNAIL_MAX_DIMENSION,
+    let thumbnail_png = generate_thumbnail_png(&png)?;
+    let _ = connection.execute(
+        "INSERT INTO clip_thumbnails(clip_id, thumbnail_png) VALUES (?1, ?2)
+         ON CONFLICT(clip_id) DO UPDATE SET thumbnail_png = excluded.thumbnail_png",
+        params![id, &thumbnail_png],
     );
-    let mut output = Cursor::new(Vec::new());
-    thumbnail
-        .write_to(&mut output, ImageFormat::Png)
-        .map_err(|_| "无法生成历史图片缩略图".to_owned())?;
     Ok(Some(format!(
         "data:image/png;base64,{}",
-        STANDARD.encode(output.into_inner())
+        STANDARD.encode(thumbnail_png)
     )))
 }
 
@@ -4322,7 +4434,7 @@ fn history_contract_validation_failure(error: rusqlite::Error) -> HistoryInitial
 fn validate_current_history_contract(
     connection: &Connection,
 ) -> Result<(), HistoryInitializationFailure> {
-    const SCHEMA_PROBES: [&str; 8] = [
+    const SCHEMA_PROBES: [&str; 9] = [
         "SELECT id, kind, title, plain_text, source_app, copied_at, updated_at,
                 pinned, search_terms, ocr_text, ocr_status, logical_bytes, color,
                 dimensions, permanent, collection_id, omitted_formats, image_hash
@@ -4332,6 +4444,7 @@ fn validate_current_history_contract(
                 directory, exists_at_capture FROM clip_files LIMIT 0",
         "SELECT id, name, created_at, updated_at, sort_order FROM collections LIMIT 0",
         "SELECT source_app, icon_png FROM source_app_icons LIMIT 0",
+        "SELECT clip_id, thumbnail_png FROM clip_thumbnails LIMIT 0",
         "SELECT rowid, clip_id, normalized_text FROM clip_search LIMIT 0",
         "SELECT singleton, max_records, max_image_bytes, retention_days, revision
          FROM history_settings LIMIT 0",
@@ -5979,6 +6092,50 @@ fn validate_restore_runtime_contracts(
             return Err("历史恢复文件来源图标无效".to_owned());
         }
     }
+    drop(icon_statement);
+
+    let mut thumbnail_statement = connection
+        .prepare(
+            "SELECT clip_thumbnails.clip_id, typeof(clip_thumbnails.thumbnail_png),
+                    length(clip_thumbnails.thumbnail_png), clips.kind
+             FROM clip_thumbnails
+             JOIN clips ON clips.id = clip_thumbnails.clip_id
+             ORDER BY clip_thumbnails.clip_id",
+        )
+        .map_err(|_| "历史恢复文件图片缩略图无效".to_owned())?;
+    let thumbnails = thumbnail_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|_| "历史恢复文件图片缩略图无效".to_owned())?;
+    for thumbnail in thumbnails {
+        let (clip_id, storage_class, length, kind) =
+            thumbnail.map_err(|_| "历史恢复文件图片缩略图无效".to_owned())?;
+        let Some(length) = length else {
+            return Err("历史恢复文件图片缩略图无效".to_owned());
+        };
+        if kind != "image"
+            || storage_class != "blob"
+            || !(1..=HISTORY_THUMBNAIL_PNG_MAX_BYTES as i64).contains(&length)
+        {
+            return Err("历史恢复文件图片缩略图无效".to_owned());
+        }
+        let png: Vec<u8> = connection
+            .query_row(
+                "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = ?1",
+                [&clip_id],
+                |row| row.get(0),
+            )
+            .map_err(|_| "历史恢复文件图片缩略图无效".to_owned())?;
+        if usize::try_from(length).ok() != Some(png.len()) || !thumbnail_png_is_safe(&png) {
+            return Err("历史恢复文件图片缩略图无效".to_owned());
+        }
+    }
     Ok(item_count)
 }
 
@@ -6228,6 +6385,7 @@ where
         transaction
             .execute_batch(
                 "DELETE FROM clip_search;
+                 DELETE FROM clip_thumbnails;
                  DELETE FROM clip_formats;
                  DELETE FROM clip_files;
                  DELETE FROM clips;
@@ -6267,6 +6425,14 @@ where
             )
             .map_err(|error| error.to_string())?;
         after_table("clip_formats")?;
+        transaction
+            .execute(
+                "INSERT INTO clip_thumbnails(clip_id, thumbnail_png)
+                 SELECT clip_id, thumbnail_png FROM restore_source.clip_thumbnails",
+                [],
+            )
+            .map_err(|error| error.to_string())?;
+        after_table("clip_thumbnails")?;
         transaction
             .execute(
                 "INSERT INTO clip_files(
@@ -6459,6 +6625,16 @@ mod tests {
         )
     }
 
+    fn rgba_png_bytes(rgba: [u8; 4]) -> Vec<u8> {
+        STANDARD
+            .decode(
+                rgba_icon_data_url(rgba)
+                    .strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)
+                    .expect("PNG data URL"),
+            )
+            .expect("decode fixture PNG")
+    }
+
     fn data_url_bytes(bytes: &[u8]) -> String {
         format!("data:image/png;base64,{}", STANDARD.encode(bytes))
     }
@@ -6499,6 +6675,21 @@ mod tests {
         item.formats = vec!["image".into()];
         item.image_url = Some(data_url_bytes(bytes));
         item
+    }
+
+    fn store_png_image(database: &mut Connection, id: &str, rgba: [u8; 4]) {
+        apply_history_mutation(
+            database,
+            mutation(
+                vec![image_item(
+                    id,
+                    "2026-07-01T00:00:00.000Z",
+                    &rgba_png_bytes(rgba),
+                )],
+                CapacityPolicy::default(),
+            ),
+        )
+        .expect("store PNG image");
     }
 
     fn mutation(upserts: Vec<HistoryItem>, policy: CapacityPolicy) -> HistoryMutation {
@@ -6689,6 +6880,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn restore_validation_rejects_malformed_thumbnail_rows() {
+        let mut database = Connection::open_in_memory().expect("open thumbnail restore fixture");
+        store_png_image(&mut database, "restore-thumbnail", [17, 34, 51, 255]);
+        database
+            .execute_batch("PRAGMA ignore_check_constraints = ON")
+            .expect("allow malformed restore cache fixture");
+        database
+            .execute(
+                "UPDATE clip_thumbnails SET thumbnail_png = 'not a PNG'
+                 WHERE clip_id = 'restore-thumbnail'",
+                [],
+            )
+            .expect("inject malformed restored thumbnail");
+
+        assert!(validate_restore_runtime_contracts(&database, false).is_err());
+    }
+
     fn create_v4_schema(database: &mut Connection) {
         let transaction = database.transaction().expect("begin v4 fixture");
         transaction
@@ -6745,6 +6954,16 @@ mod tests {
         transaction.commit().expect("commit v9 fixture");
     }
 
+    fn create_v10_schema(database: &mut Connection) {
+        create_v9_schema(database);
+        let transaction = database.transaction().expect("begin v10 fixture");
+        migrate_to_v10(&transaction).expect("create v10 schema");
+        transaction
+            .execute_batch("PRAGMA user_version = 10")
+            .expect("set v10 schema version");
+        transaction.commit().expect("commit v10 fixture");
+    }
+
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -6759,13 +6978,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_uses_version_ten_with_one_default_settings_row() {
+    fn fresh_schema_uses_version_eleven_with_one_default_settings_row() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
 
         initialize_history_database(&mut database).expect("initialize fresh database");
 
         assert_eq!(pragma_i64(&database, "application_id"), 0x5150_5354);
-        assert_eq!(pragma_i64(&database, "user_version"), 10);
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
         assert_eq!(pragma_i64(&database, "foreign_keys"), 1);
         assert!(column_exists(&database, "clips", "omitted_formats"));
         for table in [
@@ -6774,6 +6993,7 @@ mod tests {
             "clip_files",
             "collections",
             "source_app_icons",
+            "clip_thumbnails",
             "history_settings",
         ] {
             assert!(table_exists(&database, table), "missing {table}");
@@ -6817,6 +7037,57 @@ mod tests {
     }
 
     #[test]
+    fn current_schema_contract_rejects_a_missing_thumbnail_table() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        initialize_history_database(&mut database).expect("initialize current schema");
+        database
+            .execute_batch("DROP TABLE clip_thumbnails")
+            .expect("remove thumbnail table fixture");
+
+        assert!(validate_current_history_contract(&database).is_err());
+    }
+
+    #[test]
+    fn v10_to_v11_migration_creates_thumbnail_table_and_preserves_existing_rows() {
+        let mut database = Connection::open_in_memory().expect("open v10 thumbnail fixture");
+        create_v10_schema(&mut database);
+        database
+            .execute(
+                "INSERT INTO clips(
+                   id, kind, title, plain_text, source_app, copied_at, updated_at, pinned,
+                   permanent, search_terms, logical_bytes, omitted_formats
+                 ) VALUES (
+                   'v10-kept', 'text', 'kept', 'body', 'Test',
+                   '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z', 0, 0,
+                   '[]', 4, '[]'
+                 )",
+                [],
+            )
+            .expect("seed v10 clip");
+
+        initialize_history_database(&mut database).expect("migrate v10 thumbnail schema");
+
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert!(table_exists(&database, "clip_thumbnails"));
+        assert_eq!(
+            database
+                .query_row("SELECT title FROM clips WHERE id = 'v10-kept'", [], |row| {
+                    row.get::<_, String>(0)
+                })
+                .expect("read preserved v10 clip"),
+            "kept"
+        );
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM clip_thumbnails", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count migrated thumbnails"),
+            0
+        );
+    }
+
+    #[test]
     fn schema_v8_then_v9_migrates_atomically_and_rejects_invalid_v7_rows() {
         let mut database = Connection::open_in_memory().expect("open v7 migration fixture");
         create_v7_schema(&mut database);
@@ -6855,7 +7126,7 @@ mod tests {
             .expect("insert valid v7 collection");
 
         initialize_history_database(&mut database).expect("migrate valid v7 collection");
-        assert_eq!(pragma_i64(&database, "user_version"), 10);
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
         assert_eq!(
             list_history_collections(&database)
                 .expect("list migrated collections")
@@ -6913,7 +7184,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v8 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 10);
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
         let migrated = get_clip_payload(&database, "legacy-image")
             .expect("load migrated image")
             .expect("legacy image remains");
@@ -6981,7 +7252,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v9 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 10);
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
         let migrated = get_clip_payload(&database, "current-image")
             .expect("load migrated image")
             .expect("current image remains");
@@ -7936,11 +8207,11 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_is_v10_and_rejects_noncanonical_image_hashes() {
+    fn current_schema_is_v11_and_rejects_noncanonical_image_hashes() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         initialize_history_database(&mut database).expect("initialize current schema");
 
-        assert_eq!(SCHEMA_VERSION, 10);
+        assert_eq!(SCHEMA_VERSION, 11);
         let image_hash_column = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'image_hash'",
@@ -10111,7 +10382,8 @@ mod tests {
             exists: true,
         }];
 
-        let mut image = image_item("image-backup", "2026-07-01T00:00:00.000Z", b"IMAGE");
+        let image_png = rgba_png_bytes([45, 90, 135, 255]);
+        let mut image = image_item("image-backup", "2026-07-01T00:00:00.000Z", &image_png);
         image.image_hash = Some("b".repeat(64));
         image.ocr_text = Some("OCR searchable receipt".into());
         image.ocr_status = Some("completed".into());
@@ -10135,6 +10407,13 @@ mod tests {
             .expect("query live collections")
             .collect::<Result<_, _>>()
             .expect("collect live collections");
+        let expected_thumbnail: Vec<u8> = live
+            .query_row(
+                "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = 'image-backup'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read live backup thumbnail");
 
         create_history_backup_at(&live, &live_path, &backup_path)
             .expect("create complete round-trip backup");
@@ -10151,6 +10430,16 @@ mod tests {
             .collect::<Result<_, _>>()
             .expect("collect backup collections");
         assert_eq!(backed_collections, expected_collections);
+        assert_eq!(
+            backup
+                .query_row(
+                    "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = 'image-backup'",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .expect("read backed-up thumbnail"),
+            expected_thumbnail
+        );
         for (query, expected_id) in [
             ("huojian", "rich-backup"),
             ("receipt", "image-backup"),
@@ -10622,7 +10911,8 @@ mod tests {
         create_closed_restore_fixture(&old_path, "old-schema");
         let old = Connection::open(&old_path).expect("open old schema fixture");
         old.execute_batch(
-            "DROP TRIGGER collections_validate_insert;
+            "DROP TABLE clip_thumbnails;
+             DROP TRIGGER collections_validate_insert;
              DROP TRIGGER collections_validate_update;
              DROP INDEX collections_name_binary;
              DROP INDEX collections_sort_order_id;
@@ -10710,6 +11000,23 @@ mod tests {
             },
         )
         .expect("create source permanent snippet");
+        let image_png = rgba_png_bytes([12, 34, 56, 255]);
+        apply_history_mutation(
+            &mut source,
+            mutation(
+                vec![image_item(
+                    "restored-thumbnail",
+                    "2026-07-02T00:00:00.000Z",
+                    &image_png,
+                )],
+                CapacityPolicy {
+                    max_records: 777,
+                    max_image_bytes: 98_765,
+                    retention_days: Some(45),
+                },
+            ),
+        )
+        .expect("create source image thumbnail");
         drop(source);
         let prepared =
             prepare_history_restore_at(&source_path, &staging_directory, &live, &"c".repeat(64))
@@ -10741,9 +11048,9 @@ mod tests {
         drop(staged);
         let result = commit_prepared_history_restore_with_hook(&mut live, &prepared, |_| Ok(()))
             .expect("atomically restore validated staging");
-        assert_eq!(result.imported_count, 2);
+        assert_eq!(result.imported_count, 3);
         assert_eq!(result.schema_version, SCHEMA_VERSION);
-        assert_eq!(result.stats.record_count, 2);
+        assert_eq!(result.stats.record_count, 3);
         assert_eq!(result.policy.max_records, 777);
         assert_eq!(
             query_ids(&live, history_query("canonical-incoming")),
@@ -10762,6 +11069,15 @@ mod tests {
         assert_eq!(
             query_ids(&live, history_query("restore-snippet-searchable")),
             vec![snippet.id]
+        );
+        assert_eq!(
+            live.query_row(
+                "SELECT COUNT(*) FROM clip_thumbnails WHERE clip_id = 'restored-thumbnail'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("count restored thumbnail cache"),
+            1
         );
         let revision: i64 = live
             .query_row(
@@ -12435,45 +12751,228 @@ mod tests {
     }
 
     #[test]
-    fn image_thumbnail_is_bounded_and_missing_rows_return_none() {
+    fn invalid_image_payload_does_not_reject_history_mutation_or_create_thumbnail() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
-        let source = rgba_icon_data_url([77, 111, 206, 255]);
-        let bytes = STANDARD
-            .decode(
-                source
-                    .strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)
-                    .expect("PNG data URL"),
-            )
-            .expect("decode fixture PNG");
+
         apply_history_mutation(
             &mut database,
             mutation(
                 vec![image_item(
-                    "thumbnail-image",
+                    "invalid-thumbnail-source",
                     "2026-07-01T00:00:00.000Z",
-                    &bytes,
+                    b"not a PNG",
                 )],
                 CapacityPolicy::default(),
             ),
         )
-        .expect("store image");
+        .expect("store image even when thumbnail generation fails");
 
-        let thumbnail = get_clip_thumbnail(&database, "thumbnail-image")
-            .expect("generate thumbnail")
-            .expect("image has thumbnail");
-        assert!(thumbnail.starts_with("data:image/png;base64,"));
-        let thumbnail_bytes = STANDARD
-            .decode(
-                thumbnail
-                    .strip_prefix(SOURCE_APP_ICON_DATA_URL_PREFIX)
-                    .expect("thumbnail data URL"),
+        assert!(get_clip_payload(&database, "invalid-thumbnail-source")
+            .expect("load invalid image payload")
+            .is_some());
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_thumbnails WHERE clip_id = 'invalid-thumbnail-source'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count invalid-source thumbnails"),
+            0
+        );
+    }
+
+    #[test]
+    fn image_upsert_pre_generates_a_bounded_png_thumbnail() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "thumbnail-image", [77, 111, 206, 255]);
+
+        let cached: Vec<u8> = database
+            .query_row(
+                "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = 'thumbnail-image'",
+                [],
+                |row| row.get(0),
             )
-            .expect("decode thumbnail");
-        let thumbnail_image =
-            image::load_from_memory_with_format(&thumbnail_bytes, ImageFormat::Png)
-                .expect("decode thumbnail PNG");
+            .expect("read pre-generated thumbnail");
+        let thumbnail = format!("data:image/png;base64,{}", STANDARD.encode(&cached));
+        assert!(thumbnail.starts_with("data:image/png;base64,"));
+        let thumbnail_image = image::load_from_memory_with_format(&cached, ImageFormat::Png)
+            .expect("decode thumbnail PNG");
         assert!(thumbnail_image.width() <= HISTORY_THUMBNAIL_MAX_DIMENSION);
         assert!(thumbnail_image.height() <= HISTORY_THUMBNAIL_MAX_DIMENSION);
+    }
+
+    #[test]
+    fn missing_thumbnail_request_lazily_backfills_the_cache() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "lazy-thumbnail", [77, 111, 206, 255]);
+        database
+            .execute(
+                "DELETE FROM clip_thumbnails WHERE clip_id = 'lazy-thumbnail'",
+                [],
+            )
+            .expect("remove pre-generated thumbnail to simulate v10 row");
+
+        let thumbnail = get_clip_thumbnail(&database, "lazy-thumbnail")
+            .expect("generate lazy thumbnail")
+            .expect("image has thumbnail");
+
+        let persisted: Vec<u8> = database
+            .query_row(
+                "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = 'lazy-thumbnail'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read lazily persisted thumbnail");
+        assert_eq!(
+            thumbnail,
+            format!("data:image/png;base64,{}", STANDARD.encode(persisted))
+        );
+    }
+
+    #[test]
+    fn cached_thumbnail_is_returned_when_original_image_becomes_unreadable() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "cached-thumbnail", [31, 51, 76, 255]);
+        let expected = get_clip_thumbnail(&database, "cached-thumbnail")
+            .expect("read pre-generated thumbnail")
+            .expect("cached image has thumbnail");
+        database
+            .execute(
+                "UPDATE clip_formats SET data = ?1
+                 WHERE clip_id = 'cached-thumbnail' AND format = 'image'",
+                [b"not a readable PNG".as_slice()],
+            )
+            .expect("corrupt original image fixture");
+
+        assert_eq!(
+            get_clip_thumbnail(&database, "cached-thumbnail")
+                .expect("read thumbnail without original decode")
+                .as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn deleting_an_image_cascades_to_its_thumbnail() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "delete-thumbnail", [77, 111, 206, 255]);
+
+        apply_history_mutation(
+            &mut database,
+            HistoryMutation {
+                upserts: Vec::new(),
+                delete_ids: vec!["delete-thumbnail".into()],
+                policy: CapacityPolicy::default(),
+            },
+        )
+        .expect("delete image");
+
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_thumbnails WHERE clip_id = 'delete-thumbnail'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count thumbnails after cascade"),
+            0
+        );
+    }
+
+    #[test]
+    fn replacing_an_image_with_text_removes_the_stale_thumbnail() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "replace-thumbnail", [77, 111, 206, 255]);
+
+        apply_history_mutation(
+            &mut database,
+            mutation(
+                vec![text_item("replace-thumbnail", "2026-07-02T00:00:00.000Z")],
+                CapacityPolicy::default(),
+            ),
+        )
+        .expect("replace image with text");
+
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_thumbnails WHERE clip_id = 'replace-thumbnail'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count stale replacement thumbnails"),
+            0
+        );
+    }
+
+    #[test]
+    fn malformed_cached_thumbnail_is_regenerated_from_the_original() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "malformed-thumbnail", [90, 120, 150, 255]);
+        database
+            .execute_batch("PRAGMA ignore_check_constraints = ON")
+            .expect("allow malformed cache fixture");
+        database
+            .execute(
+                "UPDATE clip_thumbnails SET thumbnail_png = 'not a PNG'
+                 WHERE clip_id = 'malformed-thumbnail'",
+                [],
+            )
+            .expect("inject malformed cached thumbnail");
+
+        let regenerated = get_clip_thumbnail(&database, "malformed-thumbnail")
+            .expect("regenerate malformed cache")
+            .expect("regenerated thumbnail");
+
+        let cached: Vec<u8> = database
+            .query_row(
+                "SELECT thumbnail_png FROM clip_thumbnails WHERE clip_id = 'malformed-thumbnail'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read repaired thumbnail cache");
+        assert_eq!(
+            regenerated,
+            format!("data:image/png;base64,{}", STANDARD.encode(cached))
+        );
+    }
+
+    #[test]
+    fn oversized_cached_thumbnail_is_regenerated_within_the_storage_bound() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(&mut database, "oversized-thumbnail", [21, 42, 84, 255]);
+        database
+            .execute_batch("PRAGMA ignore_check_constraints = ON")
+            .expect("allow oversized cache fixture");
+        database
+            .execute(
+                "UPDATE clip_thumbnails SET thumbnail_png = ?1
+                 WHERE clip_id = 'oversized-thumbnail'",
+                [vec![0_u8; 2 * 1024 * 1024]],
+            )
+            .expect("inject oversized cached thumbnail");
+
+        get_clip_thumbnail(&database, "oversized-thumbnail")
+            .expect("regenerate oversized cache")
+            .expect("regenerated thumbnail");
+
+        let cached_length: i64 = database
+            .query_row(
+                "SELECT length(thumbnail_png) FROM clip_thumbnails
+                 WHERE clip_id = 'oversized-thumbnail'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read repaired thumbnail length");
+        assert!((1..=64 * 1024).contains(&cached_length));
+    }
+
+    #[test]
+    fn thumbnail_request_for_missing_clip_returns_none() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        initialize_history_database(&mut database).expect("initialize database");
+
         assert_eq!(
             get_clip_thumbnail(&database, "missing").expect("missing row"),
             None
