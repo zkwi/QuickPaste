@@ -3,25 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlignLeft,
   Check,
-  ChevronLeft,
   Clock3,
   Code2,
-  Copy,
   Download,
   Image as ImageIcon,
   LayoutList,
   Link2,
-  Maximize2,
-  Minimize2,
-  Moon,
-  Minus,
   Pin,
-  Plus,
   Search,
-  Settings2,
   ShieldCheck,
-  Sun,
-  Trash2,
   X,
 } from 'lucide-vue-next'
 import { demoClips } from './data/demoClips'
@@ -31,7 +21,6 @@ import {
   applyClipFilter,
   clearUnpinnedHistory,
   createClipboardItem,
-  formatRelativeTime,
   mergeCapturedClipIntoHistory,
   moveSelection,
   normalizeSourceAppIcon,
@@ -157,23 +146,19 @@ import {
 } from './platform/window'
 import { useUpdater } from './composables/useUpdater'
 import ClipContextMenu from './components/ClipContextMenu.vue'
-import ClipImageThumbnail from './components/ClipImageThumbnail.vue'
-import ManagerFilters from './components/ManagerFilters.vue'
-import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
 import SnippetEditor from './components/SnippetEditor.vue'
-import SourceAppIcon from './components/SourceAppIcon.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ClipPreview from './components/ClipPreview.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 import QuickPanel from './components/QuickPanel.vue'
 import type { QuickPanelHelpers } from './components/QuickPanel.types'
+import LibraryManager from './components/LibraryManager.vue'
+import type { LibraryManagerHelpers, LibrarySection, ManagerCollectionFilter } from './components/LibraryManager.types'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
 
 type AppView = 'quick' | 'library'
-type LibrarySection = 'all' | 'pinned' | 'images' | 'settings'
-type ManagerCollectionFilter = 'any' | 'unfiled' | `collection:${string}`
 type HistoryState = 'loading' | 'ready' | 'error'
 type ClipFocusSurface = 'quick' | 'manager'
 type ClipContextSurface = ClipFocusSurface | 'preview'
@@ -772,6 +757,73 @@ const quickPanelHelpers: QuickPanelHelpers = {
   directPasteTooltip,
   directPasteAriaShortcuts,
   directPasteLabel,
+}
+
+const libraryManagerState = computed(() => ({
+  inert: modalOverlayOpen.value,
+  section: librarySection.value,
+  nativeRuntime,
+  nativeHistoryTotalCount: nativeHistoryTotalCount.value,
+  itemsCount: items.value.length,
+  pinnedCount: pinnedCount.value,
+  imageCount: imageCount.value,
+  collections: collections.value,
+  collectionEditor: collectionEditor.value,
+  collectionError: collectionError.value,
+  managerOperationBusy: managerOperationBusy.value,
+  managerCollectionFilter: managerCollectionFilter.value,
+  theme: theme.value,
+  windowModeTransitioning: windowModeTransitioning.value,
+  windowActionInFlight: windowActionInFlight.value,
+  windowMaximized: windowMaximized.value,
+  managerQuery: managerQuery.value,
+  managerKinds: managerKinds.value,
+  locale: locale.value,
+  historyState: historyState.value,
+  libraryItems: libraryItems.value,
+  snippetLoading: snippetLoading.value,
+  ordinaryHistoryCount: ordinaryHistoryCount.value,
+  ordinaryClearLabel: ordinaryClearLabel.value,
+  managerBulkToolbarKey: managerBulkToolbarKey.value,
+  managerBulkSelectionState: managerBulkSelectionState.value,
+  managerSelectedCount: managerSelectedCount.value,
+  managerSelectionBusy: managerSelectionBusy.value,
+  managerBatchError: managerBatchError.value,
+  managerSelectionIncludesPinned: managerSelectionIncludesPinned.value,
+  managerSelectionIncludesPermanent: managerSelectionIncludesPermanent.value,
+  managerSelectedId: managerSelectedId.value,
+  nativeHistoryNextCursor: nativeHistoryNextCursor.value,
+  nativeHistoryPageLoading: nativeHistoryPageLoading.value,
+  managerEmptyState: managerEmptyState.value,
+  relativeTimeNow: relativeTimeNow.value,
+}))
+
+const libraryManagerHelpers: LibraryManagerHelpers = {
+  t,
+  kindIcon,
+  managerHighlightSegments,
+  isOcrOnlyMatch: (clip) => isOcrOnlyMatch(clip, true),
+  isPhoneticOnlyMatch: (clip) => isPhoneticOnlyMatch(clip, true),
+  ocrStatusLabel,
+  hasMissingFiles,
+  fileAvailabilityLabel,
+  managerClipSelected,
+}
+
+function setManagerSearchElement(element: HTMLInputElement | null) {
+  managerSearchInput.value = element
+}
+
+function setLibraryContentElement(element: HTMLElement | null) {
+  libraryContent.value = element
+}
+
+function setLibraryBackButton(element: HTMLButtonElement | null) {
+  libraryBackButton.value = element
+}
+
+function setClearHistoryTrigger(element: HTMLButtonElement | null) {
+  clearHistoryTrigger.value = element
 }
 
 function setQuickSearchElement(element: HTMLInputElement | null) {
@@ -3554,165 +3606,50 @@ onBeforeUnmount(() => {
         </template>
       </QuickPanel>
 
-      <section v-else key="library" data-testid="library-view" class="library-shell" :aria-label="t('clipboardManager')" :inert="modalOverlayOpen">
-        <aside class="library-sidebar">
-          <div class="sidebar-brand">
-            <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
-            <span>{{ t('productName') }}</span>
-          </div>
-          <nav :aria-label="t('managerCategories')">
-            <button data-testid="library-section-all" :class="{ active: librarySection === 'all' }" type="button" :title="t('allHistory')" :aria-current="librarySection === 'all' ? 'page' : undefined" @click="selectLibrarySection('all')"><Clock3 :size="17" />{{ t('allHistory') }}<span>{{ nativeRuntime ? nativeHistoryTotalCount : items.length }}</span></button>
-            <button data-testid="library-section-pinned" :class="{ active: librarySection === 'pinned' }" type="button" :title="t('pinned')" :aria-current="librarySection === 'pinned' ? 'page' : undefined" @click="selectLibrarySection('pinned')"><Pin :size="17" />{{ t('pinned') }}<span v-if="!nativeRuntime">{{ pinnedCount }}</span></button>
-            <button data-testid="library-section-images" :class="{ active: librarySection === 'images' }" type="button" :title="t('images')" :aria-current="librarySection === 'images' ? 'page' : undefined" @click="selectLibrarySection('images')"><ImageIcon :size="17" />{{ t('images') }}<span v-if="!nativeRuntime">{{ imageCount }}</span></button>
-          </nav>
-          <section v-if="nativeRuntime" data-testid="manager-collections" class="manager-collections" :aria-label="t('managerCollections')">
-            <header>
-              <strong>{{ t('managerCollections') }}</strong>
-              <button data-testid="manager-create-collection" type="button" :disabled="managerOperationBusy" @click="beginCreateCollection">{{ t('managerNewCollection') }}</button>
-            </header>
-            <nav :aria-label="t('managerCollectionFilters')">
-              <button data-testid="manager-collection-all" type="button" :aria-current="managerCollectionFilter === 'any' ? 'page' : undefined" @click="selectManagerCollection('any')">{{ t('managerAllCollections') }}</button>
-              <button data-testid="manager-collection-unfiled" type="button" :aria-current="managerCollectionFilter === 'unfiled' ? 'page' : undefined" @click="selectManagerCollection('unfiled')">{{ t('managerUnfiled') }}</button>
-              <div v-for="collection in collections" :key="collection.id" class="manager-collection-row">
-                <button :data-testid="`manager-collection-${collection.id}`" type="button" :aria-current="managerCollectionFilter === `collection:${collection.id}` ? 'page' : undefined" @click="selectManagerCollection(`collection:${collection.id}`)">{{ collection.name }}</button>
-                <button :data-testid="`manager-rename-collection-${collection.id}`" type="button" :disabled="managerOperationBusy" :aria-label="t('managerRenameCollection', { name: collection.name })" @click="beginRenameCollection(collection)">{{ t('managerEdit') }}</button>
-                <button :data-testid="`manager-delete-collection-${collection.id}`" type="button" :disabled="managerOperationBusy" :aria-label="t('managerDeleteCollectionLabel', { name: collection.name })" @click="requestDeleteCollection(collection, $event)">{{ t('managerDeleteShort') }}</button>
-              </div>
-            </nav>
-            <form v-if="collectionEditor" data-testid="manager-collection-editor" @submit.prevent="saveCollectionEditor">
-              <input data-testid="manager-collection-name" type="text" :value="collectionEditor.name" :disabled="managerOperationBusy" :aria-label="t('managerCollectionName')" @input="updateCollectionEditorName" />
-              <button data-testid="manager-save-collection" type="submit" :disabled="managerOperationBusy" @click.prevent="saveCollectionEditor">{{ t('managerSave') }}</button>
-              <button data-testid="manager-cancel-collection" type="button" :disabled="managerOperationBusy" @click="closeCollectionEditor">{{ t('cancel') }}</button>
-            </form>
-            <p v-if="collectionError" data-testid="manager-collection-error" role="alert">{{ collectionError }}</p>
-          </section>
-          <div class="sidebar-divider"></div>
-          <nav :aria-label="t('appSettings')">
-            <button data-testid="library-section-settings" :class="{ active: librarySection === 'settings' }" type="button" :title="t('settings')" :aria-current="librarySection === 'settings' ? 'page' : undefined" @click="selectLibrarySection('settings')"><Settings2 :size="17" />{{ t('settings') }}</button>
-          </nav>
-          <div class="sidebar-privacy"><ShieldCheck :size="15" /><span>{{ t('localOnly') }}</span></div>
-        </aside>
-
-        <main class="library-main">
-          <header class="library-header" data-tauri-drag-region="deep">
-            <div>
-              <button ref="libraryBackButton" class="back-button subtle" type="button" @click="returnToQuickPanel"><ChevronLeft :size="17" />{{ t('backToQuick') }}</button>
-              <h1>{{ librarySection === 'settings' ? t('settings') : t('manageClipboard') }}</h1>
-              <p v-if="librarySection !== 'settings'">{{ t('manageDescription') }}</p>
-              <p v-else>{{ t('settingsDescription') }}</p>
-            </div>
-            <div class="library-header-actions">
-              <button class="icon-button manager-theme" type="button" :aria-label="t('toggleTheme')" @click="toggleTheme">
-                <Moon v-if="theme === 'light'" :size="17" />
-                <Sun v-else :size="17" />
-              </button>
-              <button class="icon-button window-control" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('minimizeWindow')" @click="performWindowAction('minimize')"><Minus :size="17" /></button>
-              <button data-testid="window-toggle-maximize" class="icon-button window-control" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="windowMaximized ? t('restoreWindow') : t('maximizeWindow')" @click="performWindowAction('toggle-maximize')"><Minimize2 v-if="windowMaximized" :size="15" /><Maximize2 v-else :size="15" /></button>
-              <button class="icon-button window-control close" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('closeWindow')" @click="performWindowAction('close')"><X :size="17" /></button>
-            </div>
-          </header>
-
-          <section v-if="librarySection !== 'settings'" ref="libraryContent" class="library-content">
-            <div class="manager-toolbar">
-              <div class="manager-search">
-                <Search :size="14" aria-hidden="true" />
-                <input ref="managerSearchInput" v-model="managerQuery" data-testid="manager-search-input" type="search" autocomplete="off" spellcheck="false" :aria-label="t('searchManager')" :placeholder="t('searchManager')" @keydown.down="handleManagerSearchArrowDown" @compositionstart="startSearchComposition('manager')" @compositionend="finishSearchComposition('manager')" @blur="cancelSearchComposition('manager')" />
-                <button v-if="managerQuery" data-testid="clear-manager-search" class="manager-search-clear" type="button" :aria-label="t('clearSearch')" @mousedown.prevent @click="clearManagerSearch"><X :size="13" /></button>
-              </div>
-              <ManagerFilters
-                v-model:kinds="managerKinds"
-                :locale="locale"
-              />
-              <div class="manager-toolbar-actions">
-                <span data-testid="manager-results-status" :aria-live="historyState === 'ready' ? 'polite' : 'off'" aria-atomic="true">{{ historyState === 'ready' ? nativeRuntime ? t('showingHistoryPage', { loaded: libraryItems.length, total: nativeHistoryTotalCount }) : t('showingItems', { count: libraryItems.length }) : '' }}</span>
-                <button v-if="nativeRuntime" data-testid="new-snippet" class="manager-primary-action" type="button" :disabled="managerOperationBusy || snippetLoading" @click="openNewSnippet"><Plus :size="14" />{{ t('managerNewSnippet') }}</button>
-                <button
-                  v-if="librarySection === 'all' && !nativeRuntime"
-                  ref="clearHistoryTrigger"
-                  data-testid="clear-history"
-                  class="manager-clear"
-                  type="button"
-                  :disabled="ordinaryHistoryCount === 0"
-                  @click="requestClearHistory"
-                >
-                  <Trash2 :size="14" />{{ ordinaryClearLabel }}
-                </button>
-              </div>
-            </div>
-            <ManagerBulkToolbar
-              v-if="nativeRuntime"
-              :key="managerBulkToolbarKey"
-              :locale="locale"
-              :selection-state="managerBulkSelectionState"
-              :selected-count="managerSelectedCount"
-              :collections="collections"
-              :busy="managerSelectionBusy"
-              :error-message="managerBatchError"
-              :includes-pinned="managerSelectionIncludesPinned"
-              :includes-permanent="managerSelectionIncludesPermanent"
-              @select-all="selectAllManagerMatches"
-              @clear-selection="clearManagerSelection"
-              @apply="applyManagerBatch"
-            />
-            <div class="manager-list" role="listbox" aria-multiselectable="true" :aria-label="t('clipboardResults')">
-              <div v-if="historyState === 'loading'" class="empty-state compact" role="status">
-                <span class="history-loader compact" aria-hidden="true"><span></span><span></span><span></span></span>
-                <h2>{{ t('historyLoading') }}</h2>
-                <p>{{ t('historyLoadingHint') }}</p>
-              </div>
-              <div v-else-if="historyState === 'error'" class="empty-state compact history-state error" role="alert">
-                <ShieldCheck :size="22" />
-                <h2>{{ t('historyUnavailable') }}</h2>
-                <p>{{ t('historyLoadFailed') }}</p>
-                <button data-testid="history-retry" class="secondary-button" type="button" @click="retryHistoryLoad">{{ t('retryHistory') }}</button>
-              </div>
-              <article
-                v-for="(clip, index) in historyState === 'ready' ? libraryItems : []"
-                :key="clip.id"
-                :data-manager-clip-id="clip.id"
-                class="manager-row"
-                role="option"
-                :tabindex="managerSelectedId === clip.id ? 0 : -1"
-                :aria-current="managerSelectedId === clip.id ? 'true' : undefined"
-                :aria-selected="managerClipSelected(clip)"
-                :aria-label="`${clip.title}, ${clip.sourceApp}`"
-                @focus="managerSelectedId = clip.id"
-                @click="handleManagerRowClick($event, clip)"
-                @keydown="handleManagerRowKeydown($event, index, clip.id)"
-              >
-                <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                  <ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" />
-                  <component v-else :is="kindIcon(clip.kind)" :size="17" />
-                </span>
-                <div>
-                  <strong><span class="manager-title-text"><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.title)" :key="`manager-title-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="isOcrOnlyMatch(clip, true)" class="ocr-match">{{ t('ocrMatch') }}</span><span v-else-if="isPhoneticOnlyMatch(clip, true)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-else-if="clip.kind === 'image' && clip.ocrStatus" :data-testid="`manager-ocr-status-${clip.id}`" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span><span v-if="hasMissingFiles(clip)" :data-testid="`manager-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span></strong>
-                  <p><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.content)" :key="`manager-content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></p>
-                </div>
-                <div class="manager-meta">
-                  <span class="manager-source"><SourceAppIcon class="manager-app-icon" :source="clip.sourceApp" :icon="clip.sourceAppIcon" :fallback-color="clip.color" /><span><template v-for="(segment, segmentIndex) in managerHighlightSegments(clip.sourceApp)" :key="`manager-source-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span></span>
-                  <span class="manager-time">{{ formatRelativeTime(clip.copiedAt, relativeTimeNow, locale) }}</span>
-                </div>
-                <div class="manager-actions">
-                  <button v-if="clip.permanent && (clip.kind === 'text' || clip.kind === 'code')" :data-testid="`manager-edit-snippet-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="t('managerEditSnippet', { title: clip.title })" @focus="managerSelectedId = clip.id" @click="openSnippetEditor(clip)">{{ t('managerEdit') }}</button>
-                  <button :data-testid="`manager-copy-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${t('copyContent')}: ${clip.title}`" :title="t('copyContent')" @focus="managerSelectedId = clip.id" @click="copyClip(clip)"><Copy :size="15" /></button>
-                  <button :data-testid="`manager-pin-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${clip.pinned ? t('unpin') : t('pinClip')}: ${clip.title}`" :aria-pressed="clip.pinned" @focus="managerSelectedId = clip.id" @click="pinClip(clip.id, 'manager')"><Pin :size="15" :fill="clip.pinned ? 'currentColor' : 'none'" /></button>
-                  <button :data-testid="`manager-delete-${clip.id}`" type="button" :tabindex="managerSelectedId === clip.id ? 0 : -1" :aria-label="`${t('deleteClip')}: ${clip.title}`" @focus="managerSelectedId = clip.id" @click="deleteClip(clip.id, 'manager')"><Trash2 :size="15" /></button>
-                </div>
-              </article>
-              <button
-                v-if="nativeRuntime && nativeHistoryNextCursor"
-                data-testid="history-load-more"
-                class="secondary-button history-load-more"
-                type="button"
-                :disabled="nativeHistoryPageLoading"
-                @click="loadMoreNativeHistory"
-              >{{ nativeHistoryPageLoading ? t('loadingMoreHistory') : t('loadMoreHistory') }}</button>
-              <div v-if="historyState === 'ready' && libraryItems.length === 0" data-testid="manager-empty-state" class="empty-state compact"><component :is="managerEmptyState.icon" :size="22" /><h2>{{ managerEmptyState.title }}</h2><p>{{ managerEmptyState.hint }}</p><button v-if="managerEmptyState.canClear" data-testid="clear-empty-manager-search" class="secondary-button" type="button" @click="clearManagerSearch">{{ t('clearSearch') }}</button></div>
-            </div>
-          </section>
-
+      <LibraryManager
+        v-else
+        key="library"
+        :state="libraryManagerState"
+        :helpers="libraryManagerHelpers"
+        @select-section="selectLibrarySection"
+        @select-collection="selectManagerCollection"
+        @create-collection="beginCreateCollection"
+        @rename-collection="beginRenameCollection"
+        @delete-collection="requestDeleteCollection"
+        @update-collection-name="updateCollectionEditorName"
+        @save-collection="saveCollectionEditor"
+        @close-collection-editor="closeCollectionEditor"
+        @return-quick="returnToQuickPanel"
+        @toggle-theme="toggleTheme"
+        @window-action="performWindowAction"
+        @update-manager-query="managerQuery = $event"
+        @update-manager-kinds="managerKinds = $event"
+        @manager-search-arrow-down="handleManagerSearchArrowDown"
+        @composition-start="startSearchComposition('manager')"
+        @composition-end="finishSearchComposition('manager')"
+        @composition-blur="cancelSearchComposition('manager')"
+        @clear-manager-search="clearManagerSearch"
+        @new-snippet="openNewSnippet"
+        @clear-history="requestClearHistory"
+        @select-all="selectAllManagerMatches"
+        @clear-selection="clearManagerSelection"
+        @apply-batch="applyManagerBatch"
+        @retry-history="retryHistoryLoad"
+        @focus-manager-clip="managerSelectedId = $event"
+        @manager-row-click="handleManagerRowClick"
+        @manager-row-keydown="handleManagerRowKeydown"
+        @edit-snippet="openSnippetEditor"
+        @copy-clip="copyClip"
+        @pin-clip="pinClip($event, 'manager')"
+        @delete-clip="deleteClip($event, 'manager')"
+        @load-more="loadMoreNativeHistory"
+        @manager-search-element="setManagerSearchElement"
+        @library-content-element="setLibraryContentElement"
+        @back-button-element="setLibraryBackButton"
+        @clear-history-element="setClearHistoryTrigger"
+      >
+        <template #settings>
           <SettingsPanel
-            v-else
             v-model:launch-at-startup="launchAtStartup"
             v-model:theme="theme"
             v-model:locale="locale"
@@ -3759,8 +3696,8 @@ onBeforeUnmount(() => {
             @check-update="runUpdateCheck(true)"
             @install-update="installAvailableUpdate"
           />
-        </main>
-      </section>
+        </template>
+      </LibraryManager>
     </Transition>
 
     <Transition name="context-menu">
