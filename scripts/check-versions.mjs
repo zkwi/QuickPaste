@@ -42,6 +42,17 @@ const requiredMainWindowPermissions = [
   'core:window:allow-toggle-maximize',
 ]
 
+const approvedCiActions = new Set([
+  'actions/checkout@v6',
+  'actions/setup-node@v6',
+  'dtolnay/rust-toolchain@1.88.0',
+  'Swatinem/rust-cache@v2',
+])
+
+function ciActions(workflow) {
+  return [...(workflow ?? '').matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map(([, action]) => action)
+}
+
 export function validateProjectMetadata(metadata) {
   const issues = []
   const packageSection = tomlSection(metadata.cargoManifest, 'package')
@@ -85,6 +96,9 @@ export function validateProjectMetadata(metadata) {
   }
   if (!metadata.ciWorkflow?.includes('Swatinem/rust-cache@v2')) {
     issues.push('CI 必须使用 Swatinem/rust-cache@v2')
+  }
+  for (const action of ciActions(metadata.ciWorkflow)) {
+    if (!approvedCiActions.has(action)) issues.push(`CI 使用未批准的 GitHub Action：${action}`)
   }
 
   if (!metadata.updaterSource?.includes('https://api.github.com/repos/zkwi/QuickPaste/releases?per_page=10')) {

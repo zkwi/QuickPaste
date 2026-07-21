@@ -64,6 +64,7 @@ function validMetadata() {
     ciWorkflow: [
       'uses: actions/checkout@v6',
       'uses: actions/setup-node@v6',
+      'uses: dtolnay/rust-toolchain@1.88.0',
       'uses: Swatinem/rust-cache@v2',
     ].join('\n'),
     updaterSource: [
@@ -138,6 +139,8 @@ test('validateProjectMetadata rejects unavailable GitHub Actions major versions'
   assert.deepEqual(validateProjectMetadata(metadata), [
     'CI 必须使用 actions/checkout@v6',
     'CI 必须使用 actions/setup-node@v6',
+    'CI 使用未批准的 GitHub Action：actions/checkout@v7',
+    'CI 使用未批准的 GitHub Action：actions/setup-node@v7',
   ])
 })
 
@@ -147,6 +150,16 @@ test('validateProjectMetadata requires the pinned Rust cache action', () => {
 
   assert.deepEqual(validateProjectMetadata(metadata), [
     'CI 必须使用 Swatinem/rust-cache@v2',
+    'CI 使用未批准的 GitHub Action：Swatinem/rust-cache@v3',
+  ])
+})
+
+test('validateProjectMetadata rejects an additional unapproved Rust cache major', () => {
+  const metadata = validMetadata()
+  metadata.ciWorkflow += '\nuses: Swatinem/rust-cache@v3'
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    'CI 使用未批准的 GitHub Action：Swatinem/rust-cache@v3',
   ])
 })
 
