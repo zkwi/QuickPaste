@@ -99,7 +99,7 @@ import {
   type ManagerSelection,
   type SnippetDraft,
 } from './domain/collections'
-import { formatUpdateSize, shouldAutoCheckUpdate } from './domain/update'
+import { formatUpdateSize } from './domain/update'
 import { copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText } from './platform/clipboard'
 import {
   cancelNativeQuit,
@@ -165,7 +165,7 @@ import {
   setWindowMode,
   type WindowAction,
 } from './platform/window'
-import { checkForUpdate, connectUpdateCheckRequested, downloadUpdate, getCurrentVersion, installDownloadedUpdate, type UpdateProgress, type UpdateStatus } from './platform/updater'
+import { useUpdater } from './composables/useUpdater'
 import ClipContextMenu from './components/ClipContextMenu.vue'
 import ClipImageThumbnail from './components/ClipImageThumbnail.vue'
 import ManagerFilters from './components/ManagerFilters.vue'
@@ -211,7 +211,6 @@ interface PermanentSnippetDeleteTarget {
 // 品牌重命名不改已有持久化 key，避免 WebView/浏览器模式中的设置和演示历史失效。
 const ITEMS_STORAGE_KEY = 'mypaste-demo-items-v1'
 const SETTINGS_STORAGE_KEY = 'mypaste-ui-settings-v1'
-const UPDATE_CHECK_STORAGE_KEY = 'quickpaste-update-check-v1'
 const MAX_HISTORY_ITEMS = DEFAULT_HISTORY_POLICY.maxRecords
 const MAX_PENDING_NATIVE_CAPTURES = MAX_HISTORY_ITEMS
 const HISTORY_RETRY_ATTEMPTS = 3
@@ -226,7 +225,6 @@ const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
 const NATIVE_SEARCH_DEBOUNCE_MS = 120
 const ONBOARDING_SAMPLE_ID = 'quickpaste-onboarding-sample-v1'
-const AUTO_UPDATE_CHECK_DELAY_MS = 15_000
 const nativeRuntime = isTauriRuntime()
 
 function writeStoredValue(key: string, value: unknown): void {
@@ -251,15 +249,6 @@ function readStoredItems(): ClipboardItem[] {
     ...clip,
     searchTerms: [...clip.searchTerms],
   }))
-}
-
-function readLastUpdateCheckAt(): number | null {
-  try {
-    const value = Number(localStorage.getItem(UPDATE_CHECK_STORAGE_KEY))
-    return Number.isFinite(value) && value > 0 ? value : null
-  } catch {
-    return null
-  }
 }
 
 function readStoredSettings(): StoredSettings {
@@ -357,12 +346,6 @@ const targetElevated = ref(false)
 const quickPanelPinned = ref(storedSettings.quickPanelPinned)
 const autoCheckUpdates = ref(storedSettings.autoCheckUpdates)
 const ocrEnabled = ref(storedSettings.ocrEnabled)
-const currentVersion = ref('—')
-const updateStatus = ref<UpdateStatus | null>(null)
-const updateProgress = ref<UpdateProgress | null>(null)
-const updateState = ref<'idle' | 'checking' | 'available' | 'latest' | 'downloading' | 'verifying' | 'installing' | 'error'>('idle')
-const updateError = ref('')
-const updateNoticeVisible = ref(false)
 const quickPanelPinInFlight = ref(false)
 const windowModeTransitioning = ref(false)
 const windowActionInFlight = ref(false)
@@ -392,9 +375,6 @@ let disconnectCaptureState: (() => void) | undefined
 let disconnectCaptureAvailability: (() => void) | undefined
 let disconnectQuitRequested: (() => void) | undefined
 let disconnectWindowMaximizedState: (() => void) | undefined
-let disconnectUpdateCheckRequested: (() => void) | undefined
-let autoUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined
-let updateNoticeTimer: ReturnType<typeof setTimeout> | undefined
 let appUnmounted = false
 let quitFlushInProgress = false
 let capturedSequence = 0
@@ -422,6 +402,28 @@ let activeQuickSessionId = 0
 let quickFirstFrameGeneration = 0
 let quickFirstFrameAcknowledgedSessionId = 0
 const nativeSettingsReady = ref(!nativeRuntime)
+const {
+  currentVersion,
+  updateStatus,
+  updateProgress,
+  updateState,
+  updateNoticeVisible,
+  updateBusy,
+  updateStatusText,
+  hideUpdateNotice,
+  runUpdateCheck,
+  installAvailableUpdate,
+  connectUpdaterBridge,
+} = useUpdater({
+  nativeRuntime,
+  autoCheckUpdates,
+  nativeSettingsReady,
+  t,
+  showToast,
+  openSettings: () => openLibrary('settings'),
+  flushHistory: flushHistoryWithRetry,
+  isUnmounted: () => appUnmounted,
+})
 let restoreResultFocusAfterPreview = false
 const hydratedPayloads = new Map<string, { generation: number; item: LoadedClipboardItem }>()
 const pendingPayloadLoads = new Map<string, { generation: number; promise: Promise<LoadedClipboardItem | null> }>()
@@ -712,20 +714,6 @@ const modalOverlayOpen = computed(() => (
   || permanentSnippetDeleteTarget.value !== null
   || snippetDraft.value !== null
 ))
-const updateBusy = computed(() => ['checking', 'downloading', 'verifying', 'installing'].includes(updateState.value))
-const updateStatusText = computed(() => {
-  if (updateState.value === 'checking') return t('updateChecking')
-  if (updateState.value === 'downloading') return t('updateDownloading', { percent: updateProgress.value?.percent ?? 0 })
-  if (updateState.value === 'verifying') return t('updateVerifying')
-  if (updateState.value === 'installing') return t('updateInstalling')
-  if (updateState.value === 'available' && updateStatus.value) {
-    return t('updateAvailableVersion', { version: updateStatus.value.latestVersion })
-  }
-  if (updateState.value === 'latest') return t('updateLatest')
-  if (updateState.value === 'error') return updateError.value || t('updateCheckFailed')
-  return t('updateNotChecked')
-})
-
 const filters = computed<Array<{ id: ClipKindFilter; label: string }>>(() => [
   { id: 'all', label: t('all') },
   { id: 'text', label: t('text') },
@@ -1063,10 +1051,6 @@ watch(locale, (value) => {
   document.documentElement.lang = value
 }, { immediate: true })
 
-watch(autoCheckUpdates, () => {
-  if (nativeSettingsReady.value) scheduleAutomaticUpdateCheck()
-})
-
 watch(ocrEnabled, (enabled, previous) => {
   invalidateStoredOcrPump()
   ocrCoordinator.invalidate()
@@ -1315,117 +1299,6 @@ function showToast(message: string, urgent = false) {
     toastUrgent.value = false
     shortcutRecordingToastActive = false
   }, 2600)
-}
-
-function hideUpdateNotice() {
-  updateNoticeVisible.value = false
-  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
-  updateNoticeTimer = undefined
-}
-
-function showUpdateNotice() {
-  updateNoticeVisible.value = true
-  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
-  updateNoticeTimer = setTimeout(() => {
-    updateNoticeVisible.value = false
-    updateNoticeTimer = undefined
-  }, 12_000)
-}
-
-function writeLastUpdateCheckAt(value: number): void {
-  try {
-    localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(value))
-  } catch {
-    // 检查时间只用于本地节流，存储不可用不应阻止更新检查。
-  }
-}
-
-async function runUpdateCheck(manual: boolean) {
-  if (!nativeRuntime || updateBusy.value) return
-  updateState.value = 'checking'
-  updateError.value = ''
-  updateProgress.value = null
-  const attemptedAt = Date.now()
-  try {
-    const status = await checkForUpdate()
-    if (!status) {
-      updateState.value = 'idle'
-      return
-    }
-    currentVersion.value = status.currentVersion
-    updateStatus.value = status
-    updateState.value = status.updateAvailable ? 'available' : 'latest'
-    if (status.updateAvailable) showUpdateNotice()
-    else hideUpdateNotice()
-  } catch (error) {
-    if (manual) {
-      updateError.value = error instanceof Error && error.message.trim()
-        ? error.message
-        : t('updateCheckFailed')
-      updateState.value = 'error'
-      showToast(t('updateCheckFailed'), true)
-    } else {
-      updateState.value = 'idle'
-    }
-  } finally {
-    writeLastUpdateCheckAt(attemptedAt)
-  }
-}
-
-async function installAvailableUpdate() {
-  const status = updateStatus.value
-  if (!status?.updateAvailable || !status.automaticInstallAvailable || updateBusy.value) return
-  updateNoticeVisible.value = true
-  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
-  updateNoticeTimer = undefined
-  updateState.value = 'downloading'
-  updateError.value = ''
-  updateProgress.value = null
-  try {
-    const prepared = await downloadUpdate(status.latestVersion, (progress) => {
-      updateProgress.value = progress
-      updateState.value = progress.phase
-    })
-    if (!prepared) throw new Error(t('updateInstallFailed'))
-    if (!await flushHistoryWithRetry()) {
-      throw new Error(t('historyQuitSaveFailed'))
-    }
-    updateState.value = 'installing'
-    const result = await installDownloadedUpdate(prepared.token)
-    if (!result) throw new Error(t('updateInstallFailed'))
-  } catch (error) {
-    updateError.value = error instanceof Error && error.message.trim()
-      ? error.message
-      : t('updateInstallFailed')
-    updateState.value = 'error'
-    showToast(updateError.value, true)
-  }
-}
-
-function scheduleAutomaticUpdateCheck() {
-  if (autoUpdateCheckTimer) clearTimeout(autoUpdateCheckTimer)
-  autoUpdateCheckTimer = undefined
-  if (!nativeRuntime || !autoCheckUpdates.value || !shouldAutoCheckUpdate(readLastUpdateCheckAt())) return
-  autoUpdateCheckTimer = setTimeout(() => {
-    autoUpdateCheckTimer = undefined
-    void runUpdateCheck(false)
-  }, AUTO_UPDATE_CHECK_DELAY_MS)
-}
-
-async function connectUpdaterBridge() {
-  const packagedVersion = await getCurrentVersion()
-  if (packagedVersion) currentVersion.value = packagedVersion
-  const disconnect = await connectUpdateCheckRequested(() => {
-    void (async () => {
-      await openLibrary('settings')
-      await runUpdateCheck(true)
-    })()
-  })
-  if (disconnect) {
-    if (appUnmounted) disconnect()
-    else disconnectUpdateCheckRequested = disconnect
-  }
-  scheduleAutomaticUpdateCheck()
 }
 
 function waitForHistoryRetry(): Promise<void> {
@@ -3746,15 +3619,12 @@ onBeforeUnmount(() => {
   disconnectCaptureAvailability?.()
   disconnectQuitRequested?.()
   disconnectWindowMaximizedState?.()
-  disconnectUpdateCheckRequested?.()
   historyPersistence.cancel()
   void historyPersistence.flush()
   if (toastTimer) clearTimeout(toastTimer)
   if (undoTimer) clearTimeout(undoTimer)
   if (targetExpiryTimer) clearTimeout(targetExpiryTimer)
   if (relativeTimeTimer) clearInterval(relativeTimeTimer)
-  if (autoUpdateCheckTimer) clearTimeout(autoUpdateCheckTimer)
-  if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
   cancelNativeHistorySearchRefresh()
 })
 </script>
