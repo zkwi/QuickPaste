@@ -173,6 +173,8 @@ import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
 import SnippetEditor from './components/SnippetEditor.vue'
 import SourceAppIcon from './components/SourceAppIcon.vue'
 import StorageManager from './components/StorageManager.vue'
+import OnboardingDialog from './components/OnboardingDialog.vue'
+import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 
 const CodePreview = defineAsyncComponent(() => import('./components/CodePreview.vue'))
 
@@ -224,7 +226,6 @@ const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
 const NATIVE_SEARCH_DEBOUNCE_MS = 120
-const ONBOARDING_SAMPLE_ID = 'quickpaste-onboarding-sample-v1'
 const nativeRuntime = isTauriRuntime()
 
 function writeStoredValue(key: string, value: unknown): void {
@@ -317,8 +318,6 @@ const clearHistoryTrigger = ref<HTMLButtonElement | null>(null)
 const retentionChangeCancel = ref<HTMLButtonElement | null>(null)
 const retentionSelect = ref<HTMLSelectElement | null>(null)
 const undoButton = ref<HTMLButtonElement | null>(null)
-const onboardingPrimary = ref<HTMLButtonElement | null>(null)
-const onboardingDialog = ref<HTMLElement | null>(null)
 const libraryBackButton = ref<HTMLButtonElement | null>(null)
 const previewPasteButton = ref<HTMLButtonElement | null>(null)
 const retentionDays = ref<RetentionPeriod>(storedRetentionPeriod)
@@ -336,10 +335,6 @@ const sensitiveAppDraft = ref('')
 const globalShortcut = ref(storedSettings.globalShortcut)
 const globalShortcutAvailable = ref(!nativeRuntime)
 const shortcutRecording = ref(false)
-const onboardingCompleted = ref(storedSettings.onboardingCompleted)
-const onboardingPracticePending = ref(storedSettings.onboardingPracticePending)
-const onboardingStep = ref(storedSettings.onboardingCompleted ? -1 : 0)
-const onboardingSampleBusy = ref(false)
 const targetApp = ref<string | null>(null)
 const targetAppIcon = ref<string | null>(null)
 const targetElevated = ref(false)
@@ -403,6 +398,41 @@ let quickFirstFrameGeneration = 0
 let quickFirstFrameAcknowledgedSessionId = 0
 const nativeSettingsReady = ref(!nativeRuntime)
 const {
+  onboardingCompleted,
+  onboardingPracticePending,
+  onboardingStep,
+  onboardingSampleBusy,
+  onboardingDialog,
+  onboardingSteps,
+  currentOnboardingStep,
+  onboardingPracticeVisible,
+  finishOnboarding,
+  finishOnboardingWithSample,
+  dismissOnboardingPractice,
+  focusOnboardingStep,
+  advanceOnboarding,
+} = useOnboarding({
+  completed: storedSettings.onboardingCompleted,
+  practicePending: storedSettings.onboardingPracticePending,
+  nativeRuntime,
+  globalShortcut,
+  items,
+  selectedId,
+  searchInput,
+  t,
+  persistNativeSample: async (sample) => {
+    const result = await runSerializedManagerOperation(() => applyNativeHistoryMutation({
+      upserts: [sample],
+      deleteIds: [],
+      policy: currentHistoryPolicy(),
+    }), 0)
+    return result.status !== 'failed'
+  },
+  showToast,
+})
+// 字符串模板 ref 由 Vue 绑定，显式读取避免 TypeScript 将其误判为未使用。
+void onboardingDialog
+const {
   currentVersion,
   updateStatus,
   updateProgress,
@@ -453,29 +483,6 @@ const customRetentionDays = computed(() => {
   const value = historyRetentionDays.value
   return value !== null && ![7, 30, 90].includes(value) ? value : null
 })
-
-const onboardingSteps = computed(() => [
-  {
-    eyebrow: t('onboardingQuickEyebrow'),
-    title: t('onboardingQuickTitle'),
-    description: t('onboardingQuickDescription', { shortcut: displayShortcut(globalShortcut.value) }),
-  },
-  {
-    eyebrow: t('onboardingEfficientEyebrow'),
-    title: t('onboardingEfficientTitle'),
-    description: t('onboardingEfficientDescription'),
-  },
-  {
-    eyebrow: t('onboardingPrivateEyebrow'),
-    title: t('onboardingPrivateTitle'),
-    description: t('onboardingPrivateDescription'),
-  },
-] as const)
-
-const currentOnboardingStep = computed(() => onboardingSteps.value[onboardingStep.value] ?? onboardingSteps.value[0])
-const onboardingPracticeVisible = computed(() => (
-  onboardingStep.value < 0 && onboardingPracticePending.value
-))
 
 const quickSearchIntent = computed(() => parseQuickSearch(query.value, quickSourceFilter.value))
 const sourceSuggestions = computed(() => (
@@ -3046,94 +3053,6 @@ function handleWindowBlur() {
   }
 }
 
-function finishOnboarding() {
-  onboardingPracticePending.value = false
-  onboardingCompleted.value = true
-  onboardingStep.value = -1
-  if (nativeRuntime) void setOnboardingWindowActive(false)
-  nextTick(() => searchInput.value?.focus())
-}
-
-function createOnboardingSample(): LoadedClipboardItem {
-  return createClipboardItem({
-    kind: 'text',
-    content: t('onboardingSampleContent'),
-    capturedAt: new Date().toISOString(),
-    sourceApp: 'QuickPaste',
-    formats: ['text'],
-  }, ONBOARDING_SAMPLE_ID)
-}
-
-async function addOnboardingSample(): Promise<boolean> {
-  const existing = items.value.find((clip) => clip.id === ONBOARDING_SAMPLE_ID)
-  if (existing) {
-    selectedId.value = existing.id
-    return true
-  }
-
-  const sample = createOnboardingSample()
-  if (!nativeRuntime) {
-    items.value = [sample, ...items.value]
-    selectedId.value = sample.id
-    return true
-  }
-
-  const result = await runSerializedManagerOperation(() => applyNativeHistoryMutation({
-    upserts: [sample],
-    deleteIds: [],
-    policy: currentHistoryPolicy(),
-  }), 0)
-  if (result.status === 'failed') return false
-  selectedId.value = ONBOARDING_SAMPLE_ID
-  return true
-}
-
-async function finishOnboardingWithSample() {
-  if (onboardingSampleBusy.value) return
-  onboardingSampleBusy.value = true
-  try {
-    if (!await addOnboardingSample()) {
-      showToast(t('onboardingSampleFailed'), true)
-      return
-    }
-    onboardingPracticePending.value = true
-    onboardingCompleted.value = true
-    onboardingStep.value = -1
-    if (nativeRuntime) void setOnboardingWindowActive(false)
-    nextTick(() => searchInput.value?.focus())
-  } finally {
-    onboardingSampleBusy.value = false
-  }
-}
-
-function dismissOnboardingPractice() {
-  onboardingPracticePending.value = false
-  nextTick(() => searchInput.value?.focus())
-}
-
-function focusOnboardingStep() {
-  const dialog = onboardingDialog.value
-  const backdrop = document.querySelector<HTMLElement>('.onboarding-backdrop')
-  const dialogOverflows = Boolean(dialog && dialog.scrollHeight > dialog.clientHeight + 1)
-  dialog?.scrollTo({ top: 0, left: 0 })
-  backdrop?.scrollTo({ top: 0, left: 0 })
-
-  if (window.innerWidth <= 360 || window.innerHeight <= 360 || dialogOverflows) {
-    dialog?.focus({ preventScroll: true })
-  } else {
-    onboardingPrimary.value?.focus({ preventScroll: true })
-  }
-}
-
-function advanceOnboarding() {
-  if (onboardingStep.value < onboardingSteps.value.length - 1) {
-    onboardingStep.value += 1
-  } else {
-    finishOnboarding()
-  }
-  nextTick(focusOnboardingStep)
-}
-
 function addSensitiveApp() {
   const app = sensitiveAppDraft.value.trim()
   if (!canAddSensitiveApp.value) return
@@ -4383,85 +4302,24 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="modal">
-      <div v-if="onboardingStep >= 0" class="onboarding-backdrop">
-        <section
-          ref="onboardingDialog"
-          data-testid="onboarding-dialog"
-          class="onboarding-dialog"
-          tabindex="-1"
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="onboarding-title"
-          aria-describedby="onboarding-description"
-          @keydown="trapModalFocus"
-        >
-          <header class="onboarding-header" data-tauri-drag-region="deep">
-            <div class="onboarding-brand">
-              <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
-              <span>{{ t('productName') }}</span>
-            </div>
-            <button class="skip-button" type="button" :aria-label="t('skipOnboarding')" @click="finishOnboarding">{{ t('skip') }}</button>
-          </header>
-
-          <div class="onboarding-visual" :data-step="onboardingStep">
-            <div v-if="onboardingStep === 0" class="shortcut-visual">
-              <span class="floating-sheet sheet-back"></span>
-              <span class="floating-sheet sheet-front"><Keyboard :size="27" /></span>
-              <div class="shortcut-keys">
-                <template v-for="(part, index) in globalShortcut.split('+')" :key="part">
-                  <span v-if="index">+</span><kbd>{{ part }}</kbd>
-                </template>
-              </div>
-            </div>
-            <div v-else-if="onboardingStep === 1" class="search-visual">
-              <div class="mini-search"><Search :size="15" /><span>{{ t('onboardingSearchExample') }}</span><kbd>Enter</kbd></div>
-              <div class="mini-result selected"><AlignLeft :size="15" /><span><strong>{{ t('exampleMeetingTitle') }}</strong><small>{{ t('exampleChatApp') }} · {{ formatRelativeTime(relativeTimeNow.toISOString(), relativeTimeNow, locale) }}</small></span><Check :size="15" /></div>
-              <div class="mini-result"><ImageIcon :size="15" /><span><strong>{{ t('exampleImageTitle') }}</strong><small>{{ t('exampleCaptureApp') }} · {{ t('twoHoursAgo') }}</small></span></div>
-            </div>
-            <div v-else class="privacy-visual">
-              <span class="privacy-orbit"><ShieldCheck :size="32" /></span>
-              <div class="privacy-pill"><span><span class="state-dot"></span>{{ t('localStorage') }}</span><strong>{{ t('enabled') }}</strong></div>
-            </div>
-          </div>
-
-          <div class="onboarding-copy">
-            <span>{{ currentOnboardingStep.eyebrow }}</span>
-            <h1 id="onboarding-title">{{ currentOnboardingStep.title }}</h1>
-            <p id="onboarding-description">{{ currentOnboardingStep.description }}</p>
-          </div>
-
-          <footer class="onboarding-footer">
-            <div class="step-dots" role="progressbar" :aria-label="t('guideProgress')" aria-valuemin="1" :aria-valuemax="onboardingSteps.length" :aria-valuenow="onboardingStep + 1">
-              <span v-for="(_, index) in onboardingSteps" :key="index" :class="{ active: onboardingStep === index }"></span>
-            </div>
-            <button
-              v-if="onboardingStep < onboardingSteps.length - 1"
-              ref="onboardingPrimary"
-              data-testid="onboarding-next"
-              class="primary-button onboarding-next"
-              type="button"
-              @click="advanceOnboarding"
-            >{{ t('next') }}</button>
-            <div v-else class="onboarding-choice-actions">
-              <button
-                data-testid="onboarding-skip-sample"
-                class="secondary-button onboarding-next"
-                type="button"
-                :disabled="onboardingSampleBusy"
-                @click="finishOnboarding"
-              >{{ t('onboardingSkipSample') }}</button>
-              <button
-                ref="onboardingPrimary"
-                data-testid="onboarding-add-sample"
-                class="primary-button onboarding-next"
-                type="button"
-                :disabled="onboardingSampleBusy || (nativeRuntime && historyState !== 'ready')"
-                @click="finishOnboardingWithSample"
-              >{{ onboardingSampleBusy ? t('onboardingAddingSample') : t('onboardingAddSample') }}</button>
-            </div>
-          </footer>
-        </section>
-      </div>
+      <OnboardingDialog
+        v-if="onboardingStep >= 0"
+        ref="onboardingDialog"
+        :step="onboardingStep"
+        :steps="onboardingSteps"
+        :current-step="currentOnboardingStep"
+        :global-shortcut="globalShortcut"
+        :sample-busy="onboardingSampleBusy"
+        :native-runtime="nativeRuntime"
+        :history-ready="historyState === 'ready'"
+        :locale="locale"
+        :relative-time-now="relativeTimeNow"
+        :t="t"
+        @skip="finishOnboarding"
+        @next="advanceOnboarding"
+        @add-sample="finishOnboardingWithSample"
+        @keydown="trapModalFocus"
+      />
     </Transition>
   </div>
 </template>
