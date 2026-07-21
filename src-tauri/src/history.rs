@@ -1717,9 +1717,7 @@ fn write_history_settings(
 fn normalize_history_item(mut item: HistoryItem) -> Result<HistoryItem, String> {
     item.formats = canonical_actual_formats(&item.formats)?;
     item.omitted_formats = canonical_omitted_formats(&item.omitted_formats)?;
-    if item.payload_loaded {
-        item.copied_at = normalize_timestamp(&item.copied_at)?;
-    }
+    item.copied_at = normalize_timestamp(&item.copied_at)?;
     if item.updated_at.trim().is_empty() {
         if item.payload_loaded {
             item.updated_at.clone_from(&item.copied_at);
@@ -2576,15 +2574,17 @@ fn update_history_summary_metadata(
     let updated = transaction.execute(
         "UPDATE clips SET
                 title = ?2,
-                updated_at = COALESCE(NULLIF(?3, ''), updated_at),
-                pinned = ?4,
-                permanent = ?5,
-                collection_id = ?6,
-                color = ?7
+                copied_at = ?3,
+                updated_at = COALESCE(NULLIF(?4, ''), updated_at),
+                pinned = ?5,
+                permanent = ?6,
+                collection_id = ?7,
+                color = ?8
              WHERE id = ?1",
         params![
             item.id,
             item.title,
+            item.copied_at,
             item.updated_at,
             item.pinned as i64,
             item.permanent as i64,
@@ -9464,7 +9464,7 @@ mod tests {
     }
 
     #[test]
-    fn summary_updates_only_change_metadata_and_ignore_tampered_payload_identity() {
+    fn summary_updates_recency_metadata_without_changing_payload_identity() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         let original_icon = rgba_icon_data_url([12, 34, 56, 255]);
         let mut original = text_item("summary-identity", "2026-07-01T00:00:00.000Z");
@@ -9540,7 +9540,7 @@ mod tests {
         assert_eq!(updated.content, original_payload.content);
         assert_eq!(updated.source_app, original_payload.source_app);
         assert_eq!(updated.source_app_icon, original_payload.source_app_icon);
-        assert_eq!(updated.copied_at, original_payload.copied_at);
+        assert_eq!(updated.copied_at, "2026-08-10T00:00:00.000Z");
         assert_eq!(updated.dimensions, original_payload.dimensions);
         assert_eq!(updated.formats, original_payload.formats);
         assert!(updated.files.is_empty());

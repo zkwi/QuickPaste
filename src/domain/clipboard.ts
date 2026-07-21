@@ -565,6 +565,20 @@ export function mergeCapturedClip(items: ClipboardItem[], incoming: ClipboardIte
   ]
 }
 
+export function promoteUsedClip(
+  items: ClipboardItem[],
+  id: string,
+  usedAt = new Date(),
+): ClipboardItem[] {
+  const used = items.find((clip) => clip.id === id)
+  if (!used) return items
+
+  return [
+    { ...used, copiedAt: usedAt.toISOString() },
+    ...items.filter((clip) => clip.id !== id),
+  ]
+}
+
 function clipContentIdentity(clip: ClipboardItem): string {
   const omittedFormats = sortClipboardFormats(clip.omittedFormats ?? [])
   if (clip.kind === 'image') return JSON.stringify({

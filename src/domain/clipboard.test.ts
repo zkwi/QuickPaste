@@ -10,6 +10,7 @@ import {
   mergeCapturedClip,
   moveSelection,
   parseClipboardItems,
+  promoteUsedClip,
   pruneExpiredClips,
   removeClip,
   restoreClip,
@@ -410,6 +411,15 @@ describe('clipboard model', () => {
 
     expect(merged[0].id).toBe('new-link')
     expect(merged.filter((clip) => clip.content === repeated.content)).toHaveLength(1)
+  })
+
+  it('promotes a used clip to the front with its latest use time', () => {
+    const usedAt = new Date('2026-07-21T12:00:00.000Z')
+    const promoted = promoteUsedClip(clips, 'c', usedAt)
+
+    expect(promoted.map((clip) => clip.id)).toEqual(['c', 'a', 'b'])
+    expect(promoted[0].copiedAt).toBe(usedAt.toISOString())
+    expect(clips[2].copiedAt).not.toBe(usedAt.toISOString())
   })
 
   it('keeps permanent snippet identity and management metadata when captured again', () => {

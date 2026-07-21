@@ -46,6 +46,7 @@ import {
   moveSelection,
   normalizeSourceAppIcon,
   parseClipboardItems,
+  promoteUsedClip,
   pruneExpiredClips,
   removeClip,
   restoreClip,
@@ -2564,9 +2565,19 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
       : result.copied
         ? t('pasteFallbackCopied', { app: pasteTargetLabel })
       : t('clipboardUnavailable'), result.requiresElevation || !result.pasted)
+    return result.pasted || result.copied
   } finally {
     pasteInFlight.value = false
   }
+}
+
+async function useClipFromDoubleClick(clip: ClipboardItem) {
+  const used = await pasteClip(clip)
+  if (!used) return
+
+  items.value = promoteUsedClip(items.value, clip.id)
+  selectedId.value = clip.id
+  if (nativeRuntime) queueNativeHistoryRefresh(true)
 }
 
 async function copyClip(clip: ClipboardItem) {
@@ -4053,7 +4064,7 @@ onBeforeUnmount(() => {
                     :aria-keyshortcuts="directPasteAriaShortcuts(index)"
                     @mousedown.left.prevent
                     @click="selectedId = clip.id"
-                    @dblclick="pasteClip(clip)"
+                    @dblclick="useClipFromDoubleClick(clip)"
                   >
                     <span v-if="index < DIRECT_PASTE_ITEM_COUNT" class="quick-number" aria-hidden="true">{{ directPasteLabel(index) }}</span>
                     <span class="kind-icon" :style="{ '--source-color': clip.color }">

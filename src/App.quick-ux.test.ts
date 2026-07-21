@@ -163,6 +163,19 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
   })
 
+  it('moves a double-clicked record to the top as the latest item', async () => {
+    const originalCopiedAt = JSON.parse(localStorage.getItem('mypaste-demo-items-v1') ?? '[]')
+      .find((item: { id: string }) => item.id === 'clip-3')?.copiedAt
+
+    await wrapper.get('[data-clip-id="clip-3"] .clip-primary').trigger('dblclick')
+    await flushPromises()
+
+    expect(wrapper.findAll('[data-clip-id]')[0].attributes('data-clip-id')).toBe('clip-3')
+    const stored = JSON.parse(localStorage.getItem('mypaste-demo-items-v1') ?? '[]')
+    expect(stored[0].id).toBe('clip-3')
+    expect(stored[0].copiedAt).not.toBe(originalCopiedAt)
+  })
+
   it('keeps quick surfaces free of copy and delete actions while retaining row pinning', async () => {
     const first = wrapper.get('[data-clip-id="clip-1"]')
     const primary = first.get('.clip-primary')
