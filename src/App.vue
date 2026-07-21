@@ -236,6 +236,7 @@ const sourceSuggestionIndex = ref(0)
 const managerQuery = ref('')
 const managerKinds = ref<ClipKind[]>([])
 const managerCollectionFilter = ref<ManagerCollectionFilter>('any')
+let lastManagerSection: Exclude<LibrarySection, 'settings'> = 'all'
 const managerSelectedId = ref(items.value[0]?.id ?? '')
 const managerSelection = ref<ManagerSelection>(emptyManagerSelection())
 const managerRangeAnchorId = ref<string | undefined>(undefined)
@@ -2037,7 +2038,6 @@ function resetQuickSession(focusSearch = true) {
   query.value = ''
   quickSourceFilter.value = ''
   sourceSuggestionIndex.value = 0
-  managerQuery.value = ''
   activeFilter.value = 'all'
   previewId.value = null
   lastRemoved.value = null
@@ -2717,12 +2717,12 @@ function handleManagerRowKeydown(event: KeyboardEvent, index: number, clipId: st
   }
 }
 
-async function openLibrary(section: LibrarySection = 'all') {
+async function openLibrary(section?: LibrarySection) {
   if (windowModeTransitioning.value) return
   const generation = ++windowModeGeneration
   windowModeTransitioning.value = true
   currentView.value = 'library'
-  selectLibrarySection(section)
+  selectLibrarySection(section ?? lastManagerSection)
   previewId.value = null
   const applied = !nativeRuntime || await setWindowMode('library')
   if (generation !== windowModeGeneration) return
@@ -2755,7 +2755,10 @@ function selectLibrarySection(section: LibrarySection) {
   if (librarySection.value === 'settings' && section !== 'settings') {
     cancelShortcutRecording()
   }
-  if (section === 'settings') managerQuery.value = ''
+  if (section === 'settings' && librarySection.value !== 'settings') {
+    cancelSearchComposition('manager')
+  }
+  if (section !== 'settings') lastManagerSection = section
   librarySection.value = section
   if (section !== 'settings') managerSelectedId.value = libraryItems.value[0]?.id ?? ''
   nextTick(() => {
@@ -3301,7 +3304,7 @@ onBeforeUnmount(() => {
             :update-busy="updateBusy"
             :update-status-text="updateStatusText"
             :t="t"
-            @open-clipboard="selectLibrarySection('all')"
+            @open-clipboard="selectLibrarySection(lastManagerSection)"
             @toggle-theme="toggleTheme"
             @start-shortcut-recording="startShortcutRecording"
             @cancel-shortcut-recording="cancelShortcutRecording()"

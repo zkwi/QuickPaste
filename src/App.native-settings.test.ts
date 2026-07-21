@@ -2423,6 +2423,80 @@ describe('native setting reliability', () => {
     expect(wrapper.findAll('[data-manager-clip-id]')).toHaveLength(0)
   })
 
+  it('keeps native manager filters for quick and settings detours without persisting them', async () => {
+    vi.useFakeTimers()
+    historyMocks.listNativeHistoryCollections.mockResolvedValueOnce([{
+      id: 'collection-work',
+      name: '工作',
+      createdAt: '2026-07-19T10:00:00.000Z',
+      updatedAt: '2026-07-19T10:00:00.000Z',
+      sortOrder: 0,
+    }])
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.get('[data-testid="manager-collection-collection-work"]').trigger('click')
+    await wrapper.get('[data-testid="manager-kind-code"]').trigger('click')
+    await wrapper.get('[data-testid="manager-search-input"]').setValue('Editor')
+    await vi.advanceTimersByTimeAsync(120)
+    await wrapper.get('[data-testid="library-section-pinned"]').trigger('click')
+    await flushPromises()
+
+    const expectFilters = () => {
+      expect(wrapper.get('[data-testid="library-section-pinned"]').attributes('aria-current')).toBe('page')
+      expect(wrapper.get('[data-testid="manager-collection-collection-work"]').attributes('aria-current')).toBe('page')
+      expect(wrapper.get('[data-testid="manager-kind-code"]').attributes('aria-pressed')).toBe('true')
+      expect((wrapper.get('[data-testid="manager-search-input"]').element as HTMLInputElement).value).toBe('Editor')
+      expect(historyMocks.queryNativeHistory).toHaveBeenLastCalledWith({
+        text: 'editor',
+        kinds: ['code'],
+        sourceApps: [],
+        collection: { mode: 'collection', id: 'collection-work' },
+        pinned: true,
+        limit: 50,
+      })
+    }
+    expectFilters()
+
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
+    await wrapper.get('[data-testid="settings-open-clipboard"]').trigger('click')
+    await flushPromises()
+    expectFilters()
+
+    await wrapper.get('.back-button').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    expectFilters()
+  })
+
+  it('ends manager composition when settings removes the composing input', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    const search = wrapper.get('[data-testid="manager-search-input"]')
+
+    await search.trigger('compositionstart')
+    await search.setValue('中')
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
+    await wrapper.get('[data-testid="settings-open-clipboard"]').trigger('click')
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    await wrapper.get('[data-testid="manager-search-input"]').setValue('中文')
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+
+    expect(historyMocks.queryNativeHistory).toHaveBeenCalledOnce()
+    expect(historyMocks.queryNativeHistory).toHaveBeenLastCalledWith(expect.objectContaining({ text: '中文' }))
+  })
+
   it('does not paste a payload that returns after the app unmounts', async () => {
     const summary = { id: 'unmounted-payload', kind: 'text', title: '卸载摘要', content: 'summary', sourceApp: 'Editor', copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
     historyMocks.queryNativeHistory.mockReset().mockResolvedValueOnce({ items: [summary], totalCount: 1 })

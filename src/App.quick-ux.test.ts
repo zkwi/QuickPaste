@@ -1003,12 +1003,14 @@ describe('quick panel high-frequency interaction', () => {
     expect(search.attributes('aria-activedescendant')).toBe('clip-result-clip-2')
   })
 
-  it('starts a clean quick session after returning from the manager', async () => {
+  it('starts a clean quick session while preserving manager filters across view detours', async () => {
     const search = wrapper.get('[data-testid="search-input"]')
     await search.setValue('tauri')
     await wrapper.get('[data-testid="filter-code"]').trigger('click')
     await wrapper.get('[data-testid="open-library"]').trigger('click')
-    await wrapper.get('[data-testid="manager-search-input"]').setValue('capabilities')
+    await wrapper.get('[data-testid="manager-search-input"]').setValue('Visual Studio Code')
+    await wrapper.get('[data-testid="manager-kind-code"]').trigger('click')
+    await wrapper.get('[data-testid="library-section-pinned"]').trigger('click')
 
     await wrapper.get('.back-button').trigger('click')
     await wrapper.vm.$nextTick()
@@ -1018,7 +1020,16 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.get('[data-clip-id="clip-1"]').classes()).toContain('is-selected')
 
     await wrapper.get('[data-testid="open-library"]').trigger('click')
-    expect((wrapper.get('[data-testid="manager-search-input"]').element as HTMLInputElement).value).toBe('')
+    expect(wrapper.get('[data-testid="library-section-pinned"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('[data-testid="manager-kind-code"]').attributes('aria-pressed')).toBe('true')
+    expect((wrapper.get('[data-testid="manager-search-input"]').element as HTMLInputElement).value).toBe('Visual Studio Code')
+
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
+    await wrapper.get('[data-testid="settings-open-clipboard"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="library-section-pinned"]').attributes('aria-current')).toBe('page')
+    expect(wrapper.get('[data-testid="manager-kind-code"]').attributes('aria-pressed')).toBe('true')
+    expect((wrapper.get('[data-testid="manager-search-input"]').element as HTMLInputElement).value).toBe('Visual Studio Code')
   })
 
   it('clears quick-session state only after the window is successfully hidden', async () => {
