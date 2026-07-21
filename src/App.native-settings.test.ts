@@ -2472,9 +2472,11 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('已打开数据目录')
 
     historyMocks.openNativeHistoryDataDirectory.mockResolvedValueOnce(false)
+    await wrapper.get('[data-testid="locale-select"]').setValue('en-US')
     await wrapper.get('[data-testid="storage-open-directory"]').trigger('click')
     await flushPromises()
-    expect(wrapper.get('[data-testid="storage-status"]').text()).toContain('无法打开数据目录')
+    expect(wrapper.get('[data-testid="storage-status"]').text())
+      .toContain('The data folder could not be opened')
   })
 
   it('lets a custom native retention policy change to forever without keeping the hidden custom value', async () => {

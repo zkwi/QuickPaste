@@ -635,12 +635,10 @@ const pinnedCount = computed(() => items.value.filter((clip) => clip.pinned).len
 const ordinaryHistoryCount = computed(() => items.value.filter((clip) => (
   !clip.pinned && clip.permanent !== true
 )).length)
-const ordinaryClearLabel = computed(() => locale.value === 'zh-CN'
-  ? '清除普通记录'
-  : 'Clear ordinary history')
-const ordinaryClearDescription = computed(() => locale.value === 'zh-CN'
-  ? `将删除 ${ordinaryHistoryCount.value} 条普通记录；固定内容会保留，永久片段也会保留。`
-  : `This removes ${ordinaryHistoryCount.value} ordinary records. Pinned items and permanent snippets are kept.`)
+const ordinaryClearLabel = computed(() => t('clearOrdinaryHistory'))
+const ordinaryClearDescription = computed(() => t('clearOrdinaryHistoryDescription', {
+  count: ordinaryHistoryCount.value,
+}))
 const imageCount = computed(() => items.value.filter((clip) => clip.kind === 'image').length)
 const captureAvailability = computed<'starting' | 'available' | 'unavailable'>(() => {
   if (!nativeRuntime) return 'available'
@@ -1594,10 +1592,6 @@ function queueNativeHistoryRefresh(force = false) {
   })
 }
 
-function storageStatus(zhCN: string, enUS: string): string {
-  return locale.value === 'zh-CN' ? zhCN : enUS
-}
-
 async function refreshStorageState(): Promise<boolean> {
   if (!nativeRuntime) return false
   const generation = ++storageRefreshGeneration
@@ -1617,10 +1611,7 @@ async function acquireStorageOperationLease(
 ): Promise<HistoryExclusiveLease | null> {
   if (busyStorageOperation.value !== null || !nativeRuntime || historyState.value !== 'ready') return null
   if (!allowReadOnly && historyHealth.value?.status === 'readOnlyError') {
-    storageStatusMessage.value = storageStatus(
-      '历史数据库处于只读状态，无法执行此操作。',
-      'The history database is read-only, so this operation is unavailable.',
-    )
+    storageStatusMessage.value = t('storageOperationReadOnly')
     return null
   }
 
@@ -1632,10 +1623,7 @@ async function acquireStorageOperationLease(
     return await historyPersistence.acquireExclusiveLease()
   } catch {
     busyStorageOperation.value = null
-    storageStatusMessage.value = storageStatus(
-      '尚有历史记录未能安全写入，本次操作已取消。',
-      'Pending history could not be saved safely, so the operation was cancelled.',
-    )
+    storageStatusMessage.value = t('storageOperationPendingWrites')
     if (nativeRefreshAfterExclusive) queueNativeHistoryRefresh(nativeRefreshAfterExclusiveForced)
     return null
   }
@@ -1653,10 +1641,7 @@ async function releaseStorageOperationLease(lease: HistoryExclusiveLease): Promi
     } else if (!appUnmounted && captures.length > 0) {
       const replayed = await mergeNativeCaptures(captures)
       if (!replayed) {
-        storageStatusMessage.value = storageStatus(
-          '操作已完成，但恢复期间捕获的内容仍在等待写入。',
-          'The operation completed, but captures received during it are still waiting to be saved.',
-        )
+        storageStatusMessage.value = t('storageDeferredCapturesPending')
       }
     }
   } catch {
@@ -1664,10 +1649,7 @@ async function releaseStorageOperationLease(lease: HistoryExclusiveLease): Promi
       pendingNativeCaptures.push(payload)
       if (pendingNativeCaptures.length > MAX_PENDING_NATIVE_CAPTURES) pendingNativeCaptures.shift()
     }
-    storageStatusMessage.value = storageStatus(
-      '操作已完成，但恢复期间捕获的内容需要稍后重试。',
-      'The operation completed, but captures received during it need to be retried later.',
-    )
+    storageStatusMessage.value = t('storageDeferredCapturesRetry')
   } finally {
     const shouldRefresh = nativeRefreshAfterExclusive
     const forceRefresh = nativeRefreshAfterExclusiveForced
@@ -1718,14 +1700,14 @@ async function createHistoryBackup() {
   try {
     const result = await createNativeHistoryBackup()
     if (!result) {
-      storageStatusMessage.value = storageStatus('备份未能完成，现有历史未改变。', 'Backup failed. Existing history was unchanged.')
+      storageStatusMessage.value = t('storageBackupFailed')
       return
     }
     if (result.status === 'cancelled') {
-      storageStatusMessage.value = storageStatus('已取消备份，现有历史未改变。', 'Backup cancelled. Existing history was unchanged.')
+      storageStatusMessage.value = t('storageBackupCancelled')
       return
     }
-    storageStatusMessage.value = storageStatus('备份已安全保存。', 'Backup saved safely.')
+    storageStatusMessage.value = t('storageBackupSaved')
     const stats = await getNativeStorageStats()
     if (stats && !appUnmounted) storageStats.value = stats
   } finally {
@@ -1740,15 +1722,15 @@ async function prepareHistoryRestore() {
   try {
     const result = await prepareNativeHistoryRestore()
     if (!result) {
-      storageStatusMessage.value = storageStatus('备份验证失败，当前历史未改变。', 'Backup validation failed. Current history was unchanged.')
+      storageStatusMessage.value = t('storageRestoreValidationFailed')
       return
     }
     if (result.status === 'cancelled') {
-      storageStatusMessage.value = storageStatus('已取消恢复，当前历史未改变。', 'Restore cancelled. Current history was unchanged.')
+      storageStatusMessage.value = t('storageRestoreCancelled')
       return
     }
     preparedRestore.value = result
-    storageStatusMessage.value = storageStatus('备份验证完成，请确认是否替换当前历史。', 'Backup validated. Confirm whether to replace current history.')
+    storageStatusMessage.value = t('storageRestoreValidated')
   } finally {
     await releaseStorageOperationLease(lease)
   }
@@ -1762,19 +1744,13 @@ async function commitHistoryRestore(token: string) {
     invalidateStoredOcrPump()
     ocrCoordinator.invalidate()
     if (!await invalidateNativeClipboardOcr()) {
-      storageStatusMessage.value = storageStatus(
-        '无法安全停止旧 OCR 任务，历史恢复未开始。',
-        'Old OCR work could not be invalidated safely, so restore did not start.',
-      )
+      storageStatusMessage.value = t('storageRestoreOcrInvalidationFailed')
       return
     }
     const result = await commitNativeHistoryRestore(token)
     if (!result) {
       preparedRestore.value = null
-      storageStatusMessage.value = storageStatus(
-        '恢复未提交，可能因为验证后历史已发生变化；当前历史保持不变。',
-        'Restore was not committed, possibly because history changed after validation. Current history was preserved.',
-      )
+      storageStatusMessage.value = t('storageRestoreCommitFailed')
       return
     }
 
@@ -1786,18 +1762,12 @@ async function commitHistoryRestore(token: string) {
     const reloaded = await reloadHistoryAfterRestore()
     if (!reloaded) {
       historyState.value = 'error'
-      storageStatusMessage.value = storageStatus(
-        '历史已恢复，但重新读取失败；请重启应用后再操作。',
-        'History was restored, but reloading failed. Restart the app before making changes.',
-      )
+      storageStatusMessage.value = t('storageRestoreReloadFailed')
       return
     }
     await refreshManagerCollections()
     await refreshStorageState()
-    storageStatusMessage.value = storageStatus(
-      `已恢复 ${result.importedCount} 条历史记录。`,
-      `Restored ${result.importedCount} history records.`,
-    )
+    storageStatusMessage.value = t('storageRestoreCompleted', { count: result.importedCount })
   } finally {
     await releaseStorageOperationLease(lease)
     if (!appUnmounted && ocrEnabled.value) resumePendingOcr()
@@ -1811,11 +1781,11 @@ async function discardHistoryRestore(token: string) {
   try {
     const result = await discardNativeHistoryRestore(token)
     if (!result) {
-      storageStatusMessage.value = storageStatus('无法清理待恢复文件，请重试。', 'The staged restore could not be discarded. Try again.')
+      storageStatusMessage.value = t('storageRestoreDiscardFailed')
       return
     }
     preparedRestore.value = null
-    storageStatusMessage.value = storageStatus('已取消恢复，当前历史未改变。', 'Restore cancelled. Current history was unchanged.')
+    storageStatusMessage.value = t('storageRestoreCancelled')
   } finally {
     await releaseStorageOperationLease(lease)
   }
@@ -1828,11 +1798,11 @@ async function compactHistoryDatabase() {
   try {
     const stats = await compactNativeHistoryDatabase()
     if (!stats) {
-      storageStatusMessage.value = storageStatus('数据库压缩未能完成。', 'Database compaction failed.')
+      storageStatusMessage.value = t('storageCompactionFailed')
       return
     }
     storageStats.value = stats
-    storageStatusMessage.value = storageStatus('数据库压缩完成，统计已刷新。', 'Database compaction completed and statistics were refreshed.')
+    storageStatusMessage.value = t('storageCompactionCompleted')
   } finally {
     await releaseStorageOperationLease(lease)
   }
@@ -1845,8 +1815,8 @@ async function refreshHistoryStorage() {
   try {
     const refreshed = await refreshStorageState()
     storageStatusMessage.value = refreshed
-      ? storageStatus('存储统计已刷新。', 'Storage statistics refreshed.')
-      : storageStatus('存储统计暂时不可用。', 'Storage statistics are temporarily unavailable.')
+      ? t('storageStatsRefreshed')
+      : t('storageStatsUnavailable')
   } finally {
     busyStorageOperation.value = null
   }
@@ -1855,8 +1825,8 @@ async function refreshHistoryStorage() {
 async function openHistoryDataDirectory() {
   const opened = await openNativeHistoryDataDirectory()
   storageStatusMessage.value = opened
-    ? storageStatus('已打开数据目录。', 'Data folder opened.')
-    : storageStatus('无法打开数据目录，请确认程序目录仍然可用。', 'The data folder could not be opened. Check that the application directory is still available.')
+    ? t('storageDirectoryOpened')
+    : t('storageDirectoryOpenFailed')
 }
 
 function loadMoreNativeHistory() {
@@ -2317,10 +2287,7 @@ function confirmClearHistory() {
   undoTimer = undefined
   previewId.value = null
   selectedId.value = items.value[0]?.id ?? ''
-  showToast(managerText(
-    `已清除 ${result.removedCount} 条普通记录，固定内容和永久片段均已保留。`,
-    `Cleared ${result.removedCount} ordinary records. Pinned items and permanent snippets were kept.`,
-  ))
+  showToast(t('ordinaryHistoryCleared', { count: result.removedCount }))
   nextTick(() => managerSearchInput.value?.focus())
 }
 
@@ -2752,10 +2719,6 @@ function focusManagerIndex(index: number) {
     row?.scrollIntoView({ block: 'nearest' })
     ;(row ?? managerSearchInput.value)?.focus()
   })
-}
-
-function managerText(zhCN: string, enUS: string): string {
-  return locale.value === 'zh-CN' ? zhCN : enUS
 }
 
 function clearManagerSelection() {
@@ -3221,9 +3184,7 @@ function finishOnboarding() {
 function createOnboardingSample(): LoadedClipboardItem {
   return createClipboardItem({
     kind: 'text',
-    content: locale.value === 'zh-CN'
-      ? '欢迎使用闪电剪贴板！这是你的第一次快捷粘贴。'
-      : 'Welcome to QuickPaste! This is your first quick paste.',
+    content: t('onboardingSampleContent'),
     capturedAt: new Date().toISOString(),
     sourceApp: 'QuickPaste',
     formats: ['text'],
@@ -4354,7 +4315,7 @@ onBeforeUnmount(() => {
             </article>
             <article class="setting-group">
               <div class="setting-heading"><ShieldCheck :size="18" /><div><h2>{{ t('privacy') }}</h2><p>{{ t('privacyDescription') }}</p></div></div>
-              <label class="setting-row"><span><strong>{{ t('retention') }}</strong><small id="retention-description">{{ historyState === 'loading' ? t('retentionUnavailableLoading') : historyState === 'error' ? t('retentionUnavailableError') : t('retentionDescription') }}</small></span><select ref="retentionSelect" data-testid="retention-select" :value="retentionSelectValue" :disabled="historyState !== 'ready' || busyStorageOperation !== null" aria-describedby="retention-description" @change="requestRetentionChange"><option v-if="customRetentionDays !== null" :value="String(customRetentionDays)">{{ locale === 'zh-CN' ? `当前自定义 ${customRetentionDays} 天` : `Current custom value: ${customRetentionDays} days` }}</option><option value="7">{{ t('daysOption', { count: 7 }) }}</option><option value="30">{{ t('daysOption', { count: 30 }) }}</option><option value="90">{{ t('daysOption', { count: 90 }) }}</option><option value="forever">{{ t('forever') }}</option></select></label>
+              <label class="setting-row"><span><strong>{{ t('retention') }}</strong><small id="retention-description">{{ historyState === 'loading' ? t('retentionUnavailableLoading') : historyState === 'error' ? t('retentionUnavailableError') : t('retentionDescription') }}</small></span><select ref="retentionSelect" data-testid="retention-select" :value="retentionSelectValue" :disabled="historyState !== 'ready' || busyStorageOperation !== null" aria-describedby="retention-description" @change="requestRetentionChange"><option v-if="customRetentionDays !== null" :value="String(customRetentionDays)">{{ t('currentCustomRetentionDays', { count: customRetentionDays }) }}</option><option value="7">{{ t('daysOption', { count: 7 }) }}</option><option value="30">{{ t('daysOption', { count: 30 }) }}</option><option value="90">{{ t('daysOption', { count: 90 }) }}</option><option value="forever">{{ t('forever') }}</option></select></label>
               <label class="setting-row"><span><strong>{{ t('captureProtection') }}</strong><small>{{ t('captureProtectionDescription') }}</small></span><input v-model="hideDuringSharing" data-testid="capture-protection-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
               <label v-if="nativeRuntime" class="setting-row"><span><strong>{{ t('localImageOcr') }}</strong><small id="ocr-setting-description">{{ t('localImageOcrDescription') }}</small></span><input v-model="ocrEnabled" data-testid="ocr-enabled-toggle" class="switch" type="checkbox" :disabled="!nativeSettingsReady" aria-describedby="ocr-setting-description" /></label>
               <label class="setting-row"><span><strong>{{ t('elevatedPaste') }}</strong><small>{{ t('elevatedPasteDescription') }}</small></span><input v-model="elevatedPasteEnabled" data-testid="elevated-paste-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
@@ -4583,7 +4544,7 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <div v-else-if="onboardingStep === 1" class="search-visual">
-              <div class="mini-search"><Search :size="15" /><span>{{ locale === 'zh-CN' ? 'huiyi' : 'meeting' }}</span><kbd>Enter</kbd></div>
+              <div class="mini-search"><Search :size="15" /><span>{{ t('onboardingSearchExample') }}</span><kbd>Enter</kbd></div>
               <div class="mini-result selected"><AlignLeft :size="15" /><span><strong>{{ t('exampleMeetingTitle') }}</strong><small>{{ t('exampleChatApp') }} · {{ formatRelativeTime(relativeTimeNow.toISOString(), relativeTimeNow, locale) }}</small></span><Check :size="15" /></div>
               <div class="mini-result"><ImageIcon :size="15" /><span><strong>{{ t('exampleImageTitle') }}</strong><small>{{ t('exampleCaptureApp') }} · {{ t('twoHoursAgo') }}</small></span></div>
             </div>

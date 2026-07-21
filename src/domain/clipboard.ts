@@ -2,6 +2,7 @@ import { pinyin } from 'pinyin-pro'
 
 export type ClipKind = 'text' | 'code' | 'link' | 'image' | 'file'
 export type ClipboardFormat = 'text' | 'html' | 'rtf' | 'image' | 'files' | 'object'
+export type ClipboardFormatErrorCode = 'unknown-clipboard-format' | 'omitted-format-overlap'
 export type OcrStatus = 'pending' | 'completed' | 'unavailable' | 'failed' | 'oversized'
 export type HistoryMatchSource = 'none' | 'direct' | 'index' | 'ocr'
 
@@ -78,6 +79,16 @@ export interface CapturedClipboardPayload {
   rtfBase64?: string
   files?: ClipboardFile[]
   imageHash?: string
+}
+
+export class ClipboardFormatValidationError extends Error {
+  override readonly name = 'ClipboardFormatValidationError'
+  readonly code: ClipboardFormatErrorCode
+
+  constructor(code: ClipboardFormatErrorCode) {
+    super(code)
+    this.code = code
+  }
 }
 
 const SOURCE_APP_ICON_PREFIX = 'data:image/png;base64,'
@@ -203,11 +214,13 @@ function normalizeCapturedOmittedFormats(
   savedFormats: readonly ClipboardFormat[],
 ): ClipboardFormat[] | undefined {
   if (!value || value.length === 0) return undefined
-  if (!value.every(isClipboardFormat)) throw new Error('未知的剪贴板格式')
+  if (!value.every(isClipboardFormat)) {
+    throw new ClipboardFormatValidationError('unknown-clipboard-format')
+  }
 
   const omittedFormats = sortClipboardFormats(value)
   if (omittedFormats.some((format) => savedFormats.includes(format))) {
-    throw new Error('遗漏格式不能与已保存格式重叠')
+    throw new ClipboardFormatValidationError('omitted-format-overlap')
   }
   return omittedFormats
 }

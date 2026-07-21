@@ -630,10 +630,16 @@ describe('clipboard model', () => {
     expect(parseClipboardItems([captured, withoutOmissions])).not.toBeNull()
     expect(() => createClipboardItem({
       kind: 'text', content: 'rich', capturedAt: '2026-07-19T04:00:05.000Z', html: '<b>rich</b>', omittedFormats: ['html'],
-    }, 'captured-overlap')).toThrow('遗漏格式不能与已保存格式重叠')
+    }, 'captured-overlap')).toThrow(expect.objectContaining({
+      name: 'ClipboardFormatValidationError',
+      code: 'omitted-format-overlap',
+    }))
     expect(() => createClipboardItem({
       kind: 'text', content: 'plain', capturedAt: '2026-07-19T04:00:06.000Z', omittedFormats: ['unknown'],
-    } as never, 'captured-unknown')).toThrow('未知的剪贴板格式')
+    } as never, 'captured-unknown')).toThrow(expect.objectContaining({
+      name: 'ClipboardFormatValidationError',
+      code: 'unknown-clipboard-format',
+    }))
   })
 
   it('retains a known icon for a repeated capture only when the source application still matches', () => {

@@ -690,17 +690,22 @@ describe('QuickPaste quick panel', () => {
     ]))
     const wrapper = mount(App)
     await wrapper.get('[data-testid="open-library"]').trigger('click')
-    expect(wrapper.get('[data-testid="clear-history"]').text()).toContain('普通记录')
+    await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
+    await wrapper.get('[data-testid="locale-select"]').setValue('en-US')
+    await wrapper.get('[data-testid="library-section-all"]').trigger('click')
+    expect(wrapper.get('[data-testid="clear-history"]').text()).toContain('ordinary history')
 
     await wrapper.get('[data-testid="clear-history"]').trigger('click')
     const confirmation = wrapper.get('[data-testid="clear-history-dialog"]')
-    expect(confirmation.text()).toContain('1 条普通记录')
-    expect(confirmation.text()).toContain('永久片段')
+    expect(confirmation.text()).toContain('1 ordinary records')
+    expect(confirmation.text()).toContain('permanent snippets')
     await wrapper.get('[data-testid="confirm-clear-history"]').trigger('click')
 
     expect(wrapper.find('[data-manager-clip-id="ordinary"]').exists()).toBe(false)
     expect(wrapper.get('[data-manager-clip-id="pinned"]').text()).toContain('固定记录')
     expect(wrapper.get('[data-manager-clip-id="permanent"]').text()).toContain('永久片段')
+    expect(wrapper.get('.feedback-toast').text())
+      .toContain('Cleared 1 ordinary records. Pinned items and permanent snippets were kept.')
   })
 
   it('focuses the safe action in clear-history confirmation and restores its trigger', async () => {
