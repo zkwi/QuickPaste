@@ -16,7 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { demoClips } from './data/demoClips'
 import { translate, type Locale, type MessageKey } from './i18n'
-import { captureShortcut, DEFAULT_GLOBAL_SHORTCUT, displayShortcut, shortcutConflict } from './domain/shortcut'
+import { DEFAULT_GLOBAL_SHORTCUT, displayShortcut, shortcutConflict } from './domain/shortcut'
 import {
   applyClipFilter,
   clearUnpinnedHistory,
@@ -146,6 +146,7 @@ import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
 import { useStorageOperations } from './composables/useStorageOperations'
 import { useNativeHistory, type NativeQueryDescriptor } from './composables/useNativeHistory'
+import { useGlobalKeyboard } from './composables/useGlobalKeyboard'
 
 type AppView = 'quick' | 'library'
 type HistoryState = 'loading' | 'ready' | 'error'
@@ -188,7 +189,6 @@ const HISTORY_QUIT_FLUSH_TIMEOUT_MS = 900
 const DELETE_UNDO_TIMEOUT_MS = 6_000
 const PASTE_TARGET_TTL_MS = 5 * 60 * 1_000
 const EVENT_SUBSCRIPTION_ATTEMPTS = 3
-const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
 const nativeRuntime = isTauriRuntime()
@@ -2851,195 +2851,69 @@ async function applyRecordedShortcut(shortcut: string) {
   }
 }
 
-function handleKeydown(event: KeyboardEvent) {
-  if (modalOverlayOpen.value) {
-    if (event.key === 'Escape' && !event.isComposing && !isComposing.value) {
-      event.preventDefault()
-      if (pendingRetentionChange.value) closeRetentionChange()
-      else if (clearHistoryOpen.value) closeClearHistory()
-      else if (sensitiveAppsOpen.value) closeSensitiveApps()
-      else if (collectionDeleteTarget.value) closeDeleteCollection()
-      else if (permanentSnippetDeleteTarget.value) closeDeletePermanentSnippet()
-      else if (snippetDraft.value) closeSnippetEditor()
-    }
-    return
-  }
-
-  if (shortcutRecording.value) {
-    event.preventDefault()
-    event.stopPropagation()
-    if (event.key === 'Escape') {
-      cancelShortcutRecording(true)
-      return
-    }
-
-    const shortcut = captureShortcut(event)
-    if (shortcut) void applyRecordedShortcut(shortcut)
-    return
-  }
-
-  if (event.isComposing || isComposing.value) return
-
-  if (onboardingStep.value >= 0) {
-    if (event.key === 'Escape') finishOnboarding()
-    return
-  }
-
-  if (clipContextMenu.value) {
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      closeClipContextMenu(true)
-    } else if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-      event.preventDefault()
-    }
-    // 菜单打开时仅由菜单自身处理按键，避免全局快捷键作用到背后的列表。
-    return
-  }
-
-  if (event.key === 'ContextMenu' || (event.key === 'F10' && event.shiftKey)) {
-    const target = event.target instanceof Element ? event.target : null
-    if (target && openKeyboardContextMenu(target)) {
-      event.preventDefault()
-      return
-    }
-  }
-
-  if (event.key === 'Escape') {
-    if (previewId.value) {
-      event.preventDefault()
-      closePreview()
-    } else if (currentView.value === 'library') {
-      event.preventDefault()
-      if (collectionEditor.value) closeCollectionEditor()
-      else if (librarySection.value !== 'settings' && managerSelectedCount.value > 0) clearManagerSelection()
-      else if (librarySection.value !== 'settings' && managerQuery.value) clearManagerSearch()
-      else returnToQuickPanel()
-    } else if (!event.shiftKey && (query.value || quickSourceFilter.value || activeFilter.value !== 'all')) {
-      event.preventDefault()
-      clearSearchAndFocus(true)
-    } else {
-      event.preventDefault()
-      performWindowAction('close')
-    }
-    return
-  }
-
-  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLocaleLowerCase() === 'p') {
-    event.preventDefault()
-    if (captureAvailability.value === 'available') capturePaused.value = !capturePaused.value
-    return
-  }
-
-  if (event.ctrlKey && event.key.toLocaleLowerCase() === 'l') {
-    event.preventDefault()
-    if (currentView.value === 'quick') {
-      openLibrary()
-    } else {
-      selectLibrarySection('all')
-      nextTick(() => managerSearchInput.value?.focus())
-    }
-    return
-  }
-
-  if (currentView.value === 'quick' && event.ctrlKey && event.key.toLocaleLowerCase() === 'k') {
-    event.preventDefault()
-    nextTick(() => searchInput.value?.focus())
-    return
-  }
-
-  if (currentView.value === 'library'
-    && librarySection.value !== 'settings'
-    && event.ctrlKey
-    && ['f', 'k'].includes(event.key.toLocaleLowerCase())) {
-    event.preventDefault()
-    nextTick(() => managerSearchInput.value?.focus())
-    return
-  }
-
-  if (currentView.value === 'library'
-    && librarySection.value !== 'settings'
-    && event.ctrlKey
-    && !event.altKey
-    && !event.shiftKey
-    && event.key.toLocaleLowerCase() === 'a'
-    && !preservesNativeManagerSelectionKeys(event.target)) {
-    event.preventDefault()
-    selectAllManagerMatches()
-    return
-  }
-
-  if (currentView.value !== 'quick') return
-
-  const eventTarget = event.target instanceof HTMLElement ? event.target : null
-  const resultPrimary = eventTarget?.closest<HTMLElement>('.clip-primary') ?? null
-  const isSearchTarget = eventTarget === searchInput.value
-  const isResultNavigationTarget = isSearchTarget || resultPrimary !== null
-
-  if (isSearchTarget && sourceSuggestions.value.length > 0) {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-      event.preventDefault()
-      const direction = event.key === 'ArrowDown' ? 1 : -1
-      sourceSuggestionIndex.value = (
-        sourceSuggestionIndex.value + direction + sourceSuggestions.value.length
-      ) % sourceSuggestions.value.length
-      return
-    }
-    if (event.key === 'Enter') {
-      event.preventDefault()
-      selectSourceSuggestion(sourceSuggestions.value[sourceSuggestionIndex.value])
-      return
-    }
-  }
-
-  if (isSearchTarget && event.key === 'Backspace' && !query.value && quickSourceFilter.value) {
-    event.preventDefault()
-    clearQuickSourceFilter()
-    return
-  }
-
-  const hasExactDirectPasteModifier = event.altKey !== event.ctrlKey
-    && !event.shiftKey
-    && !event.metaKey
-  if (hasExactDirectPasteModifier && /^[0-9]$/.test(event.key)) {
-    event.preventDefault()
-    const directIndex = event.key === '0' ? DIRECT_PASTE_ITEM_COUNT - 1 : Number(event.key) - 1
-    const clip = visibleItems.value[directIndex]
-    if (clip) void pasteClip(clip)
-    return
-  }
-
-  if (isResultNavigationTarget && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
-    event.preventDefault()
-    selectWithKeyboard(event.key === 'ArrowDown' ? 1 : -1, resultPrimary !== null)
-    return
-  }
-
-  if (isResultNavigationTarget && (event.key === 'PageDown' || event.key === 'PageUp')) {
-    event.preventDefault()
-    selectWithKeyboard(event.key === 'PageDown' ? PAGE_NAVIGATION_STEP : -PAGE_NAVIGATION_STEP, resultPrimary !== null)
-    return
-  }
-
-  if (resultPrimary && (event.key === 'Home' || event.key === 'End')) {
-    event.preventDefault()
-    selectIndexWithKeyboard(event.key === 'Home' ? 0 : visibleItems.value.length - 1, true)
-    return
-  }
-
-  if (isResultNavigationTarget && event.key === 'Enter' && selectedClip.value) {
-    event.preventDefault()
-    void pasteClip(selectedClip.value)
-    return
-  }
-
-  if (event.key === ' ' && previewId.value === null) {
-    const target = event.target as HTMLElement | null
-    if (target?.closest('.clip-primary') && selectedClip.value) {
-      event.preventDefault()
-      openPreview(selectedClip.value.id)
-    }
-  }
-}
+const { handleKeydown } = useGlobalKeyboard(() => ({
+  modalOverlayOpen: modalOverlayOpen.value,
+  pendingRetentionChange: pendingRetentionChange.value !== null,
+  clearHistoryOpen: clearHistoryOpen.value,
+  sensitiveAppsOpen: sensitiveAppsOpen.value,
+  collectionDeleteOpen: collectionDeleteTarget.value !== null,
+  permanentSnippetDeleteOpen: permanentSnippetDeleteTarget.value !== null,
+  snippetEditorOpen: snippetDraft.value !== null,
+  shortcutRecording: shortcutRecording.value,
+  isComposing: isComposing.value,
+  onboardingStep: onboardingStep.value,
+  clipContextMenuOpen: clipContextMenu.value !== null,
+  previewId: previewId.value,
+  currentView: currentView.value,
+  collectionEditorOpen: collectionEditor.value !== null,
+  librarySection: librarySection.value,
+  managerSelectedCount: managerSelectedCount.value,
+  managerQuery: managerQuery.value,
+  query: query.value,
+  quickSourceFilter: quickSourceFilter.value,
+  activeFilter: activeFilter.value,
+  captureAvailability: captureAvailability.value,
+  searchInput: searchInput.value,
+  sourceSuggestions: sourceSuggestions.value,
+  sourceSuggestionIndex: sourceSuggestionIndex.value,
+  visibleItems: visibleItems.value,
+  selectedClip: selectedClip.value,
+}), {
+  closeRetentionChange,
+  closeClearHistory,
+  closeSensitiveApps,
+  closeDeleteCollection,
+  closeDeletePermanentSnippet,
+  closeSnippetEditor,
+  cancelShortcutRecording,
+  applyRecordedShortcut,
+  finishOnboarding,
+  closeClipContextMenu,
+  openKeyboardContextMenu,
+  closePreview,
+  closeCollectionEditor,
+  clearManagerSelection,
+  clearManagerSearch,
+  returnToQuickPanel,
+  clearSearchAndFocus,
+  performWindowClose: () => { void performWindowAction('close') },
+  toggleCapturePaused: () => { capturePaused.value = !capturePaused.value },
+  openLibrary: () => { void openLibrary() },
+  selectLibraryAll: () => selectLibrarySection('all'),
+  focusManagerSearch: () => nextTick(() => managerSearchInput.value?.focus()),
+  selectAllManagerMatches,
+  preservesNativeManagerSelectionKeys,
+  moveSourceSuggestion: (direction) => {
+    const length = sourceSuggestions.value.length
+    if (length > 0) sourceSuggestionIndex.value = (sourceSuggestionIndex.value + direction + length) % length
+  },
+  selectSourceSuggestion,
+  clearQuickSourceFilter,
+  pasteClip: (clip) => { void pasteClip(clip) },
+  selectWithKeyboard,
+  selectIndexWithKeyboard,
+  openPreview: (id) => { void openPreview(id) },
+})
 
 function applyPasteTarget(target: PasteTargetInfo) {
   if (typeof target.sessionId === 'number') {
