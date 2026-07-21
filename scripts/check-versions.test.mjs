@@ -64,6 +64,7 @@ function validMetadata() {
     ciWorkflow: [
       'uses: actions/checkout@v6',
       'uses: actions/setup-node@v6',
+      'uses: Swatinem/rust-cache@v2',
     ].join('\n'),
     updaterSource: [
       'https://api.github.com/repos/zkwi/QuickPaste/releases?per_page=10',
@@ -137,6 +138,15 @@ test('validateProjectMetadata rejects unavailable GitHub Actions major versions'
   assert.deepEqual(validateProjectMetadata(metadata), [
     'CI 必须使用 actions/checkout@v6',
     'CI 必须使用 actions/setup-node@v6',
+  ])
+})
+
+test('validateProjectMetadata requires the pinned Rust cache action', () => {
+  const metadata = validMetadata()
+  metadata.ciWorkflow = metadata.ciWorkflow.replace('Swatinem/rust-cache@v2', 'Swatinem/rust-cache@v3')
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    'CI 必须使用 Swatinem/rust-cache@v2',
   ])
 })
 

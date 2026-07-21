@@ -83,6 +83,9 @@ export function validateProjectMetadata(metadata) {
   if (!metadata.ciWorkflow?.includes('actions/setup-node@v6')) {
     issues.push('CI 必须使用 actions/setup-node@v6')
   }
+  if (!metadata.ciWorkflow?.includes('Swatinem/rust-cache@v2')) {
+    issues.push('CI 必须使用 Swatinem/rust-cache@v2')
+  }
 
   if (!metadata.updaterSource?.includes('https://api.github.com/repos/zkwi/QuickPaste/releases?per_page=10')) {
     issues.push('自定义更新器必须固定访问 zkwi/QuickPaste Releases API')

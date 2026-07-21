@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  quality:
-    name: Windows quality gate
+  governance:
+    name: Windows governance gate
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -29,12 +29,8 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version-file: .nvmrc
-          package-manager-cache: false
-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@1.88.0
-        with:
-          components: clippy, rustfmt
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Set up npm
         working-directory: ${{ runner.temp }}
@@ -43,5 +39,72 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Run quality gate
-        run: npm run check
+      - name: Run governance gate
+        run: npm run check:governance
+
+  frontend:
+    name: Windows frontend gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up npm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@11.9.0
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend gate
+        run: npm run check:frontend
+
+  rust:
+    name: Windows Rust gate
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+
+      - name: Restore Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ hashFiles('src-tauri/Cargo.lock') }}
+
+      - name: Set up npm
+        working-directory: ${{ runner.temp }}
+        run: npm install --global npm@11.9.0
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run Rust gate
+        run: npm run check:rust
