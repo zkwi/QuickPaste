@@ -1,8 +1,7 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   AlignLeft,
-  ArrowLeft,
   Check,
   ChevronLeft,
   Clock3,
@@ -11,7 +10,6 @@ import {
   Database,
   Download,
   Eye,
-  ExternalLink,
   Image as ImageIcon,
   Keyboard,
   LayoutList,
@@ -24,7 +22,6 @@ import {
   PanelTopOpen,
   Pin,
   Plus,
-  QrCode,
   Search,
   Settings2,
   ShieldCheck,
@@ -171,11 +168,10 @@ import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
 import SnippetEditor from './components/SnippetEditor.vue'
 import SourceAppIcon from './components/SourceAppIcon.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
+import ClipPreview from './components/ClipPreview.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
-
-const CodePreview = defineAsyncComponent(() => import('./components/CodePreview.vue'))
 
 type AppView = 'quick' | 'library'
 type LibrarySection = 'all' | 'pinned' | 'images' | 'settings'
@@ -318,7 +314,7 @@ const retentionChangeCancel = ref<HTMLButtonElement | null>(null)
 const retentionSelect = ref<HTMLSelectElement | null>(null)
 const undoButton = ref<HTMLButtonElement | null>(null)
 const libraryBackButton = ref<HTMLButtonElement | null>(null)
-const previewPasteButton = ref<HTMLButtonElement | null>(null)
+const previewPasteButton = ref<InstanceType<typeof ClipPreview> | null>(null)
 const retentionDays = ref<RetentionPeriod>(storedRetentionPeriod)
 const historyMaxRecords = ref(storedSettings.historyPolicy.maxRecords)
 const historyMaxImageBytes = ref(storedSettings.historyPolicy.maxImageBytes)
@@ -1165,16 +1161,6 @@ watch([activeFilter, quickSourceFilter], () => {
   if (nativeRuntime && currentView.value === 'quick') queueNativeHistoryRefresh()
 })
 
-function kindLabel(kind: ClipKind): string {
-  return {
-    text: t('text'),
-    code: t('code'),
-    link: t('link'),
-    image: t('image'),
-    file: '文件',
-  }[kind]
-}
-
 function t(key: MessageKey, replacements?: Record<string, string | number>): string {
   return translate(locale.value, key, replacements)
 }
@@ -1813,7 +1799,7 @@ function contextRestoreTarget(target: Element, surface: ClipContextSurface, host
   const focusedControl = target.closest<HTMLElement>('button, a, [tabindex]')
   if (focusedControl) return focusedControl
   if (surface === 'quick') return host.querySelector<HTMLElement>('.clip-primary')
-  if (surface === 'preview') return previewPasteButton.value
+  if (surface === 'preview') return previewPasteButton.value?.primaryButton() ?? null
   return host
 }
 
@@ -2297,7 +2283,7 @@ function focusCurrentView() {
 function focusCurrentQuickContent() {
   nextTick(() => {
     if (previewId.value) {
-      previewPasteButton.value?.focus()
+      previewPasteButton.value?.focusPrimary()
     } else if (restoreResultFocusAfterPreview) {
       restoreResultFocusAfterPreview = false
       document.querySelector<HTMLElement>(`[data-clip-id="${selectedId.value}"] .clip-primary`)?.focus()
@@ -2340,6 +2326,11 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
   } finally {
     pasteInFlight.value = false
   }
+}
+
+function pastePreviewClip(mode?: PasteMode) {
+  const clip = previewClip.value
+  if (clip) void pasteClip(clip, mode)
 }
 
 async function useClipFromDoubleClick(clip: ClipboardItem) {
@@ -3620,87 +3611,24 @@ onBeforeUnmount(() => {
 
         <div class="content-stage">
           <Transition name="preview-swap" mode="out-in" @after-enter="focusCurrentQuickContent">
-            <section v-if="previewClip" key="preview" data-testid="preview-panel" :data-preview-clip-id="previewClip.id" class="preview-panel" :aria-label="t('clipboardPreview')">
-              <div class="preview-header">
-                <button data-testid="close-preview" class="back-button" type="button" @click="closePreview">
-                  <ArrowLeft :size="17" /> {{ t('backToHistory') }}
-                </button>
-                <span v-if="previewClip.kind === 'image'" class="preview-image-title">{{ previewClip.title }}</span>
-                <span v-else class="preview-type">{{ kindLabel(previewClip.kind) }}</span>
-              </div>
-              <div class="preview-body" :class="{ 'image-preview-body': previewClip.kind === 'image' }">
-                <div v-if="previewClip.kind !== 'image'" class="preview-heading">
-                  <span class="kind-icon large" :style="{ '--source-color': previewClip.color }">
-                    <component :is="kindIcon(previewClip.kind)" :size="20" />
-                  </span>
-                  <div>
-                    <h1>{{ previewClip.title }}</h1>
-                    <p>{{ previewClip.sourceApp }} · {{ formatRelativeTime(previewClip.copiedAt, relativeTimeNow, locale) }}</p>
-                  </div>
-                </div>
-                <div v-if="previewClip.kind !== 'image' && previewClip.formats?.length" class="format-badges" :aria-label="previewClip.formats.join(', ')">
-                  <span v-for="format in previewClip.formats" :key="format" class="format-badge">{{ format.toUpperCase() }}</span>
-                </div>
-                <p v-if="previewClip.kind !== 'image' && previewClip.omittedFormats?.length" class="format-omission-warning" role="status">
-                  {{ t('omittedFormatsWarning', { formats: previewClip.omittedFormats.map((format) => format.toUpperCase()).join(', ') }) }}
-                </p>
-                <div v-if="previewClip.kind === 'image'" class="image-preview-content">
-                  <img class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
-                  <details v-if="previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
-                    <summary><strong>{{ t('ocrRecognizedText') }}</strong></summary>
-                    <div class="recognized-text-content">
-                      <p>{{ previewClip.ocrText }}</p>
-                      <span class="recognized-text-actions">
-                        <button data-testid="copy-ocr-text" type="button" @click="copyRecognizedText(previewClip.ocrText ?? '', previewClip.sourceApp)"><Copy :size="12" />{{ t('copyOcrText') }}</button>
-                        <button data-testid="paste-ocr-text" type="button" :disabled="pasteInFlight" @click="pasteRecognizedText(previewClip.ocrText ?? '')">{{ t('pasteOcrText') }}</button>
-                      </span>
-                    </div>
-                  </details>
-                  <section v-if="qrScanState !== 'idle'" class="preview-qr" :aria-label="t('qrCode')" aria-live="polite">
-                    <p v-if="qrScanState === 'scanning'" class="qr-status"><QrCode :size="13" />{{ t('qrRecognizing') }}</p>
-                    <p v-else-if="qrResults.length === 0" class="qr-status"><QrCode :size="13" />{{ t('qrNotFound') }}</p>
-                    <div v-else data-testid="preview-qr-results" class="qr-results">
-                      <strong><QrCode :size="13" />{{ t('qrRecognized', { count: qrResults.length }) }}</strong>
-                      <article v-for="(result, index) in qrResults" :key="`${index}-${result}`" class="qr-result">
-                        <p>{{ result }}</p>
-                        <span class="recognized-text-actions">
-                          <button :data-testid="`copy-qr-result-${index}`" type="button" @click="copyRecognizedText(result, t('qrCode'))"><Copy :size="12" />{{ t('qrCopy') }}</button>
-                          <button v-if="isSafeExternalUrl(result)" :data-testid="`open-qr-result-${index}`" type="button" @click="openQrLink(result)"><ExternalLink :size="12" />{{ t('qrOpenLink') }}</button>
-                        </span>
-                      </article>
-                    </div>
-                  </section>
-                </div>
-                <CodePreview
-                  v-else-if="previewClip.kind === 'code'"
-                  class="preview-code"
-                  :code="previewClip.content"
-                  :language="previewCodeLanguage"
-                />
-                <ul v-else-if="previewClip.kind === 'file'" data-testid="preview-file-list" class="preview-file-list">
-                  <li v-for="file in previewClip.files" :key="file.path" :data-file-exists="String(file.exists)" :class="{ 'is-missing': !file.exists }">
-                    <span class="preview-file-name">{{ file.name }}</span>
-                    <span class="preview-file-status">{{ file.exists ? t('fileAvailable') : t('fileMissing') }}</span>
-                    <span class="preview-file-path">{{ file.path }}</span>
-                  </li>
-                </ul>
-                <p v-else-if="previewClip.kind === 'link'" class="preview-link">{{ previewClip.content }}</p>
-                <p v-else class="preview-copy">{{ previewClip.content }}</p>
-              </div>
-              <div class="preview-actions">
-                <template v-if="defaultPasteMode(previewClip) === 'preserve'">
-                  <button ref="previewPasteButton" data-testid="preview-paste-preserve" class="primary-button" type="button" :disabled="pasteInFlight" @click="pasteClip(previewClip, 'preserve')">
-                    {{ t('pastePreserve') }}
-                  </button>
-                  <button data-testid="preview-paste-plain" class="secondary-button" type="button" :disabled="pasteInFlight" @click="pasteClip(previewClip, 'plain')">
-                    {{ t('pastePlain') }}
-                  </button>
-                </template>
-                <button v-else ref="previewPasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight || getClipActions(previewClip, 'quick')[0]?.disabled" @click="pasteClip(previewClip)">
-                  {{ t('paste') }}
-                </button>
-              </div>
-            </section>
+            <ClipPreview
+              v-if="previewClip"
+              key="preview"
+              ref="previewPasteButton"
+              :clip="previewClip"
+              :code-language="previewCodeLanguage"
+              :qr-scan-state="qrScanState"
+              :qr-results="qrResults"
+              :paste-in-flight="pasteInFlight"
+              :relative-time-now="relativeTimeNow"
+              :locale="locale"
+              :t="t"
+              @close="closePreview"
+              @copy-recognized-text="copyRecognizedText"
+              @paste-recognized-text="pasteRecognizedText"
+              @open-qr-link="openQrLink"
+              @paste="pastePreviewClip"
+            />
 
             <div v-else key="list" class="results-panel" :aria-busy="historyState === 'loading'">
               <p v-if="historyState === 'ready'" data-testid="quick-results-status" class="selection-announcement sr-only" aria-live="polite" aria-atomic="true">{{ selectionAnnouncement }}</p>
