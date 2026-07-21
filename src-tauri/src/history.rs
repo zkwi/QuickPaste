@@ -18,7 +18,9 @@ use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
 
 const APPLICATION_ID: i64 = 0x5150_5354;
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
+const SHORT_SEARCH_MAX_SCALARS: usize = 512;
+const SHORT_SEARCH_MAX_UNIQUE_TERMS: usize = 768;
 const SOURCE_APP_ICON_DATA_URL_PREFIX: &str = "data:image/png;base64,";
 const SOURCE_APP_ICON_PNG_MAX_BYTES: usize = 32 * 1024;
 const HISTORY_DATABASE_BUSY_TIMEOUT: Duration = Duration::from_secs(2);
@@ -780,6 +782,7 @@ fn initialize_history_schema(
             8 => migrate_to_v9(transaction)?,
             9 => migrate_to_v10(transaction)?,
             10 => migrate_to_v11(transaction)?,
+            11 => migrate_to_v12(transaction)?,
             _ => {
                 return Err(contract_failure(format!(
                     "不支持的历史数据库版本 {version}"
@@ -1142,7 +1145,7 @@ fn migrate_to_v9(transaction: &Transaction<'_>) -> Result<(), HistoryInitializat
         [],
     )?;
     for id in legacy_ocr_ids {
-        refresh_search_projection(transaction, &id)?;
+        refresh_search_projection_before_v12(transaction, &id)?;
     }
     Ok(())
 }
@@ -1171,7 +1174,7 @@ fn migrate_to_v10(transaction: &Transaction<'_>) -> Result<(), HistoryInitializa
         [],
     )?;
     for id in stale_ocr_ids {
-        refresh_search_projection(transaction, &id)?;
+        refresh_search_projection_before_v12(transaction, &id)?;
     }
     Ok(())
 }
@@ -1186,6 +1189,36 @@ fn migrate_to_v11(transaction: &Transaction<'_>) -> Result<(), HistoryInitializa
            )
          ) WITHOUT ROWID;",
     )?;
+    Ok(())
+}
+
+fn migrate_to_v12(transaction: &Transaction<'_>) -> Result<(), HistoryInitializationFailure> {
+    transaction.execute_batch(
+        "ALTER TABLE clip_search ADD COLUMN short_index_complete INTEGER NOT NULL DEFAULT 0
+           CHECK(short_index_complete IN (0, 1));
+         CREATE TABLE clip_search_short_terms (
+           term TEXT NOT NULL,
+           clip_id TEXT NOT NULL REFERENCES clip_search(clip_id) ON DELETE CASCADE,
+           PRIMARY KEY (term, clip_id)
+         ) WITHOUT ROWID;
+         CREATE INDEX clip_search_incomplete_short
+           ON clip_search(short_index_complete, clip_id)
+           WHERE short_index_complete = 0;",
+    )?;
+
+    let projections = {
+        let mut statement = transaction
+            .prepare("SELECT clip_id, normalized_text FROM clip_search ORDER BY clip_id")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for (clip_id, normalized_text) in projections {
+        write_search_projection(transaction, &clip_id, &normalized_text)?;
+    }
     Ok(())
 }
 
@@ -1231,7 +1264,59 @@ fn build_search_projection(
     normalize_search_text(&parts.join("\n"))
 }
 
+fn bounded_short_search_terms(normalized_text: &str) -> Option<Vec<String>> {
+    let scalars = normalized_text.chars().collect::<Vec<_>>();
+    if scalars.len() > SHORT_SEARCH_MAX_SCALARS {
+        return None;
+    }
+
+    let mut terms = BTreeSet::new();
+    for (index, character) in scalars.iter().copied().enumerate() {
+        if character == ' ' {
+            continue;
+        }
+        terms.insert(character.to_string());
+        if let Some(next) = scalars.get(index + 1).copied().filter(|next| *next != ' ') {
+            terms.insert([character, next].into_iter().collect());
+        }
+        if terms.len() > SHORT_SEARCH_MAX_UNIQUE_TERMS {
+            return None;
+        }
+    }
+    Some(terms.into_iter().collect())
+}
+
 fn write_search_projection(
+    transaction: &Transaction<'_>,
+    clip_id: &str,
+    normalized_text: &str,
+) -> Result<(), HistoryWriteFailure> {
+    let short_terms = bounded_short_search_terms(normalized_text);
+    transaction.execute(
+        "INSERT INTO clip_search(clip_id, normalized_text, short_index_complete)
+         VALUES (?1, ?2, ?3)
+         ON CONFLICT(clip_id) DO UPDATE SET
+           normalized_text = excluded.normalized_text,
+           short_index_complete = excluded.short_index_complete",
+        params![clip_id, normalized_text, i64::from(short_terms.is_some())],
+    )?;
+    transaction.execute(
+        "DELETE FROM clip_search_short_terms WHERE clip_id = ?1",
+        [clip_id],
+    )?;
+    if let Some(short_terms) = short_terms {
+        let encoded = serde_json::to_string(&short_terms)
+            .map_err(|error| write_contract_failure(format!("无法编码短词索引: {error}")))?;
+        transaction.execute(
+            "INSERT INTO clip_search_short_terms(term, clip_id)
+             SELECT value, ?2 FROM json_each(?1)",
+            params![encoded, clip_id],
+        )?;
+    }
+    Ok(())
+}
+
+fn write_search_projection_before_v12(
     transaction: &Transaction<'_>,
     clip_id: &str,
     normalized_text: &str,
@@ -1270,6 +1355,21 @@ fn refresh_search_projection(
     transaction: &Transaction<'_>,
     clip_id: &str,
 ) -> Result<(), HistoryWriteFailure> {
+    refresh_search_projection_with(transaction, clip_id, write_search_projection)
+}
+
+fn refresh_search_projection_before_v12(
+    transaction: &Transaction<'_>,
+    clip_id: &str,
+) -> Result<(), HistoryWriteFailure> {
+    refresh_search_projection_with(transaction, clip_id, write_search_projection_before_v12)
+}
+
+fn refresh_search_projection_with(
+    transaction: &Transaction<'_>,
+    clip_id: &str,
+    writer: fn(&Transaction<'_>, &str, &str) -> Result<(), HistoryWriteFailure>,
+) -> Result<(), HistoryWriteFailure> {
     let (title, plain_text, source_app, search_terms, ocr_text) = transaction.query_row(
         "SELECT title, plain_text, source_app, search_terms, ocr_text
              FROM clips WHERE id = ?1",
@@ -1300,7 +1400,7 @@ fn refresh_search_projection(
         ocr_text.as_deref(),
         &files,
     );
-    write_search_projection(transaction, clip_id, &normalized_text)
+    writer(transaction, clip_id, &normalized_text)
 }
 
 fn javascript_string_cmp(left: &str, right: &str) -> std::cmp::Ordering {
@@ -3601,19 +3701,6 @@ fn fts5_literal(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
-fn escaped_like_pattern(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len() + 2);
-    escaped.push('%');
-    for character in value.chars() {
-        if matches!(character, '%' | '_' | '\\') {
-            escaped.push('\\');
-        }
-        escaped.push(character);
-    }
-    escaped.push('%');
-    escaped
-}
-
 fn history_query_predicate(query: &HistoryQuery) -> (String, String, Vec<Value>) {
     let terms = if query.text.is_empty() {
         Vec::new()
@@ -3621,6 +3708,12 @@ fn history_query_predicate(query: &HistoryQuery) -> (String, String, Vec<Value>)
         query.text.split(' ').collect::<Vec<_>>()
     };
     let has_fts_terms = terms.iter().any(|term| term.chars().count() >= 3);
+    let short_anchor = if has_fts_terms {
+        None
+    } else {
+        terms.iter().position(|term| term.chars().count() < 3)
+    };
+    let mut parameters = Vec::new();
     let from = if has_fts_terms {
         "clip_search_fts
          JOIN clip_search ON clip_search.rowid = clip_search_fts.rowid
@@ -3629,10 +3722,19 @@ fn history_query_predicate(query: &HistoryQuery) -> (String, String, Vec<Value>)
     } else if terms.is_empty() {
         "clips".to_owned()
     } else {
-        "clip_search JOIN clips ON clips.id = clip_search.clip_id".to_owned()
+        let term = terms[short_anchor.expect("non-empty short query has an anchor")];
+        parameters.push(Value::Text(term.to_owned()));
+        parameters.push(Value::Text(term.to_owned()));
+        "(SELECT clip_id FROM clip_search_short_terms WHERE term = ?
+          UNION ALL
+          SELECT clip_id FROM clip_search
+          WHERE short_index_complete = 0 AND instr(normalized_text, ?) > 0
+         ) AS short_candidates
+         JOIN clip_search ON clip_search.clip_id = short_candidates.clip_id
+         JOIN clips ON clips.id = clip_search.clip_id"
+            .to_owned()
     };
     let mut predicates = Vec::new();
-    let mut parameters = Vec::new();
     append_in_predicate(&mut predicates, &mut parameters, "clips.kind", &query.kinds);
     append_in_predicate(
         &mut predicates,
@@ -3659,12 +3761,22 @@ fn history_query_predicate(query: &HistoryQuery) -> (String, String, Vec<Value>)
         parameters.push(Value::Integer(i64::from(permanent)));
     }
     let mut fts_terms = Vec::new();
-    for term in terms {
+    for (index, term) in terms.into_iter().enumerate() {
         if term.chars().count() >= 3 {
             fts_terms.push(fts5_literal(term));
+        } else if short_anchor.is_some_and(|anchor_index| anchor_index == index) {
+            continue;
         } else {
-            predicates.push("clip_search.normalized_text LIKE ? ESCAPE '\\'".to_owned());
-            parameters.push(Value::Text(escaped_like_pattern(term)));
+            predicates.push(
+                "((clip_search.short_index_complete = 1 AND EXISTS (
+                    SELECT 1 FROM clip_search_short_terms
+                    WHERE term = ? AND clip_id = clip_search.clip_id
+                  )) OR (clip_search.short_index_complete = 0
+                          AND instr(clip_search.normalized_text, ?) > 0))"
+                    .to_owned(),
+            );
+            parameters.push(Value::Text(term.to_owned()));
+            parameters.push(Value::Text(term.to_owned()));
         }
     }
     if !fts_terms.is_empty() {
@@ -4453,7 +4565,7 @@ fn history_contract_validation_failure(error: rusqlite::Error) -> HistoryInitial
 fn validate_current_history_contract(
     connection: &Connection,
 ) -> Result<(), HistoryInitializationFailure> {
-    const SCHEMA_PROBES: [&str; 9] = [
+    const SCHEMA_PROBES: [&str; 10] = [
         "SELECT id, kind, title, plain_text, source_app, copied_at, updated_at,
                 pinned, search_terms, ocr_text, ocr_status, logical_bytes, color,
                 dimensions, permanent, collection_id, omitted_formats, image_hash
@@ -4464,7 +4576,8 @@ fn validate_current_history_contract(
         "SELECT id, name, created_at, updated_at, sort_order FROM collections LIMIT 0",
         "SELECT source_app, icon_png FROM source_app_icons LIMIT 0",
         "SELECT clip_id, thumbnail_png FROM clip_thumbnails LIMIT 0",
-        "SELECT rowid, clip_id, normalized_text FROM clip_search LIMIT 0",
+        "SELECT rowid, clip_id, normalized_text, short_index_complete FROM clip_search LIMIT 0",
+        "SELECT term, clip_id FROM clip_search_short_terms LIMIT 0",
         "SELECT singleton, max_records, max_image_bytes, retention_days, revision
          FROM history_settings LIMIT 0",
         "SELECT rowid, normalized_text FROM clip_search_fts LIMIT 0",
@@ -4483,12 +4596,13 @@ fn validate_current_history_contract(
                       'clip_search_after_delete',
                       'clip_search_after_update'
                     ))
-                OR (type = 'table' AND name = 'clip_search_fts')",
+                OR (type = 'table' AND name = 'clip_search_fts')
+                OR (type = 'index' AND name = 'clip_search_incomplete_short')",
             [],
             |row| row.get(0),
         )
         .map_err(history_contract_validation_failure)?;
-    if expected_objects != 4 {
+    if expected_objects != 5 {
         return Err(contract_failure("历史数据库搜索结构不完整"));
     }
     let collection_objects: i64 = connection
@@ -6067,14 +6181,33 @@ fn validate_restore_runtime_contracts(
                         .map(|file| (file.path.clone(), file.name.clone()))
                         .collect::<Vec<_>>(),
                 );
-                let stored: String = connection
+                let (stored, short_index_complete): (String, i64) = connection
                     .query_row(
-                        "SELECT normalized_text FROM clip_search WHERE clip_id = ?1",
+                        "SELECT normalized_text, short_index_complete
+                         FROM clip_search WHERE clip_id = ?1",
                         [&item.id],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .map_err(|_| "历史恢复文件搜索索引无效".to_owned())?;
                 if stored != expected {
+                    return Err("历史恢复文件搜索索引无效".to_owned());
+                }
+                let expected_short_terms = bounded_short_search_terms(&expected);
+                if short_index_complete != i64::from(expected_short_terms.is_some()) {
+                    return Err("历史恢复文件搜索索引无效".to_owned());
+                }
+                let mut statement = connection
+                    .prepare(
+                        "SELECT term FROM clip_search_short_terms
+                         WHERE clip_id = ?1 ORDER BY term",
+                    )
+                    .map_err(|_| "历史恢复文件搜索索引无效".to_owned())?;
+                let stored_short_terms = statement
+                    .query_map([&item.id], |row| row.get::<_, String>(0))
+                    .map_err(|_| "历史恢复文件搜索索引无效".to_owned())?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| "历史恢复文件搜索索引无效".to_owned())?;
+                if stored_short_terms != expected_short_terms.unwrap_or_default() {
                     return Err("历史恢复文件搜索索引无效".to_owned());
                 }
             }
@@ -6983,6 +7116,16 @@ mod tests {
         transaction.commit().expect("commit v10 fixture");
     }
 
+    fn create_v11_schema(database: &mut Connection) {
+        create_v10_schema(database);
+        let transaction = database.transaction().expect("begin v11 fixture");
+        migrate_to_v11(&transaction).expect("create v11 schema");
+        transaction
+            .execute_batch("PRAGMA user_version = 11")
+            .expect("set v11 schema version");
+        transaction.commit().expect("commit v11 fixture");
+    }
+
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -6997,13 +7140,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_uses_version_eleven_with_one_default_settings_row() {
+    fn fresh_schema_uses_version_twelve_with_short_search_index() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
 
         initialize_history_database(&mut database).expect("initialize fresh database");
 
         assert_eq!(pragma_i64(&database, "application_id"), 0x5150_5354);
-        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
         assert_eq!(pragma_i64(&database, "foreign_keys"), 1);
         assert!(column_exists(&database, "clips", "omitted_formats"));
         for table in [
@@ -7013,6 +7156,7 @@ mod tests {
             "collections",
             "source_app_icons",
             "clip_thumbnails",
+            "clip_search_short_terms",
             "history_settings",
         ] {
             assert!(table_exists(&database, table), "missing {table}");
@@ -7067,7 +7211,57 @@ mod tests {
     }
 
     #[test]
-    fn v10_to_v11_migration_creates_thumbnail_table_and_preserves_existing_rows() {
+    fn v11_migration_backfills_the_bounded_short_search_index() {
+        let mut database = Connection::open_in_memory().expect("in-memory v11 database");
+        create_v11_schema(&mut database);
+        database
+            .execute_batch(
+                "INSERT INTO clips(
+                   id, kind, title, plain_text, source_app, copied_at, updated_at, pinned,
+                   permanent, search_terms, logical_bytes, omitted_formats
+                 ) VALUES (
+                   'v11-short', 'text', '火箭', 'alpha', 'Test',
+                   '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z', 0, 0,
+                   '[]', 5, '[]'
+                 );
+                 INSERT INTO clip_search(clip_id, normalized_text)
+                 VALUES ('v11-short', '火箭 alpha');",
+            )
+            .expect("seed v11 projection");
+
+        initialize_history_database(&mut database).expect("migrate v11 short index");
+
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT short_index_complete FROM clip_search WHERE clip_id = 'v11-short'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("read v12 completion marker"),
+            1
+        );
+        let terms = database
+            .prepare(
+                "SELECT term FROM clip_search_short_terms
+                 WHERE clip_id = 'v11-short' ORDER BY term",
+            )
+            .expect("prepare migrated short terms")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query migrated short terms")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect migrated short terms");
+        for expected in ["火", "火箭", "箭", "a", "al"] {
+            assert!(
+                terms.iter().any(|term| term == expected),
+                "missing {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn v10_migration_creates_thumbnail_table_and_preserves_existing_rows() {
         let mut database = Connection::open_in_memory().expect("open v10 thumbnail fixture");
         create_v10_schema(&mut database);
         database
@@ -7086,7 +7280,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v10 thumbnail schema");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
         assert!(table_exists(&database, "clip_thumbnails"));
         assert_eq!(
             database
@@ -7145,7 +7339,7 @@ mod tests {
             .expect("insert valid v7 collection");
 
         initialize_history_database(&mut database).expect("migrate valid v7 collection");
-        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
         assert_eq!(
             list_history_collections(&database)
                 .expect("list migrated collections")
@@ -7203,7 +7397,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v8 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
         let migrated = get_clip_payload(&database, "legacy-image")
             .expect("load migrated image")
             .expect("legacy image remains");
@@ -7271,7 +7465,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v9 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert_eq!(pragma_i64(&database, "user_version"), 12);
         let migrated = get_clip_payload(&database, "current-image")
             .expect("load migrated image")
             .expect("current image remains");
@@ -8226,11 +8420,11 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_is_v11_and_rejects_noncanonical_image_hashes() {
+    fn current_schema_is_v12_and_rejects_noncanonical_image_hashes() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         initialize_history_database(&mut database).expect("initialize current schema");
 
-        assert_eq!(SCHEMA_VERSION, 11);
+        assert_eq!(SCHEMA_VERSION, 12);
         let image_hash_column = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'image_hash'",
@@ -10930,7 +11124,10 @@ mod tests {
         create_closed_restore_fixture(&old_path, "old-schema");
         let old = Connection::open(&old_path).expect("open old schema fixture");
         old.execute_batch(
-            "DROP TABLE clip_thumbnails;
+            "DROP TABLE clip_search_short_terms;
+             DROP INDEX clip_search_incomplete_short;
+             ALTER TABLE clip_search DROP COLUMN short_index_complete;
+             DROP TABLE clip_thumbnails;
              DROP TRIGGER collections_validate_insert;
              DROP TRIGGER collections_validate_update;
              DROP INDEX collections_name_binary;
@@ -13652,6 +13849,210 @@ mod tests {
         for hostile in ["x' OR 1=1 --", "\" OR *", "NEAR(alpha beta)"] {
             assert!(query_ids(&database, history_query(hostile)).is_empty());
         }
+    }
+
+    #[test]
+    fn one_and_two_scalar_terms_use_the_complete_index_with_literal_and_semantics() {
+        let mut database = Connection::open_in_memory().expect("in-memory short search database");
+        let mut rocket = text_item("rocket", "2026-07-02T00:00:00.000Z");
+        rocket.title = "火箭 alpha".into();
+        rocket.content = "100% under_score back\\slash".into();
+        let mut train = text_item("train", "2026-07-01T00:00:00.000Z");
+        train.title = "火车 beta".into();
+        train.content = "ordinary".into();
+        apply_history_mutation(
+            &mut database,
+            mutation(vec![rocket, train], CapacityPolicy::default()),
+        )
+        .expect("seed short indexed rows");
+
+        for (term, expected) in [
+            ("火", vec!["rocket", "train"]),
+            ("火箭", vec!["rocket"]),
+            ("%", vec!["rocket"]),
+            ("_", vec!["rocket"]),
+            ("\\", vec!["rocket"]),
+        ] {
+            assert_eq!(
+                query_ids(&database, history_query(term)),
+                expected,
+                "{term:?}"
+            );
+        }
+        assert_eq!(
+            query_ids(&database, history_query("火 alpha")),
+            vec!["rocket"],
+            "mixed short and FTS terms keep AND semantics"
+        );
+        assert_eq!(
+            query_ids(&database, history_query("火 箭")),
+            vec!["rocket"],
+            "multiple short terms keep AND semantics"
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_search_short_terms WHERE term = '火'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count exact short index term"),
+            2
+        );
+    }
+
+    #[test]
+    fn oversized_projection_falls_back_without_losing_results_or_pagination_counts() {
+        let mut database = Connection::open_in_memory().expect("in-memory fallback database");
+        let mut oversized = text_item("oversized", "2026-07-02T00:00:00.000Z");
+        oversized.content = format!("{}终点", "长".repeat(600));
+        let mut indexed = text_item("indexed", "2026-07-01T00:00:00.000Z");
+        indexed.content = "终点".into();
+        apply_history_mutation(
+            &mut database,
+            mutation(vec![oversized, indexed], CapacityPolicy::default()),
+        )
+        .expect("seed indexed and fallback rows");
+
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT short_index_complete FROM clip_search WHERE clip_id = 'oversized'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("read oversized marker"),
+            0
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_search_short_terms WHERE clip_id = 'oversized'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count oversized auxiliary rows"),
+            0
+        );
+        let first = query_history(
+            &database,
+            HistoryQuery {
+                limit: 1,
+                ..history_query("终点")
+            },
+        )
+        .expect("query first fallback-aware page");
+        assert_eq!(first.total_count, 2);
+        assert_eq!(first.items.len(), 1);
+        let second = query_history(
+            &database,
+            HistoryQuery {
+                limit: 1,
+                cursor: first.next_cursor,
+                ..history_query("终点")
+            },
+        )
+        .expect("query second fallback-aware page");
+        assert_eq!(second.total_count, 2);
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(first.items[0].id, second.items[0].id);
+    }
+
+    #[test]
+    fn short_index_update_failure_rolls_back_and_delete_cascades() {
+        let mut database =
+            Connection::open_in_memory().expect("in-memory atomic short index database");
+        let mut item = text_item("atomic-short", "2026-07-01T00:00:00.000Z");
+        item.content = "旧词".into();
+        apply_history_mutation(
+            &mut database,
+            mutation(vec![item], CapacityPolicy::default()),
+        )
+        .expect("seed atomic short projection");
+        database
+            .execute_batch(
+                "CREATE TRIGGER fail_short_term_insert
+                 BEFORE INSERT ON clip_search_short_terms WHEN new.term = '新'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected short index failure');
+                 END;",
+            )
+            .expect("inject short index failure");
+
+        let mut update = get_clip_payload(&database, "atomic-short")
+            .expect("load atomic short payload")
+            .expect("atomic short payload exists");
+        update.content = "新词".into();
+        assert!(apply_history_mutation(
+            &mut database,
+            mutation(vec![update.clone()], CapacityPolicy::default()),
+        )
+        .is_err());
+        assert_eq!(
+            query_ids(&database, history_query("旧词")),
+            vec!["atomic-short"]
+        );
+        assert!(query_ids(&database, history_query("新词")).is_empty());
+
+        database
+            .execute_batch("DROP TRIGGER fail_short_term_insert")
+            .expect("remove short index failure");
+        apply_history_mutation(
+            &mut database,
+            mutation(vec![update], CapacityPolicy::default()),
+        )
+        .expect("commit short index update");
+        assert!(query_ids(&database, history_query("旧词")).is_empty());
+        assert_eq!(
+            query_ids(&database, history_query("新词")),
+            vec!["atomic-short"]
+        );
+
+        apply_history_mutation(
+            &mut database,
+            HistoryMutation {
+                upserts: Vec::new(),
+                delete_ids: vec!["atomic-short".into()],
+                policy: CapacityPolicy::default(),
+            },
+        )
+        .expect("delete short indexed row");
+        assert_eq!(
+            database
+                .query_row("SELECT COUNT(*) FROM clip_search_short_terms", [], |row| {
+                    row.get::<_, i64>(0)
+                })
+                .expect("count cascaded short terms"),
+            0
+        );
+    }
+
+    #[test]
+    fn short_query_plan_uses_the_term_clip_primary_key_and_keeps_fallback_explicit() {
+        let mut database =
+            Connection::open_in_memory().expect("in-memory short query plan database");
+        initialize_history_database(&mut database).expect("initialize query plan schema");
+        let query = normalize_history_query(history_query("火")).expect("normalize short query");
+        let (from, predicate, parameters) = history_query_predicate(&query);
+        assert!(from.contains("short_candidates"));
+        assert!(from.contains("clip_search_short_terms WHERE term = ?"));
+        assert!(from.contains("short_index_complete = 0"));
+        assert!(from.contains("instr("));
+        let sql = format!("EXPLAIN QUERY PLAN SELECT clips.id FROM {from} WHERE {predicate}");
+        let details = database
+            .prepare(&sql)
+            .expect("prepare short query plan")
+            .query_map(params_from_iter(parameters), |row| row.get::<_, String>(3))
+            .expect("query short query plan")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect short query plan")
+            .join("\n");
+        assert!(
+            details.contains("clip_search_short_terms")
+                && details.contains("PRIMARY KEY")
+                && details.contains("clip_search_incomplete_short"),
+            "short term candidate indexes missing from plan: {details}"
+        );
     }
 
     #[test]

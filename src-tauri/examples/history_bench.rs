@@ -1,7 +1,7 @@
 use std::{
     fs,
     hint::black_box,
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     process::ExitCode,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -19,7 +19,11 @@ const DATASET_SIZE: usize = 10_000;
 const WARMUP_QUERIES: usize = 100;
 const MEASURED_QUERIES: usize = 1_000;
 const P95_LIMIT: Duration = Duration::from_millis(50);
-const QUERY_MIX: &str = "latest|chinese|pinyin|initials|nfkc+and|ocr|file|kind+source+fts|collection+pinned|multi-in+fts|unfiled|cursor";
+const SHORT_QUERY_P95_LIMIT: Duration = P95_LIMIT;
+const QUERY_MIX: &str = "latest|chinese|pinyin|initials|nfkc+and|ocr|file|kind+source+fts|collection+pinned|multi-in+fts|unfiled|cursor|short-query-sample-set";
+const SHORT_QUERY_SAMPLE_SET: &str =
+    "han-1|han-2|ascii-1|ascii-2|literal-percent|literal-underscore|short-and|short+fts";
+const SHORT_QUERY_SAMPLES: [&str; 8] = ["火", "火箭", "h", "hj", "%", "_", "火 箭", "火 alpha"];
 const ONE_PIXEL_PNG_BASE64: &str =
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
@@ -324,6 +328,11 @@ fn run() -> Result<(), String> {
         )
         .map_err(|error| error.to_string())?;
     let setup_duration = setup_started.elapsed();
+    println!(
+        "dataset={DATASET_SIZE} kinds=text/code/link/image/file/rich duplicate_timestamps=20 warmups={WARMUP_QUERIES} samples={MEASURED_QUERIES} query_mix={QUERY_MIX} setup_ms={:.3}",
+        milliseconds(setup_duration)
+    );
+    io::stdout().flush().map_err(|error| error.to_string())?;
 
     let cursor = history_benchmark::query(
         &database,
@@ -354,21 +363,62 @@ fn run() -> Result<(), String> {
     let p99 = percentile(&samples, 0.99);
 
     println!(
-        "dataset={DATASET_SIZE} kinds=text/code/link/image/file/rich duplicate_timestamps=20 warmups={WARMUP_QUERIES} samples={MEASURED_QUERIES} query_mix={QUERY_MIX} setup_ms={:.3}",
-        milliseconds(setup_duration)
-    );
-    println!(
         "p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} threshold_ms={:.3}",
         milliseconds(p50),
         milliseconds(p95),
         milliseconds(p99),
         milliseconds(P95_LIMIT)
     );
+    io::stdout().flush().map_err(|error| error.to_string())?;
     if p95 > P95_LIMIT {
         return Err(format!(
             "历史搜索 p95 {:.3}ms 超过 {:.3}ms",
             milliseconds(p95),
             milliseconds(P95_LIMIT)
+        ));
+    }
+
+    for index in 0..WARMUP_QUERIES {
+        black_box(history_benchmark::query(
+            &database,
+            HistoryQuery {
+                text: SHORT_QUERY_SAMPLES[index % SHORT_QUERY_SAMPLES.len()].into(),
+                limit: 50,
+                ..HistoryQuery::default()
+            },
+        )?);
+    }
+    let mut short_samples = Vec::with_capacity(MEASURED_QUERIES);
+    for index in 0..MEASURED_QUERIES {
+        let started = Instant::now();
+        let page = history_benchmark::query(
+            &database,
+            HistoryQuery {
+                text: SHORT_QUERY_SAMPLES[index % SHORT_QUERY_SAMPLES.len()].into(),
+                limit: 50,
+                ..HistoryQuery::default()
+            },
+        )?;
+        short_samples.push(started.elapsed());
+        black_box(page);
+    }
+    short_samples.sort_unstable();
+    let short_p50 = percentile(&short_samples, 0.50);
+    let short_p95 = percentile(&short_samples, 0.95);
+    let short_p99 = percentile(&short_samples, 0.99);
+    println!(
+        "short_query_sample_set={SHORT_QUERY_SAMPLE_SET} p50_ms={:.3} p95_ms={:.3} p99_ms={:.3} threshold_ms={:.3}",
+        milliseconds(short_p50),
+        milliseconds(short_p95),
+        milliseconds(short_p99),
+        milliseconds(SHORT_QUERY_P95_LIMIT)
+    );
+    io::stdout().flush().map_err(|error| error.to_string())?;
+    if short_p95 > SHORT_QUERY_P95_LIMIT {
+        return Err(format!(
+            "历史短词搜索 p95 {:.3}ms 超过 {:.3}ms",
+            milliseconds(short_p95),
+            milliseconds(SHORT_QUERY_P95_LIMIT)
         ));
     }
 
@@ -384,5 +434,20 @@ fn main() -> ExitCode {
             eprintln!("history benchmark failed: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn benchmark_mix_names_the_dedicated_short_query_sample_set() {
+        assert!(QUERY_MIX.contains("short-query-sample-set"));
+        assert_eq!(
+            SHORT_QUERY_SAMPLE_SET.split('|').count(),
+            SHORT_QUERY_SAMPLES.len()
+        );
+        assert!(SHORT_QUERY_P95_LIMIT <= P95_LIMIT);
     }
 }
