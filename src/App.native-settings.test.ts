@@ -1987,6 +1987,41 @@ describe('native setting reliability', () => {
     expect(matchingCalls()).toHaveLength(1)
   })
 
+  it('keeps a forced capture refresh immediate and cancels an obsolete pending text refresh', async () => {
+    vi.useFakeTimers()
+    let capture: ((payload: {
+      kind: 'text'
+      content: string
+      capturedAt: string
+      sourceApp?: string
+    }) => void) | undefined
+    desktopMocks.connectNativeClipboard.mockImplementation(async (callback) => {
+      capture = callback
+      return () => undefined
+    })
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    await wrapper.get('[data-testid="search-input"]').setValue('捕获')
+    capture?.({
+      kind: 'text',
+      content: '捕获后的立即刷新',
+      capturedAt: '2026-07-21T10:00:00.000Z',
+      sourceApp: 'Notepad',
+    })
+    await flushPromises()
+    const matchingCalls = () => historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query)
+      .filter((query) => query.text === '捕获')
+    expect(matchingCalls()).toHaveLength(1)
+
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+    expect(matchingCalls()).toHaveLength(1)
+  })
+
   it('disposes a pending native search refresh when the app unmounts', async () => {
     vi.useFakeTimers()
     historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
@@ -2026,6 +2061,32 @@ describe('native setting reliability', () => {
     expect(historyMocks.queryNativeHistory.mock.calls
       .map(([query]) => query.text)
       .filter(Boolean)).toEqual(['中文'])
+  })
+
+  it('cancels an already scheduled text query when IME composition starts', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    const search = wrapper.get('[data-testid="search-input"]')
+    await search.setValue('普通输入')
+    await vi.advanceTimersByTimeAsync(60)
+    await search.trigger('compositionstart')
+    await search.setValue('组合输入')
+    await vi.advanceTimersByTimeAsync(121)
+    await flushPromises()
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
+
+    await search.trigger('compositionend')
+    await vi.advanceTimersByTimeAsync(119)
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query.text)
+      .filter(Boolean)).toEqual(['组合输入'])
   })
 
   it('hydrates a native summary before formatted paste and never pastes summary content directly', async () => {

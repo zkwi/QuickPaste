@@ -1216,8 +1216,20 @@ fn migrate_to_v12(transaction: &Transaction<'_>) -> Result<(), HistoryInitializa
             .collect::<Result<Vec<_>, _>>()?;
         rows
     };
+    let mut update_completion = transaction
+        .prepare_cached("UPDATE clip_search SET short_index_complete = ?2 WHERE clip_id = ?1")?;
+    let mut insert_terms = transaction.prepare_cached(
+        "INSERT INTO clip_search_short_terms(term, clip_id)
+         SELECT value, ?2 FROM json_each(?1)",
+    )?;
     for (clip_id, normalized_text) in projections {
-        write_search_projection(transaction, &clip_id, &normalized_text)?;
+        let short_terms = bounded_short_search_terms(&normalized_text);
+        update_completion.execute(params![&clip_id, i64::from(short_terms.is_some())])?;
+        if let Some(short_terms) = short_terms {
+            let encoded = serde_json::to_string(&short_terms)
+                .map_err(|error| contract_failure(format!("无法编码迁移短词索引: {error}")))?;
+            insert_terms.execute(params![encoded, &clip_id])?;
+        }
     }
     Ok(())
 }
@@ -1292,26 +1304,31 @@ fn write_search_projection(
     normalized_text: &str,
 ) -> Result<(), HistoryWriteFailure> {
     let short_terms = bounded_short_search_terms(normalized_text);
-    transaction.execute(
-        "INSERT INTO clip_search(clip_id, normalized_text, short_index_complete)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(clip_id) DO UPDATE SET
-           normalized_text = excluded.normalized_text,
-           short_index_complete = excluded.short_index_complete",
-        params![clip_id, normalized_text, i64::from(short_terms.is_some())],
-    )?;
-    transaction.execute(
-        "DELETE FROM clip_search_short_terms WHERE clip_id = ?1",
-        [clip_id],
-    )?;
+    transaction
+        .prepare_cached(
+            "INSERT INTO clip_search(clip_id, normalized_text, short_index_complete)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(clip_id) DO UPDATE SET
+               normalized_text = excluded.normalized_text,
+               short_index_complete = excluded.short_index_complete",
+        )?
+        .execute(params![
+            clip_id,
+            normalized_text,
+            i64::from(short_terms.is_some())
+        ])?;
+    transaction
+        .prepare_cached("DELETE FROM clip_search_short_terms WHERE clip_id = ?1")?
+        .execute([clip_id])?;
     if let Some(short_terms) = short_terms {
         let encoded = serde_json::to_string(&short_terms)
             .map_err(|error| write_contract_failure(format!("无法编码短词索引: {error}")))?;
-        transaction.execute(
-            "INSERT INTO clip_search_short_terms(term, clip_id)
-             SELECT value, ?2 FROM json_each(?1)",
-            params![encoded, clip_id],
-        )?;
+        transaction
+            .prepare_cached(
+                "INSERT INTO clip_search_short_terms(term, clip_id)
+                 SELECT value, ?2 FROM json_each(?1)",
+            )?
+            .execute(params![encoded, clip_id])?;
     }
     Ok(())
 }
@@ -7225,7 +7242,12 @@ mod tests {
                    '[]', 5, '[]'
                  );
                  INSERT INTO clip_search(clip_id, normalized_text)
-                 VALUES ('v11-short', '火箭 alpha');",
+                 VALUES ('v11-short', '火箭 alpha');
+                 CREATE TRIGGER reject_v12_normalized_text_rewrite
+                 BEFORE UPDATE OF normalized_text ON clip_search
+                 BEGIN
+                   SELECT RAISE(ABORT, 'v12 migration must preserve normalized_text');
+                 END;",
             )
             .expect("seed v11 projection");
 
@@ -7258,6 +7280,50 @@ mod tests {
                 "missing {expected:?}"
             );
         }
+    }
+
+    #[test]
+    fn failed_v12_short_index_backfill_rolls_back_the_entire_schema_migration() {
+        let mut database = Connection::open_in_memory().expect("in-memory v11 rollback database");
+        create_v11_schema(&mut database);
+        database
+            .execute_batch(
+                "INSERT INTO clips(
+                   id, kind, title, plain_text, source_app, copied_at, updated_at, pinned,
+                   permanent, search_terms, logical_bytes, omitted_formats
+                 ) VALUES (
+                   'v11-rollback', 'text', '回滚', 'migration', 'Test',
+                   '2026-07-01T00:00:00.000Z', '2026-07-01T00:00:00.000Z', 0, 0,
+                   '[]', 9, '[]'
+                 );
+                 INSERT INTO clip_search(clip_id, normalized_text)
+                 VALUES ('v11-rollback', '回滚 migration');
+                 CREATE TRIGGER reject_v12_completion_marker
+                 BEFORE UPDATE ON clip_search
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected v12 backfill failure');
+                 END;",
+            )
+            .expect("seed failing v11 migration fixture");
+
+        assert!(initialize_history_database(&mut database).is_err());
+        assert_eq!(pragma_i64(&database, "user_version"), 11);
+        assert!(!column_exists(
+            &database,
+            "clip_search",
+            "short_index_complete"
+        ));
+        assert!(!table_exists(&database, "clip_search_short_terms"));
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT normalized_text FROM clip_search WHERE clip_id = 'v11-rollback'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .expect("read preserved v11 projection"),
+            "回滚 migration"
+        );
     }
 
     #[test]

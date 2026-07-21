@@ -2395,6 +2395,7 @@ function clearManagerSearch() {
 }
 
 function startSearchComposition(surface: ClipFocusSurface) {
+  cancelNativeHistorySearchRefresh()
   isComposing.value = true
   if (surface === 'quick') quickSearchComposing.value = true
   else managerSearchComposing.value = true
