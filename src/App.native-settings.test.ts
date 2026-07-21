@@ -572,6 +572,7 @@ describe('native setting reliability', () => {
   })
 
   it('applies only OCR metadata and uses native match sources for OCR versus index badges', async () => {
+    vi.useFakeTimers()
     const image = pendingOcrImage()
     historyMocks.loadNativeHistory.mockResolvedValueOnce([image])
     ocrMocks.listNativePendingOcrImages.mockResolvedValueOnce({
@@ -609,6 +610,7 @@ describe('native setting reliability', () => {
       totalCount: 1,
     })
     await wrapper.get('[data-testid="manager-search-input"]').setValue('secret')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     expect(wrapper.get('.ocr-match').text()).toContain('OCR 命中')
@@ -619,6 +621,7 @@ describe('native setting reliability', () => {
       totalCount: 1,
     })
     await wrapper.get('[data-testid="manager-search-input"]').setValue('tupian')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
     expect(wrapper.find('.ocr-match').exists()).toBe(false)
     expect(wrapper.get('.phonetic-match').text()).toContain('索引命中')
@@ -630,6 +633,7 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="library-view"] .back-button').trigger('click')
     expect(wrapper.get('[data-testid="search-input"]').attributes('placeholder')).toContain('OCR 文字')
     await wrapper.get('[data-testid="search-input"]').setValue('secret')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
     expect(wrapper.get('.ocr-match').text()).toContain('OCR 命中')
     expect(wrapper.find('.phonetic-match').exists()).toBe(false)
@@ -1882,6 +1886,7 @@ describe('native setting reliability', () => {
   })
 
   it('ignores an older native query after a newer input result has rendered', async () => {
+    vi.useFakeTimers()
     historyMocks.queryNativeHistory.mockReset().mockResolvedValueOnce({ items: [], totalCount: 0 })
     const wrapper = mount(App)
     await flushPromises()
@@ -1896,8 +1901,10 @@ describe('native setting reliability', () => {
 
     const search = wrapper.get('[data-testid="search-input"]')
     await search.setValue('old')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
     await search.setValue('new')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     finishNew?.({
@@ -1916,7 +1923,89 @@ describe('native setting reliability', () => {
     expect(wrapper.text()).not.toContain('过期结果')
   })
 
+  it('debounces rapid quick-search text changes for 120ms and queries only the final value', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    const search = wrapper.get('[data-testid="search-input"]')
+    await search.setValue('中')
+    await vi.advanceTimersByTimeAsync(80)
+    await search.setValue('中文')
+    await vi.advanceTimersByTimeAsync(119)
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query.text)
+      .filter(Boolean)).toEqual(['中文'])
+  })
+
+  it('debounces manager search independently and resets its pending timer', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    const search = wrapper.get('[data-testid="manager-search-input"]')
+    await search.setValue('旧')
+    await vi.advanceTimersByTimeAsync(60)
+    await search.setValue('最终')
+    await vi.advanceTimersByTimeAsync(119)
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
+
+    await vi.advanceTimersByTimeAsync(1)
+    await flushPromises()
+    expect(historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query.text)
+      .filter(Boolean)).toEqual(['最终'])
+  })
+
+  it('keeps filter refresh immediate and cancels an obsolete pending text refresh', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    await wrapper.get('[data-testid="search-input"]').setValue('图片')
+    await wrapper.get('[data-testid="filter-image"]').trigger('click')
+    await flushPromises()
+    const matchingCalls = () => historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query)
+      .filter((query) => query.text === '图片')
+    expect(matchingCalls()).toEqual([expect.objectContaining({ text: '图片', kinds: ['image'] })])
+
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+    expect(matchingCalls()).toHaveLength(1)
+  })
+
+  it('disposes a pending native search refresh when the app unmounts', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
+    const wrapper = mount(App)
+    await flushPromises()
+    historyMocks.queryNativeHistory.mockClear()
+
+    await wrapper.get('[data-testid="search-input"]').setValue('卸载前')
+    wrapper.unmount()
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+
+    expect(historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query.text)
+      .filter(Boolean)).toEqual([])
+  })
+
   it('does not query intermediate Chinese IME values and queries compositionend once', async () => {
+    vi.useFakeTimers()
     historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
     const wrapper = mount(App)
     await flushPromises()
@@ -1927,12 +2016,16 @@ describe('native setting reliability', () => {
     await search.setValue('中')
     await search.setValue('中文')
     await flushPromises()
-    expect(historyMocks.queryNativeHistory).not.toHaveBeenCalled()
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
 
     await search.trigger('compositionend')
+    await vi.advanceTimersByTimeAsync(119)
+    expect(historyMocks.queryNativeHistory.mock.calls.filter(([query]) => query.text)).toEqual([])
+    await vi.advanceTimersByTimeAsync(1)
     await flushPromises()
-    expect(historyMocks.queryNativeHistory).toHaveBeenCalledTimes(1)
-    expect(historyMocks.queryNativeHistory).toHaveBeenCalledWith(expect.objectContaining({ text: '中文' }))
+    expect(historyMocks.queryNativeHistory.mock.calls
+      .map(([query]) => query.text)
+      .filter(Boolean)).toEqual(['中文'])
   })
 
   it('hydrates a native summary before formatted paste and never pastes summary content directly', async () => {
@@ -2033,12 +2126,14 @@ describe('native setting reliability', () => {
   })
 
   it('does not cache or open a stale payload after a new query replaces its summary', async () => {
+    vi.useFakeTimers()
     const summaryA = { id: 'payload-a', kind: 'text', title: '摘要 A', content: 'summary a', sourceApp: 'Editor', copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
     const summaryB = { id: 'payload-b', kind: 'text', title: '摘要 B', content: 'summary b', sourceApp: 'Editor', copiedAt: '2026-07-19T10:01:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
-    historyMocks.queryNativeHistory.mockReset()
-      .mockResolvedValueOnce({ items: [summaryA], totalCount: 1 })
-      .mockResolvedValueOnce({ items: [summaryB], totalCount: 1 })
-      .mockResolvedValueOnce({ items: [summaryA], totalCount: 1 })
+    historyMocks.queryNativeHistory.mockReset().mockImplementation(async (query) => (
+      query.text === 'b'
+        ? { items: [summaryB], totalCount: 1 }
+        : { items: [summaryA], totalCount: 1 }
+    ))
     let finishPayload: ((result: Record<string, unknown>) => void) | undefined
     historyMocks.loadNativeClipPayload.mockReset()
       .mockImplementationOnce(() => new Promise((resolve) => { finishPayload = resolve }))
@@ -2051,6 +2146,7 @@ describe('native setting reliability', () => {
     await flushPromises()
     expect(historyMocks.loadNativeClipPayload).toHaveBeenCalledOnce()
     await wrapper.get('[data-testid="search-input"]').setValue('b')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     finishPayload?.({
@@ -2064,6 +2160,7 @@ describe('native setting reliability', () => {
     expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
 
     await wrapper.get('[data-testid="search-input"]').setValue('')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
     await wrapper.get('[data-testid="preview-clip-payload-a"]').trigger('click')
     await flushPromises()
@@ -2072,6 +2169,7 @@ describe('native setting reliability', () => {
   })
 
   it('waits for a dirty mutation to flush before issuing a new native query', async () => {
+    vi.useFakeTimers()
     const summary = { id: 'dirty-order', kind: 'text', title: '待固定', content: 'dirty', sourceApp: 'Editor', copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
     historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [summary], totalCount: 1 })
     const wrapper = mount(App)
@@ -2087,6 +2185,7 @@ describe('native setting reliability', () => {
     }))
     await wrapper.get('[data-testid="manager-pin-dirty-order"]').trigger('click')
     await wrapper.get('[data-testid="manager-search-input"]').setValue('dirty')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledOnce()
@@ -2097,6 +2196,7 @@ describe('native setting reliability', () => {
   })
 
   it('keeps current results and skips a native query when the dirty flush fails', async () => {
+    vi.useFakeTimers()
     const summary = { id: 'dirty-failure', kind: 'text', title: '仍应显示', content: 'dirty', sourceApp: 'Editor', copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
     historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [summary], totalCount: 1 })
     const wrapper = mount(App)
@@ -2108,6 +2208,7 @@ describe('native setting reliability', () => {
     historyMocks.applyNativeHistoryMutation.mockReset().mockResolvedValueOnce(null)
     await wrapper.get('[data-testid="manager-pin-dirty-failure"]').trigger('click')
     await wrapper.get('[data-testid="manager-search-input"]').setValue('dirty')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledOnce()
@@ -2116,6 +2217,7 @@ describe('native setting reliability', () => {
   })
 
   it('builds canonical manager intersections while preserving the user search text', async () => {
+    vi.useFakeTimers()
     historyMocks.queryNativeHistory.mockReset().mockResolvedValue({ items: [], totalCount: 0 })
     const wrapper = mount(App)
     await flushPromises()
@@ -2127,6 +2229,7 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="manager-kind-image"]').trigger('click')
     const originalSearch = '  ＴＡＵＲＩ\u3000插件  '
     await wrapper.get('[data-testid="manager-search-input"]').setValue(originalSearch)
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
 
     expect((wrapper.get('[data-testid="manager-search-input"]').element as HTMLInputElement).value).toBe(originalSearch)
@@ -2366,6 +2469,7 @@ describe('native setting reliability', () => {
   })
 
   it('commits restore atomically, adopts all policy fields, ignores stale pages, and replays frozen captures', async () => {
+    vi.useFakeTimers()
     const token = 'a'.repeat(64)
     const baseline = {
       id: 'baseline-before-restore', kind: 'text', title: '恢复前基线', content: 'baseline', sourceApp: 'Editor',
@@ -2428,6 +2532,7 @@ describe('native setting reliability', () => {
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await flushPromises()
     await wrapper.get('[data-testid="manager-search-input"]').setValue('stale')
+    await vi.advanceTimersByTimeAsync(120)
     await flushPromises()
     expect(finishStaleQuery).toBeTypeOf('function')
 

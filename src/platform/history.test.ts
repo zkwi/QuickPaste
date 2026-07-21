@@ -202,7 +202,7 @@ describe('native clipboard history storage', () => {
         token: restoreToken,
         currentCount: 8,
         incomingCount: 5,
-        schemaVersion: 9,
+        schemaVersion: 12,
       })
 
     await expect(createNativeHistoryBackup(invoke)).resolves.toEqual({ status: 'cancelled' })
@@ -213,7 +213,7 @@ describe('native clipboard history storage', () => {
       token: restoreToken,
       currentCount: 8,
       incomingCount: 5,
-      schemaVersion: 9,
+      schemaVersion: 12,
     })
     expect(invoke.mock.calls).toEqual([
       ['create_history_backup', {}],
@@ -230,7 +230,7 @@ describe('native clipboard history storage', () => {
       .mockResolvedValueOnce({
         status: 'restored',
         importedCount: 5,
-        schemaVersion: 9,
+        schemaVersion: 12,
         policy: restoredPolicy,
         stats: restoredStats,
       })
@@ -239,7 +239,7 @@ describe('native clipboard history storage', () => {
     await expect(commitNativeHistoryRestore(restoreToken, invoke)).resolves.toEqual({
       status: 'restored',
       importedCount: 5,
-      schemaVersion: 9,
+      schemaVersion: 12,
       policy: restoredPolicy,
       stats: restoredStats,
     })
@@ -302,16 +302,16 @@ describe('native clipboard history storage', () => {
     ['backup unknown field', createNativeHistoryBackup, { status: 'saved', path: 'must-not-leak' }],
     ['backup unknown status', createNativeHistoryBackup, { status: 'failed' }],
     ['prepare missing token', prepareNativeHistoryRestore, {
-      status: 'prepared', currentCount: 8, incomingCount: 5, schemaVersion: 9,
+      status: 'prepared', currentCount: 8, incomingCount: 5, schemaVersion: 12,
     }],
     ['prepare fractional count', prepareNativeHistoryRestore, {
-      status: 'prepared', token: restoreToken, currentCount: 8.5, incomingCount: 5, schemaVersion: 9,
+      status: 'prepared', token: restoreToken, currentCount: 8.5, incomingCount: 5, schemaVersion: 12,
     }],
     ['prepare old schema', prepareNativeHistoryRestore, {
       status: 'prepared', token: restoreToken, currentCount: 8, incomingCount: 5, schemaVersion: 6,
     }],
     ['prepare future schema', prepareNativeHistoryRestore, {
-      status: 'prepared', token: restoreToken, currentCount: 8, incomingCount: 5, schemaVersion: 10,
+      status: 'prepared', token: restoreToken, currentCount: 8, incomingCount: 5, schemaVersion: 13,
     }],
     ['health arbitrary detail', getNativeHistoryHealth, { status: 'readOnlyError', reason: 'io', detail: 'secret' }],
     ['health open reason', getNativeHistoryHealth, { status: 'readOnlyError', reason: 'database exploded' }],
@@ -336,7 +336,7 @@ describe('native clipboard history storage', () => {
     const malformedCommit: HistoryInvoke = vi.fn().mockResolvedValue({
       status: 'restored',
       importedCount: 5,
-      schemaVersion: 9,
+      schemaVersion: 12,
       policy,
       stats: { ...storageStats, retentionDays: 90 },
     })
@@ -344,7 +344,7 @@ describe('native clipboard history storage', () => {
     const futureSchemaCommit: HistoryInvoke = vi.fn().mockResolvedValue({
       status: 'restored',
       importedCount: storageStats.recordCount,
-      schemaVersion: 10,
+      schemaVersion: 13,
       policy,
       stats: storageStats,
     })

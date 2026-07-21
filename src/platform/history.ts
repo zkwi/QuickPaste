@@ -191,7 +191,7 @@ function isSafeUnsignedInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
-const CURRENT_HISTORY_SCHEMA_VERSION = 9
+const CURRENT_HISTORY_SCHEMA_VERSION = 12
 
 function parseCapacityPolicy(value: unknown): CapacityPolicy | null {
   if (!isRecord(value)

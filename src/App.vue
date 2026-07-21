@@ -224,6 +224,7 @@ const EVENT_SUBSCRIPTION_ATTEMPTS = 3
 const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
+const NATIVE_SEARCH_DEBOUNCE_MS = 120
 const ONBOARDING_SAMPLE_ID = 'quickpaste-onboarding-sample-v1'
 const AUTO_UPDATE_CHECK_DELAY_MS = 15_000
 const nativeRuntime = isTauriRuntime()
@@ -402,6 +403,7 @@ const deferredStorageCaptures: NativeCapturePayload[] = []
 let nativeQueryGeneration = 0
 let nativeQueryRefreshQueued = false
 let nativeQueryRefreshForced = false
+let nativeSearchDebounceTimer: ReturnType<typeof setTimeout> | undefined
 let nativeAppliedQueryKey = ''
 let storageRefreshGeneration = 0
 let nativeRefreshAfterExclusive = false
@@ -1127,7 +1129,7 @@ watch(managerQuery, () => {
   if (nativeRuntime
     && currentView.value === 'library'
     && librarySection.value !== 'settings'
-    && !managerSearchComposing.value) queueNativeHistoryRefresh()
+    && !managerSearchComposing.value) scheduleNativeHistorySearchRefresh()
 })
 
 watch([managerKinds, managerCollectionFilter], () => {
@@ -1166,9 +1168,16 @@ watch([query, activeFilter, quickSourceFilter], () => {
     const list = document.querySelector<HTMLElement>('.clip-list')
     if (list) list.scrollTop = 0
   })
+})
+
+watch(query, () => {
   if (nativeRuntime && currentView.value === 'quick' && !quickSearchComposing.value) {
-    queueNativeHistoryRefresh()
+    scheduleNativeHistorySearchRefresh()
   }
+})
+
+watch([activeFilter, quickSourceFilter], () => {
+  if (nativeRuntime && currentView.value === 'quick') queueNativeHistoryRefresh()
 })
 
 function syncNativeBooleanSetting(
@@ -1541,7 +1550,21 @@ async function runNativeHistoryQuery(append = false, force = false): Promise<boo
   }
 }
 
+function cancelNativeHistorySearchRefresh() {
+  if (nativeSearchDebounceTimer) clearTimeout(nativeSearchDebounceTimer)
+  nativeSearchDebounceTimer = undefined
+}
+
+function scheduleNativeHistorySearchRefresh() {
+  cancelNativeHistorySearchRefresh()
+  nativeSearchDebounceTimer = setTimeout(() => {
+    nativeSearchDebounceTimer = undefined
+    queueNativeHistoryRefresh()
+  }, NATIVE_SEARCH_DEBOUNCE_MS)
+}
+
 function queueNativeHistoryRefresh(force = false) {
+  cancelNativeHistorySearchRefresh()
   if (!nativeRuntime
     || !nativeSettingsReady.value
     || historyState.value === 'error') return
@@ -2384,7 +2407,7 @@ function finishSearchComposition(surface: ClipFocusSurface) {
   if (nativeRuntime
     && (surface === 'quick' && currentView.value === 'quick'
       || surface === 'manager' && currentView.value === 'library' && librarySection.value !== 'settings')) {
-    queueNativeHistoryRefresh()
+    scheduleNativeHistorySearchRefresh()
   }
 }
 
@@ -3770,6 +3793,7 @@ onBeforeUnmount(() => {
   if (relativeTimeTimer) clearInterval(relativeTimeTimer)
   if (autoUpdateCheckTimer) clearTimeout(autoUpdateCheckTimer)
   if (updateNoticeTimer) clearTimeout(updateNoticeTimer)
+  cancelNativeHistorySearchRefresh()
 })
 </script>
 
