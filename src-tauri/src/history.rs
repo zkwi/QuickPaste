@@ -805,7 +805,8 @@ fn backfill_legacy_data(
         let item = history_item_from_legacy(row).map_err(contract_failure)?;
         let item = normalize_history_item(item).map_err(contract_failure)?;
         validate_history_item(&item).map_err(contract_failure)?;
-        upsert_history_item(transaction, &item).map_err(HistoryInitializationFailure::from)?;
+        let _ =
+            upsert_history_item(transaction, &item).map_err(HistoryInitializationFailure::from)?;
     }
     for (source_app, icon_png) in legacy.source_icons {
         if source_app_icon_png_is_safe(&icon_png) {
@@ -1540,8 +1541,18 @@ pub(crate) fn apply_history_mutation(
     let result = apply_history_mutation_in_transaction(&transaction, mutation);
 
     match result {
-        Ok(result) => {
+        Ok((result, pending_thumbnails)) => {
             transaction.commit().map_err(|error| error.to_string())?;
+            for (clip_id, thumbnail_png) in pending_thumbnails {
+                let _ = connection.execute(
+                    "INSERT INTO clip_thumbnails(clip_id, thumbnail_png)
+                     SELECT ?1, ?2 WHERE EXISTS(
+                       SELECT 1 FROM clips WHERE id = ?1 AND kind = 'image'
+                     )
+                     ON CONFLICT(clip_id) DO UPDATE SET thumbnail_png = excluded.thumbnail_png",
+                    params![clip_id, thumbnail_png],
+                );
+            }
             Ok(result)
         }
         Err(error) => {
@@ -1554,7 +1565,7 @@ pub(crate) fn apply_history_mutation(
 fn apply_history_mutation_in_transaction(
     transaction: &Transaction<'_>,
     mutation: HistoryMutation,
-) -> Result<HistoryMutationResult, String> {
+) -> Result<(HistoryMutationResult, BTreeMap<String, Vec<u8>>), String> {
     let delete_ids = mutation.delete_ids.into_iter().collect::<BTreeSet<_>>();
     let mut upserts = Vec::with_capacity(mutation.upserts.len());
     for raw_item in mutation.upserts {
@@ -1574,6 +1585,7 @@ fn apply_history_mutation_in_transaction(
 
     let mut source_icons = BTreeMap::new();
     let mut duplicate_image_ids = BTreeSet::new();
+    let mut pending_thumbnails = BTreeMap::new();
     for mut item in upserts {
         if item.payload_loaded && item.kind == "image" {
             if let Some(image_hash) = item.image_hash.as_deref() {
@@ -1608,7 +1620,14 @@ fn apply_history_mutation_in_transaction(
                 }
             }
         }
-        upsert_history_item(transaction, &item).map_err(|error| error.to_string())?;
+        if item.payload_loaded {
+            pending_thumbnails.remove(&item.id);
+        }
+        if let Some(thumbnail_png) =
+            upsert_history_item(transaction, &item).map_err(|error| error.to_string())?
+        {
+            pending_thumbnails.insert(item.id.clone(), thumbnail_png);
+        }
     }
     for id in delete_ids {
         transaction
@@ -1628,8 +1647,11 @@ fn apply_history_mutation_in_transaction(
     write_history_settings(transaction, &mutation.policy)?;
     let mut result = prune_capacity(transaction, &mutation.policy)?;
     duplicate_image_ids.extend(result.pruned_ids);
+    for id in &duplicate_image_ids {
+        pending_thumbnails.remove(id);
+    }
     result.pruned_ids = duplicate_image_ids.into_iter().collect();
-    Ok(result)
+    Ok((result, pending_thumbnails))
 }
 
 #[derive(Default)]
@@ -2218,7 +2240,7 @@ pub(crate) fn save_history_snippet(
             files: Vec::new(),
         };
         validate_history_item(&item)?;
-        upsert_history_item(&transaction, &item).map_err(|error| error.to_string())?;
+        let _ = upsert_history_item(&transaction, &item).map_err(|error| error.to_string())?;
         advance_history_revision(&transaction)?;
         Ok(item)
     })();
@@ -2450,12 +2472,13 @@ fn validate_history_item(item: &HistoryItem) -> Result<(), String> {
 fn upsert_history_item(
     transaction: &Transaction<'_>,
     item: &HistoryItem,
-) -> Result<(), HistoryWriteFailure> {
+) -> Result<Option<Vec<u8>>, HistoryWriteFailure> {
     if !history_id_is_cursor_safe(&item.id) {
         return Err(write_contract_failure("剪贴板记录 id 无效"));
     }
     if !item.payload_loaded {
-        return update_history_summary_metadata(transaction, item);
+        update_history_summary_metadata(transaction, item)?;
+        return Ok(None);
     }
     let formats = canonical_formats(item).map_err(write_contract_failure)?;
     let logical_bytes = logical_bytes(item).map_err(write_contract_failure)?;
@@ -2513,6 +2536,7 @@ fn upsert_history_item(
     transaction.execute("DELETE FROM clip_formats WHERE clip_id = ?1", [&item.id])?;
     transaction.execute("DELETE FROM clip_files WHERE clip_id = ?1", [&item.id])?;
 
+    let mut pending_thumbnail = None;
     for format in formats {
         match format.as_str() {
             "text" => {
@@ -2547,17 +2571,11 @@ fn upsert_history_item(
                 let (mime, data) = image
                     .map(|(mime, data)| (Some(mime), Some(data)))
                     .unwrap_or((None, None));
-                let thumbnail_png = match (mime.as_deref(), data.as_deref()) {
+                pending_thumbnail = match (mime.as_deref(), data.as_deref()) {
                     (Some("image/png"), Some(png)) => generate_thumbnail_png(png).ok(),
                     _ => None,
                 };
                 insert_format(transaction, &item.id, "image", mime.as_deref(), data)?;
-                if let Some(thumbnail_png) = thumbnail_png {
-                    transaction.execute(
-                        "INSERT INTO clip_thumbnails(clip_id, thumbnail_png) VALUES (?1, ?2)",
-                        params![item.id, thumbnail_png],
-                    )?;
-                }
             }
             _ => {
                 return Err(write_contract_failure(format!(
@@ -2591,7 +2609,8 @@ fn upsert_history_item(
             )
             ?;
     }
-    write_item_search_projection(transaction, item)
+    write_item_search_projection(transaction, item)?;
+    Ok(pending_thumbnail)
 }
 
 fn update_history_summary_metadata(
@@ -12778,6 +12797,110 @@ mod tests {
                     |row| row.get::<_, i64>(0),
                 )
                 .expect("count invalid-source thumbnails"),
+            0
+        );
+    }
+
+    #[test]
+    fn thumbnail_insert_failure_does_not_reject_a_new_image_mutation() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        initialize_history_database(&mut database).expect("initialize thumbnail schema");
+        database
+            .execute_batch(
+                "CREATE TRIGGER reject_thumbnail_insert BEFORE INSERT ON clip_thumbnails BEGIN
+                   SELECT RAISE(ABORT, 'injected thumbnail insert failure');
+                 END;",
+            )
+            .expect("install thumbnail failure trigger");
+        let png = rgba_png_bytes([18, 52, 86, 255]);
+
+        let result = apply_history_mutation(
+            &mut database,
+            mutation(
+                vec![image_item(
+                    "new-thumbnail-failure",
+                    "2026-07-01T00:00:00.000Z",
+                    &png,
+                )],
+                CapacityPolicy::default(),
+            ),
+        );
+
+        assert!(result.is_ok(), "thumbnail cache must be best-effort");
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT data FROM clip_formats
+                     WHERE clip_id = 'new-thumbnail-failure' AND format = 'image'",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .expect("read committed new image"),
+            png
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_thumbnails
+                     WHERE clip_id = 'new-thumbnail-failure'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count failed new thumbnail cache"),
+            0
+        );
+    }
+
+    #[test]
+    fn thumbnail_insert_failure_commits_replacement_and_keeps_old_cache_invalidated() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        store_png_image(
+            &mut database,
+            "replacement-thumbnail-failure",
+            [17, 34, 51, 255],
+        );
+        database
+            .execute_batch(
+                "CREATE TRIGGER reject_replacement_thumbnail BEFORE INSERT ON clip_thumbnails BEGIN
+                   SELECT RAISE(ABORT, 'injected replacement thumbnail failure');
+                 END;",
+            )
+            .expect("install replacement thumbnail failure trigger");
+        let replacement_png = rgba_png_bytes([68, 85, 102, 255]);
+
+        let result = apply_history_mutation(
+            &mut database,
+            mutation(
+                vec![image_item(
+                    "replacement-thumbnail-failure",
+                    "2026-07-02T00:00:00.000Z",
+                    &replacement_png,
+                )],
+                CapacityPolicy::default(),
+            ),
+        );
+
+        assert!(result.is_ok(), "replacement payload must commit");
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT data FROM clip_formats
+                     WHERE clip_id = 'replacement-thumbnail-failure' AND format = 'image'",
+                    [],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .expect("read committed replacement image"),
+            replacement_png
+        );
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT COUNT(*) FROM clip_thumbnails
+                     WHERE clip_id = 'replacement-thumbnail-failure'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .expect("count invalidated replacement cache"),
             0
         );
     }
