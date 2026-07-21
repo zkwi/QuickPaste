@@ -98,30 +98,19 @@ import {
 import {
   applyNativeHistoryBatch,
   applyNativeHistoryMutation,
-  compactNativeHistoryDatabase,
-  commitNativeHistoryRestore,
   createIncrementalHistoryPersistence,
   createNativeHistoryCollection,
-  createNativeHistoryBackup,
   createSerializedHistoryOperationLane,
   deleteNativeHistoryCollection,
-  discardNativeHistoryRestore,
-  getNativeHistoryHealth,
-  getNativeStorageStats,
   listNativeHistoryCollections,
   loadNativeClipPayload,
-  openNativeHistoryDataDirectory,
-  prepareNativeHistoryRestore,
   queryNativeHistory,
   renameNativeHistoryCollection,
   saveNativeHistorySnippet,
   type CapacityPolicy,
   type ExternalOcrPatch,
   type HistoryExclusiveLease,
-  type HistoryHealth,
-  type PreparedRestore,
   type StorageOperation,
-  type StorageStats,
 } from './platform/history'
 import {
   createOcrCoordinator,
@@ -157,6 +146,7 @@ import type { LibraryManagerHelpers, LibrarySection, ManagerCollectionFilter } f
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
+import { useStorageOperations } from './composables/useStorageOperations'
 
 type AppView = 'quick' | 'library'
 type HistoryState = 'loading' | 'ready' | 'error'
@@ -325,11 +315,6 @@ const pasteInFlight = ref(false)
 const shortcutApplyInFlight = ref(false)
 const relativeTimeNow = ref(new Date())
 const historyState = ref<HistoryState>(nativeRuntime ? 'loading' : 'ready')
-const storageStats = ref<StorageStats | null>(null)
-const historyHealth = ref<HistoryHealth | null>(null)
-const preparedRestore = ref<PreparedRestore | null>(null)
-const busyStorageOperation = ref<StorageOperation>(null)
-const storageStatusMessage = ref('')
 const nativeHistoryNextCursor = ref<string | undefined>(undefined)
 const nativeHistoryTotalCount = ref(items.value.length)
 const nativeHistoryPageLoading = ref(false)
@@ -356,7 +341,6 @@ let nativeQueryRefreshQueued = false
 let nativeQueryRefreshForced = false
 let nativeSearchDebounceTimer: ReturnType<typeof setTimeout> | undefined
 let nativeAppliedQueryKey = ''
-let storageRefreshGeneration = 0
 let nativeRefreshAfterExclusive = false
 let nativeRefreshAfterExclusiveForced = false
 let suppressRetentionPolicySync = false
@@ -447,6 +431,39 @@ const { syncBooleanSetting: syncNativeBooleanSetting, resetExcludedApps: resetNa
   excludedApps,
   t,
   showToast,
+})
+
+const {
+  storageStats,
+  historyHealth,
+  preparedRestore,
+  busyStorageOperation,
+  storageStatusMessage,
+  refreshStorageState,
+  createHistoryBackup,
+  prepareHistoryRestore,
+  commitHistoryRestore,
+  discardHistoryRestore,
+  compactHistoryDatabase,
+  refreshHistoryStorage,
+  openHistoryDataDirectory,
+} = useStorageOperations({
+  nativeRuntime,
+  historyState,
+  ocrEnabled,
+  t,
+  isUnmounted: () => appUnmounted,
+  acquireLease: acquireStorageOperationLease,
+  releaseLease: releaseStorageOperationLease,
+  beforeRestore: async () => {
+    invalidateStoredOcrPump()
+    ocrCoordinator.invalidate()
+    return invalidateNativeClipboardOcr()
+  },
+  adoptPolicy: adoptRestoredHistoryPolicy,
+  reloadHistory: reloadHistoryAfterRestore,
+  refreshCollections: refreshManagerCollections,
+  resumePendingOcr: () => resumePendingOcr(),
 })
 
 const retentionSelectValue = computed(() => (
@@ -1463,19 +1480,6 @@ function queueNativeHistoryRefresh(force = false) {
   })
 }
 
-async function refreshStorageState(): Promise<boolean> {
-  if (!nativeRuntime) return false
-  const generation = ++storageRefreshGeneration
-  const [health, stats] = await Promise.all([
-    getNativeHistoryHealth(),
-    getNativeStorageStats(),
-  ])
-  if (appUnmounted || generation !== storageRefreshGeneration) return false
-  if (health) historyHealth.value = health
-  if (stats) storageStats.value = stats
-  return health !== null && stats !== null
-}
-
 async function acquireStorageOperationLease(
   operation: Exclude<StorageOperation, null | 'refresh'>,
   allowReadOnly = false,
@@ -1562,142 +1566,6 @@ async function adoptRestoredHistoryPolicy(policy: CapacityPolicy): Promise<void>
   retentionDays.value = retentionPeriodForPolicy(policy)
   await nextTick()
   suppressRetentionPolicySync = false
-}
-
-async function createHistoryBackup() {
-  if (preparedRestore.value) return
-  const lease = await acquireStorageOperationLease('backup')
-  if (!lease) return
-  try {
-    const result = await createNativeHistoryBackup()
-    if (!result) {
-      storageStatusMessage.value = t('storageBackupFailed')
-      return
-    }
-    if (result.status === 'cancelled') {
-      storageStatusMessage.value = t('storageBackupCancelled')
-      return
-    }
-    storageStatusMessage.value = t('storageBackupSaved')
-    const stats = await getNativeStorageStats()
-    if (stats && !appUnmounted) storageStats.value = stats
-  } finally {
-    await releaseStorageOperationLease(lease)
-  }
-}
-
-async function prepareHistoryRestore() {
-  if (preparedRestore.value) return
-  const lease = await acquireStorageOperationLease('prepare-restore')
-  if (!lease) return
-  try {
-    const result = await prepareNativeHistoryRestore()
-    if (!result) {
-      storageStatusMessage.value = t('storageRestoreValidationFailed')
-      return
-    }
-    if (result.status === 'cancelled') {
-      storageStatusMessage.value = t('storageRestoreCancelled')
-      return
-    }
-    preparedRestore.value = result
-    storageStatusMessage.value = t('storageRestoreValidated')
-  } finally {
-    await releaseStorageOperationLease(lease)
-  }
-}
-
-async function commitHistoryRestore(token: string) {
-  if (!preparedRestore.value || preparedRestore.value.token !== token) return
-  const lease = await acquireStorageOperationLease('commit-restore')
-  if (!lease) return
-  try {
-    invalidateStoredOcrPump()
-    ocrCoordinator.invalidate()
-    if (!await invalidateNativeClipboardOcr()) {
-      storageStatusMessage.value = t('storageRestoreOcrInvalidationFailed')
-      return
-    }
-    const result = await commitNativeHistoryRestore(token)
-    if (!result) {
-      preparedRestore.value = null
-      storageStatusMessage.value = t('storageRestoreCommitFailed')
-      return
-    }
-
-    preparedRestore.value = null
-    storageRefreshGeneration += 1
-    storageStats.value = result.stats
-    await adoptRestoredHistoryPolicy(result.policy)
-    historyState.value = 'loading'
-    const reloaded = await reloadHistoryAfterRestore()
-    if (!reloaded) {
-      historyState.value = 'error'
-      storageStatusMessage.value = t('storageRestoreReloadFailed')
-      return
-    }
-    await refreshManagerCollections()
-    await refreshStorageState()
-    storageStatusMessage.value = t('storageRestoreCompleted', { count: result.importedCount })
-  } finally {
-    await releaseStorageOperationLease(lease)
-    if (!appUnmounted && ocrEnabled.value) resumePendingOcr()
-  }
-}
-
-async function discardHistoryRestore(token: string) {
-  if (!preparedRestore.value || preparedRestore.value.token !== token) return
-  const lease = await acquireStorageOperationLease('discard-restore', true)
-  if (!lease) return
-  try {
-    const result = await discardNativeHistoryRestore(token)
-    if (!result) {
-      storageStatusMessage.value = t('storageRestoreDiscardFailed')
-      return
-    }
-    preparedRestore.value = null
-    storageStatusMessage.value = t('storageRestoreCancelled')
-  } finally {
-    await releaseStorageOperationLease(lease)
-  }
-}
-
-async function compactHistoryDatabase() {
-  if (preparedRestore.value) return
-  const lease = await acquireStorageOperationLease('compact')
-  if (!lease) return
-  try {
-    const stats = await compactNativeHistoryDatabase()
-    if (!stats) {
-      storageStatusMessage.value = t('storageCompactionFailed')
-      return
-    }
-    storageStats.value = stats
-    storageStatusMessage.value = t('storageCompactionCompleted')
-  } finally {
-    await releaseStorageOperationLease(lease)
-  }
-}
-
-async function refreshHistoryStorage() {
-  if (busyStorageOperation.value !== null) return
-  busyStorageOperation.value = 'refresh'
-  storageStatusMessage.value = ''
-  try {
-    const refreshed = await refreshStorageState()
-    storageStatusMessage.value = refreshed
-      ? t('storageStatsRefreshed')
-      : t('storageStatsUnavailable')
-  } finally {
-    busyStorageOperation.value = null
-  }
-}
-
-async function openHistoryDataDirectory() {
-  const opened = await openNativeHistoryDataDirectory()
-  storageStatusMessage.value = opened
-    ? t('storageDirectoryOpened')
-    : t('storageDirectoryOpenFailed')
 }
 
 function loadMoreNativeHistory() {
