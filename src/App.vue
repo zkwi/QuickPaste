@@ -153,7 +153,7 @@ import {
 } from './platform/ocr'
 import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
 import { detectNativeClipQr } from './platform/qr'
-import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setLaunchAtStartup, setScreenCaptureProtection } from './platform/settings'
+import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setScreenCaptureProtection } from './platform/settings'
 import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
 import {
   observeWindowMaximizedState,
@@ -173,6 +173,7 @@ import SourceAppIcon from './components/SourceAppIcon.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
+import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
 
 const CodePreview = defineAsyncComponent(() => import('./components/CodePreview.vue'))
 
@@ -459,20 +460,17 @@ const pendingNativeUpserts = new Map<string, ClipboardItem>()
 let storedOcrPumpGeneration = 0
 let storedOcrPumpPromise: Promise<void> | null = null
 
-interface NativeBooleanSyncState {
-  confirmed: boolean
-  desired: boolean
-  running: boolean
-  suppressNext: boolean
-}
-
-const nativeBooleanSyncStates = new Map<string, NativeBooleanSyncState>()
-const excludedAppsSyncState = {
-  confirmed: [...excludedApps.value],
-  desired: [...excludedApps.value],
-  running: false,
-  suppressNext: false,
-}
+const { syncBooleanSetting: syncNativeBooleanSetting, resetExcludedApps: resetNativeExcludedApps } = useNativeSettingsSync({
+  nativeRuntime,
+  ready: nativeSettingsReady,
+  capturePaused,
+  launchAtStartup,
+  hideDuringSharing,
+  elevatedPasteEnabled,
+  excludedApps,
+  t,
+  showToast,
+})
 
 const retentionSelectValue = computed(() => (
   historyRetentionDays.value === null ? 'forever' : String(historyRetentionDays.value)
@@ -1166,105 +1164,6 @@ watch(query, () => {
 watch([activeFilter, quickSourceFilter], () => {
   if (nativeRuntime && currentView.value === 'quick') queueNativeHistoryRefresh()
 })
-
-function syncNativeBooleanSetting(
-  key: string,
-  enabled: boolean,
-  previous: boolean,
-  apply: (value: boolean) => Promise<boolean>,
-  rollback: (value: boolean) => void,
-) {
-  if (!nativeRuntime || !nativeSettingsReady.value) return
-  let state = nativeBooleanSyncStates.get(key)
-  if (!state) {
-    state = { confirmed: previous, desired: previous, running: false, suppressNext: false }
-    nativeBooleanSyncStates.set(key, state)
-  }
-  if (state.suppressNext && enabled === state.confirmed) {
-    state.suppressNext = false
-    return
-  }
-
-  state.desired = enabled
-  if (state.running) return
-  state.running = true
-
-  void (async () => {
-    while (state.desired !== state.confirmed) {
-      const next = state.desired
-      const applied = await apply(next)
-      if (applied) {
-        state.confirmed = next
-        continue
-      }
-      // 失败请求已不是最新意图时继续收敛；只有最新请求失败才回滚界面。
-      if (state.desired === next) {
-        state.desired = state.confirmed
-        state.suppressNext = true
-        rollback(state.confirmed)
-        showToast(t('settingApplyFailed'), true)
-        break
-      }
-    }
-    state.running = false
-  })()
-}
-
-watch(capturePaused, (enabled, previous) => {
-  syncNativeBooleanSetting('capturePaused', enabled, previous, setNativeCapturePaused, (value) => {
-    capturePaused.value = value
-  })
-})
-
-watch(launchAtStartup, (enabled, previous) => {
-  syncNativeBooleanSetting('launchAtStartup', enabled, previous, setLaunchAtStartup, (value) => {
-    launchAtStartup.value = value
-  })
-})
-
-watch(hideDuringSharing, (enabled, previous) => {
-  syncNativeBooleanSetting('hideDuringSharing', enabled, previous, setScreenCaptureProtection, (value) => {
-    hideDuringSharing.value = value
-  })
-})
-
-watch(elevatedPasteEnabled, (enabled, previous) => {
-  syncNativeBooleanSetting('elevatedPasteEnabled', enabled, previous, setElevatedPasteEnabled, (value) => {
-    elevatedPasteEnabled.value = value
-  })
-})
-
-watch(excludedApps, (apps) => {
-  if (!nativeRuntime || !nativeSettingsReady.value) return
-  const nextApps = [...apps]
-  if (excludedAppsSyncState.suppressNext
-    && JSON.stringify(nextApps) === JSON.stringify(excludedAppsSyncState.confirmed)) {
-    excludedAppsSyncState.suppressNext = false
-    return
-  }
-
-  excludedAppsSyncState.desired = nextApps
-  if (excludedAppsSyncState.running) return
-  excludedAppsSyncState.running = true
-  void (async () => {
-    while (JSON.stringify(excludedAppsSyncState.desired) !== JSON.stringify(excludedAppsSyncState.confirmed)) {
-      const requested = [...excludedAppsSyncState.desired]
-      const applied = await setCaptureExclusions(requested)
-      if (applied) {
-        excludedAppsSyncState.confirmed = requested
-        continue
-      }
-      if (JSON.stringify(excludedAppsSyncState.desired) === JSON.stringify(requested)) {
-        excludedAppsSyncState.desired = [...excludedAppsSyncState.confirmed]
-        excludedAppsSyncState.suppressNext = true
-        excludedApps.value = [...excludedAppsSyncState.confirmed]
-        showToast(t('settingApplyFailed'), true)
-        break
-      }
-    }
-    excludedAppsSyncState.running = false
-  })()
-}, { deep: true })
 
 function kindLabel(kind: ClipKind): string {
   return {
@@ -3408,8 +3307,7 @@ async function connectDesktopBridges() {
     // OCR 是隐私选择：原生同步失败时保留本地意图，尤其不能把显式关闭改回开启。
     if (!exclusionsApplied) {
       excludedApps.value = []
-      excludedAppsSyncState.confirmed = []
-      excludedAppsSyncState.desired = []
+      resetNativeExcludedApps([])
     }
     if (initializationResults.some((applied) => !applied)) showToast(t('settingApplyFailed'), true)
     // 先让初始化造成的响应式变更在 nativeSettingsReady=false 时完成，避免被误判为用户操作并重复调用。
