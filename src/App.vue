@@ -7,19 +7,14 @@ import {
   Clock3,
   Code2,
   Copy,
-  Database,
   Download,
-  Eye,
   Image as ImageIcon,
-  Keyboard,
   LayoutList,
   Link2,
   Maximize2,
   Minimize2,
   Moon,
   Minus,
-  PanelTopClose,
-  PanelTopOpen,
   Pin,
   Plus,
   Search,
@@ -170,6 +165,8 @@ import SourceAppIcon from './components/SourceAppIcon.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import ClipPreview from './components/ClipPreview.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
+import QuickPanel from './components/QuickPanel.vue'
+import type { QuickPanelHelpers } from './components/QuickPanel.types'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
@@ -720,6 +717,66 @@ const filters = computed<Array<{ id: ClipKindFilter; label: string }>>(() => [
   { id: 'image', label: t('image') },
   { id: 'pinned', label: t('pinned') },
 ])
+
+const quickPanelState = computed(() => ({
+  inert: onboardingStep.value >= 0 || modalOverlayOpen.value,
+  nativeRuntime,
+  quitSubscriptionReady: quitSubscriptionReady.value,
+  captureAvailability: captureAvailability.value,
+  capturePaused: capturePaused.value,
+  captureStatusText: captureStatusText.value,
+  targetApp: targetApp.value,
+  targetAppIcon: targetAppIcon.value,
+  targetElevated: targetElevated.value,
+  quickPanelPinned: quickPanelPinned.value,
+  quickPanelPinInFlight: quickPanelPinInFlight.value,
+  nativeSettingsReady: nativeSettingsReady.value,
+  theme: theme.value,
+  windowModeTransitioning: windowModeTransitioning.value,
+  windowActionInFlight: windowActionInFlight.value,
+  query: query.value,
+  quickSourceFilter: quickSourceFilter.value,
+  permanentSearch: Boolean(quickSearchIntent.value.permanent),
+  sourceSuggestions: sourceSuggestions.value,
+  sourceSuggestionIndex: sourceSuggestionIndex.value,
+  activeDescendant: previewId.value === null && selectedClip.value ? clipResultId(selectedClip.value.id) : undefined,
+  filters: filters.value,
+  activeFilter: activeFilter.value,
+  pinnedCount: pinnedCount.value,
+  onboardingPracticeVisible: onboardingPracticeVisible.value,
+  globalShortcut: globalShortcut.value,
+  previewActive: previewClip.value !== null,
+  historyState: historyState.value,
+  selectionAnnouncement: selectionAnnouncement.value,
+  visibleItems: visibleItems.value,
+  nativeHistoryTotalCount: nativeHistoryTotalCount.value,
+  selectedId: selectedId.value,
+  nativeHistoryNextCursor: nativeHistoryNextCursor.value,
+  nativeHistoryPageLoading: nativeHistoryPageLoading.value,
+  itemsCount: items.value.length,
+  relativeTimeNow: relativeTimeNow.value,
+  locale: locale.value,
+}))
+
+const quickPanelHelpers: QuickPanelHelpers = {
+  t,
+  kindIcon,
+  highlightSegments,
+  quickClipText,
+  isOcrOnlyMatch: (clip) => isOcrOnlyMatch(clip),
+  isPhoneticOnlyMatch: (clip) => isPhoneticOnlyMatch(clip),
+  ocrStatusLabel,
+  hasMissingFiles,
+  fileAvailabilityLabel,
+  clipResultId,
+  directPasteTooltip,
+  directPasteAriaShortcuts,
+  directPasteLabel,
+}
+
+function setQuickSearchElement(element: HTMLInputElement | null) {
+  searchInput.value = element
+}
 
 interface NativeQueryDescriptor {
   query: HistoryQuery
@@ -3447,307 +3504,55 @@ onBeforeUnmount(() => {
     @scroll.capture="handleContextMenuScroll"
   >
     <Transition name="panel-swap" mode="out-in" @after-enter="focusCurrentView">
-      <section v-if="currentView === 'quick'" key="quick" class="quick-panel" :aria-label="`${t('productName')} ${t('quickPanel')}`" :inert="onboardingStep >= 0 || modalOverlayOpen">
-        <header class="panel-chrome" data-tauri-drag-region="deep">
-          <div class="brand-lockup">
-            <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
-            <span class="brand-name">{{ t('productName') }}</span>
-            <span class="capture-state" :class="{ paused: capturePaused, unavailable: captureAvailability === 'unavailable' }">
-              <span class="state-dot"></span>{{ captureStatusText }}
-            </span>
-            <div
-              data-testid="paste-target"
-              class="chrome-target"
-              aria-live="polite"
-              aria-atomic="true"
-              :title="`${t('pasteTo')} ${targetApp ?? t('currentApp')}`"
-            >
-              <SourceAppIcon
-                class="target-icon"
-                :source="targetApp ?? t('currentApp')"
-                :icon="targetAppIcon ?? undefined"
-              />
-              <span class="sr-only">{{ t('pasteTo') }}</span>
-              <strong>{{ targetApp ?? t('currentApp') }}</strong>
-              <span v-if="targetElevated" class="target-admin" :title="t('administratorWindow')"><ShieldCheck :size="11" /><span class="sr-only">{{ t('administratorWindow') }}</span></span>
-            </div>
-          </div>
-          <div class="chrome-actions">
-            <button
-              data-testid="pin-quick-panel"
-              class="icon-button"
-              :class="{ active: quickPanelPinned }"
-              type="button"
-              :disabled="quickPanelPinInFlight || (nativeRuntime && !nativeSettingsReady)"
-              :aria-label="quickPanelPinned ? t('unpinQuickPanel') : t('pinQuickPanel')"
-              :title="quickPanelPinned ? t('unpinQuickPanel') : t('pinQuickPanel')"
-              :aria-pressed="quickPanelPinned"
-              @click="toggleQuickPanelPinned"
-            >
-              <PanelTopClose v-if="quickPanelPinned" :size="16" />
-              <PanelTopOpen v-else :size="16" />
-            </button>
-            <button data-testid="toggle-theme" class="icon-button" type="button" :aria-label="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" :title="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" @click="toggleTheme">
-              <Moon v-if="theme === 'light'" :size="16" />
-              <Sun v-else :size="16" />
-            </button>
-            <button data-testid="open-library" class="icon-button" type="button" :aria-label="t('manageClipboardShort')" :title="t('manageClipboardShort')" @click="openLibrary()">
-              <LayoutList :size="16" />
-            </button>
-            <button data-testid="open-settings" class="icon-button" type="button" :aria-label="t('openSettings')" :title="t('openSettings')" @click="openLibrary('settings')">
-              <Settings2 :size="16" />
-            </button>
-            <span class="window-divider" aria-hidden="true"></span>
-            <button data-testid="window-minimize" class="icon-button window-control" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('minimizeWindow')" :title="t('minimizeWindow')" @click="performWindowAction('minimize')">
-              <Minus :size="16" />
-            </button>
-            <button data-testid="window-close" class="icon-button window-control close" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('closeWindow')" :title="t('closeWindow')" @click="performWindowAction('close')">
-              <X :size="16" />
-            </button>
-          </div>
-        </header>
-
-        <Transition name="notice">
-          <div v-if="nativeRuntime && !quitSubscriptionReady" class="privacy-banner" role="alert">
-            <ShieldCheck :size="17" />
-            <span>{{ t('desktopExitUnavailable') }}</span>
-          </div>
-          <div v-else-if="captureAvailability === 'unavailable'" class="privacy-banner" role="status">
-            <ShieldCheck :size="17" />
-            <span>{{ t('captureUnavailableNotice') }}</span>
-          </div>
-          <div v-else-if="capturePaused" class="privacy-banner" role="status">
-            <ShieldCheck :size="17" />
-            <span>{{ t('pausedNotice') }}</span>
-            <button type="button" @click="capturePaused = false">{{ t('resume') }}</button>
-          </div>
-        </Transition>
-
-        <div
-          class="search-area"
-          :class="{
-            'has-source-filter': quickSourceFilter,
-            'has-snippet-mode': quickSearchIntent.permanent,
-            'has-both-prefixes': quickSourceFilter && quickSearchIntent.permanent,
-          }"
-        >
-          <Search class="search-icon" :size="19" aria-hidden="true" />
-          <span v-if="quickSourceFilter || quickSearchIntent.permanent" class="search-prefixes">
-            <span v-if="quickSourceFilter" data-testid="source-filter-chip" class="search-mode-chip source">
-              @{{ quickSourceFilter }}
-              <button type="button" :aria-label="t('clearSourceFilter', { source: quickSourceFilter })" @click="clearQuickSourceFilter"><X :size="11" /></button>
-            </span>
-            <span v-if="quickSearchIntent.permanent" data-testid="snippet-mode-indicator" class="search-mode-chip snippet">; {{ t('permanentSnippets') }}</span>
-          </span>
-          <input
-            ref="searchInput"
-            v-model="query"
-            data-testid="search-input"
-            class="search-input"
-            type="search"
-            autocomplete="off"
-            spellcheck="false"
-            aria-controls="clipboard-results"
-            :aria-expanded="sourceSuggestions.length > 0"
-            :aria-haspopup="sourceSuggestions.length > 0 ? 'listbox' : undefined"
-            :aria-activedescendant="previewId === null && selectedClip ? clipResultId(selectedClip.id) : undefined"
-            :aria-label="t('searchClipboard')"
-            :placeholder="t('searchClipboard')"
-            @compositionstart="startSearchComposition('quick')"
-            @compositionend="finishSearchComposition('quick')"
-            @blur="cancelSearchComposition('quick')"
+      <QuickPanel
+        v-if="currentView === 'quick'"
+        key="quick"
+        :state="quickPanelState"
+        :helpers="quickPanelHelpers"
+        @toggle-pin="toggleQuickPanelPinned"
+        @toggle-theme="toggleTheme"
+        @open-library="openLibrary"
+        @window-action="performWindowAction"
+        @resume-capture="capturePaused = false"
+        @update-query="query = $event"
+        @composition-start="startSearchComposition('quick')"
+        @composition-end="finishSearchComposition('quick')"
+        @composition-blur="cancelSearchComposition('quick')"
+        @clear-search="clearSearchAndFocus"
+        @clear-source="clearQuickSourceFilter"
+        @select-source="selectSourceSuggestion"
+        @set-filter="setFilter"
+        @filter-keydown="handleFilterKeydown"
+        @dismiss-practice="dismissOnboardingPractice"
+        @focus-content="focusCurrentQuickContent"
+        @retry-history="retryHistoryLoad"
+        @select-clip="selectedId = $event"
+        @use-clip="useClipFromDoubleClick"
+        @preview-clip="openPreview"
+        @pin-clip="pinClip($event, 'quick')"
+        @load-more="loadMoreNativeHistory"
+        @search-element="setQuickSearchElement"
+      >
+        <template #preview>
+          <ClipPreview
+            v-if="previewClip"
+            ref="previewPasteButton"
+            :clip="previewClip"
+            :code-language="previewCodeLanguage"
+            :qr-scan-state="qrScanState"
+            :qr-results="qrResults"
+            :paste-in-flight="pasteInFlight"
+            :relative-time-now="relativeTimeNow"
+            :locale="locale"
+            :t="t"
+            @close="closePreview"
+            @copy-recognized-text="copyRecognizedText"
+            @paste-recognized-text="pasteRecognizedText"
+            @open-qr-link="openQrLink"
+            @paste="pastePreviewClip"
           />
-          <button v-if="query" class="clear-search" type="button" :aria-label="t('clearSearch')" @click="clearSearchAndFocus()">
-            <X :size="15" />
-          </button>
-          <span v-else class="search-hint">Ctrl K</span>
-          <div v-if="sourceSuggestions.length" data-testid="source-suggestions" class="source-suggestions" role="listbox" :aria-label="t('sourceSuggestions')">
-            <button
-              v-for="(sourceApp, index) in sourceSuggestions"
-              :key="sourceApp"
-              :data-testid="`source-suggestion-${index}`"
-              type="button"
-              role="option"
-              :aria-selected="sourceSuggestionIndex === index"
-              :class="{ selected: sourceSuggestionIndex === index }"
-              @mousedown.prevent
-              @click="selectSourceSuggestion(sourceApp)"
-            ><SourceAppIcon class="source-suggestion-icon" :source="sourceApp" /> <span>{{ sourceApp }}</span><kbd v-if="sourceSuggestionIndex === index">Enter</kbd></button>
-          </div>
-        </div>
-
-        <nav class="filter-strip" :aria-label="t('contentTypes')">
-          <button
-            v-for="(filter, index) in filters"
-            :key="filter.id"
-            :data-testid="`filter-${filter.id}`"
-            class="filter-chip"
-            :class="{ active: activeFilter === filter.id }"
-            type="button"
-            :tabindex="activeFilter === filter.id ? 0 : -1"
-            :aria-pressed="activeFilter === filter.id"
-            @click="setFilter(filter.id)"
-            @keydown="handleFilterKeydown($event, index)"
-          >
-            {{ filter.label }}
-            <span v-if="filter.id === 'pinned'" class="chip-count">{{ pinnedCount }}</span>
-          </button>
-        </nav>
-
-        <Transition name="notice">
-          <aside
-            v-if="onboardingPracticeVisible"
-            data-testid="onboarding-practice"
-            class="onboarding-practice"
-            role="status"
-            aria-live="polite"
-          >
-            <Keyboard :size="17" aria-hidden="true" />
-            <span><strong>{{ t('onboardingPracticeTitle') }}</strong>{{ t('onboardingPracticeDescription', { shortcut: displayShortcut(globalShortcut) }) }}</span>
-            <button type="button" :aria-label="t('dismissOnboardingPractice')" @click="dismissOnboardingPractice"><X :size="14" /></button>
-          </aside>
-        </Transition>
-
-        <div class="content-stage">
-          <Transition name="preview-swap" mode="out-in" @after-enter="focusCurrentQuickContent">
-            <ClipPreview
-              v-if="previewClip"
-              key="preview"
-              ref="previewPasteButton"
-              :clip="previewClip"
-              :code-language="previewCodeLanguage"
-              :qr-scan-state="qrScanState"
-              :qr-results="qrResults"
-              :paste-in-flight="pasteInFlight"
-              :relative-time-now="relativeTimeNow"
-              :locale="locale"
-              :t="t"
-              @close="closePreview"
-              @copy-recognized-text="copyRecognizedText"
-              @paste-recognized-text="pasteRecognizedText"
-              @open-qr-link="openQrLink"
-              @paste="pastePreviewClip"
-            />
-
-            <div v-else key="list" class="results-panel" :aria-busy="historyState === 'loading'">
-              <p v-if="historyState === 'ready'" data-testid="quick-results-status" class="selection-announcement sr-only" aria-live="polite" aria-atomic="true">{{ selectionAnnouncement }}</p>
-              <p v-if="nativeRuntime && historyState === 'ready'" data-testid="quick-history-page-status" class="sr-only">{{ t('showingHistoryPage', { loaded: visibleItems.length, total: nativeHistoryTotalCount }) }}</p>
-              <div v-if="historyState === 'loading'" data-testid="history-loading" class="empty-state history-state" role="status">
-                <span class="history-loader" aria-hidden="true"><span></span><span></span><span></span></span>
-                <h2>{{ t('historyLoading') }}</h2>
-                <p>{{ t('historyLoadingHint') }}</p>
-              </div>
-
-              <div v-else-if="historyState === 'error'" data-testid="history-error" class="empty-state history-state error" role="alert">
-                <span class="empty-symbol"><ShieldCheck :size="25" /></span>
-                <h2>{{ t('historyUnavailable') }}</h2>
-                <p>{{ t('historyLoadFailed') }}</p>
-                <button data-testid="history-retry" class="secondary-button" type="button" @click="retryHistoryLoad">{{ t('retryHistory') }}</button>
-              </div>
-
-              <template v-else-if="visibleItems.length">
-                <div id="clipboard-results" class="clip-list" role="list" :aria-label="t('clipboardResults')">
-                <article
-                  v-for="(clip, index) in visibleItems"
-                  :key="clip.id"
-                  :id="clipResultId(clip.id)"
-                  :data-clip-id="clip.id"
-                  class="clip-row"
-                  :class="{ 'is-selected': selectedId === clip.id }"
-                  role="listitem"
-                  :aria-current="selectedId === clip.id ? 'true' : undefined"
-                >
-                  <button
-                    class="clip-primary"
-                    type="button"
-                    :title="directPasteTooltip(index)"
-                    :tabindex="selectedId === clip.id ? 0 : -1"
-                    :aria-keyshortcuts="directPasteAriaShortcuts(index)"
-                    @mousedown.left.prevent
-                    @click="selectedId = clip.id"
-                    @dblclick="useClipFromDoubleClick(clip)"
-                  >
-                    <span v-if="index < DIRECT_PASTE_ITEM_COUNT" class="quick-number" aria-hidden="true">{{ directPasteLabel(index) }}</span>
-                    <span class="kind-icon" :style="{ '--source-color': clip.color }">
-                      <ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" />
-                      <component v-else :is="kindIcon(clip.kind)" :size="18" />
-                    </span>
-                    <span class="clip-copy">
-                      <span class="clip-content">
-                        <span class="clip-content-text">
-                          <template v-for="(segment, segmentIndex) in highlightSegments(quickClipText(clip))" :key="`content-${segmentIndex}`">
-                            <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
-                            <template v-else>{{ segment.text }}</template>
-                          </template>
-                        </span>
-                        <span v-if="isOcrOnlyMatch(clip)" class="ocr-match">{{ t('ocrMatch') }}</span>
-                        <span v-else-if="isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ t(nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span>
-                        <span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ ocrStatusLabel(clip) }}</span>
-                        <span v-if="hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ fileAvailabilityLabel(clip) }}</span>
-                      </span>
-                    </span>
-                    <span class="clip-meta">
-                      <span class="source-app">
-                        <SourceAppIcon
-                          class="app-dot"
-                          :source="clip.sourceApp"
-                          :icon="clip.sourceAppIcon"
-                          :fallback-color="clip.color"
-                        />
-                        <span class="source-name">
-                          <template v-for="(segment, segmentIndex) in highlightSegments(clip.sourceApp)" :key="`source-${segmentIndex}`">
-                            <mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark>
-                            <template v-else>{{ segment.text }}</template>
-                          </template>
-                        </span>
-                      </span>
-                      <span class="clip-time">{{ formatRelativeTime(clip.copiedAt, relativeTimeNow, locale) }}</span>
-                    </span>
-                  </button>
-                  <div class="row-actions">
-                    <button :data-testid="`preview-clip-${clip.id}`" type="button" :tabindex="selectedId === clip.id ? 0 : -1" :aria-label="t('previewWithShortcut')" :title="t('previewWithShortcut')" @focus="selectedId = clip.id" @pointerdown="selectedId = clip.id" @click="openPreview(clip.id)"><Eye :size="15" /></button>
-                    <button
-                      :data-testid="`pin-clip-${clip.id}`"
-                      type="button"
-                      :tabindex="selectedId === clip.id ? 0 : -1"
-                      :aria-label="`${clip.pinned ? t('unpin') : t('pinClip')}: ${clip.title}`"
-                      :title="clip.pinned ? t('unpin') : t('pinClip')"
-                      :aria-pressed="clip.pinned"
-                      :class="{ active: clip.pinned }"
-                      @focus="selectedId = clip.id"
-                      @pointerdown="selectedId = clip.id"
-                      @click="pinClip(clip.id, 'quick')"
-                    ><Pin :size="15" :fill="clip.pinned ? 'currentColor' : 'none'" /></button>
-                  </div>
-                </article>
-                  <button
-                    v-if="nativeRuntime && nativeHistoryNextCursor"
-                    data-testid="history-load-more"
-                    class="secondary-button history-load-more"
-                    type="button"
-                    :disabled="nativeHistoryPageLoading"
-                    @click="loadMoreNativeHistory"
-                  >{{ nativeHistoryPageLoading ? t('loadingMoreHistory') : t('loadMoreHistory') }}</button>
-                </div>
-              </template>
-
-              <div v-else-if="items.length === 0 && !query && activeFilter === 'all'" data-testid="empty-history" class="empty-state">
-                <span class="empty-symbol"><Database :size="25" /></span>
-                <h2>{{ t('emptyHistory') }}</h2>
-                <p>{{ t('emptyHistoryHint') }}</p>
-              </div>
-
-              <div v-else data-testid="no-results" class="empty-state">
-                <span class="empty-symbol"><Search :size="25" /></span>
-                <h2>{{ t('noResults') }}</h2>
-                <p>{{ t('noResultsHint') }}</p>
-                <button class="secondary-button" type="button" @click="clearSearchAndFocus(true)">{{ t('clearFilters') }}</button>
-              </div>
-            </div>
-          </Transition>
-        </div>
-
-      </section>
+        </template>
+      </QuickPanel>
 
       <section v-else key="library" data-testid="library-view" class="library-shell" :aria-label="t('clipboardManager')" :inert="modalOverlayOpen">
         <aside class="library-sidebar">
