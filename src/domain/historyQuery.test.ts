@@ -20,6 +20,7 @@ const query: HistoryQuery = {
   sourceApps: ['\uFEFFWord\u0085', 'Edge', 'Word', '  ', '\uE000', '😀'],
   collection: { mode: 'collection', id: '\uFEFFcollection-1\u0085' },
   pinned: false,
+  permanent: true,
   limit: 50,
   cursor,
 }
@@ -32,6 +33,7 @@ describe('history query contract', () => {
       sourceApps: ['Edge', 'Word', '😀', '\uE000'],
       collection: { mode: 'collection', id: 'collection-1' },
       pinned: false,
+      permanent: true,
       limit: 50,
       cursor,
     })
@@ -108,6 +110,7 @@ describe('history query contract', () => {
     expect(historyQueryKey(query)).toBe(historyQueryKey(normalizedEquivalent))
     expect(historyQueryKey({ ...query, limit: 51 })).not.toBe(historyQueryKey(query))
     expect(historyQueryKey({ ...query, pinned: true })).not.toBe(historyQueryKey(query))
+    expect(historyQueryKey({ ...query, permanent: false })).not.toBe(historyQueryKey(query))
     expect(historyQueryKey({ ...query, collection: { mode: 'unfiled' } })).not.toBe(historyQueryKey(query))
   })
 

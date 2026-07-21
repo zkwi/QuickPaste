@@ -118,6 +118,8 @@ export function normalizeSourceAppIcon(value: unknown): string | undefined {
 export interface ClipFilter {
   query: string
   kind: ClipKindFilter
+  sourceApps?: string[]
+  permanent?: boolean
 }
 
 export interface RemovedClip {
@@ -387,8 +389,10 @@ export function applyClipFilter(items: ClipboardItem[], filter: ClipFilter): Cli
   return items.filter((clip) => {
     const matchesKind = filter.kind === 'all'
       || (filter.kind === 'pinned' ? clip.pinned : clip.kind === filter.kind)
+    const matchesSource = !filter.sourceApps?.length || filter.sourceApps.includes(clip.sourceApp)
+    const matchesPermanent = filter.permanent === undefined || clip.permanent === filter.permanent
 
-    if (!matchesKind) return false
+    if (!matchesKind || !matchesSource || !matchesPermanent) return false
     if (terms.length === 0) return true
 
     const haystack = searchableText(clip)

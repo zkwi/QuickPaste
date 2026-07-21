@@ -455,6 +455,7 @@ button:disabled {
   flex: 0 0 var(--quick-search-area-height);
   align-items: center;
   margin: 0 12px;
+  z-index: 6;
 }
 
 .search-icon {
@@ -479,6 +480,123 @@ button:disabled {
   letter-spacing: -0.005em;
   appearance: none;
   transition: border-color 120ms ease, background 120ms ease, box-shadow 120ms ease;
+}
+
+.search-area.has-source-filter .search-input {
+  padding-left: 148px;
+}
+
+.search-area.has-snippet-mode .search-input {
+  padding-left: 118px;
+}
+
+.search-area.has-both-prefixes .search-input {
+  padding-left: 226px;
+}
+
+.search-prefixes {
+  position: absolute;
+  left: 35px;
+  z-index: 2;
+  display: flex;
+  max-width: calc(100% - 145px);
+  align-items: center;
+  gap: 4px;
+}
+
+.search-mode-chip {
+  display: inline-flex;
+  min-width: 0;
+  height: 22px;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--brand) 28%, var(--border));
+  border-radius: 6px;
+  overflow: hidden;
+  color: var(--brand-strong);
+  background: var(--surface-brand);
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-mode-chip.source {
+  max-width: 106px;
+}
+
+.search-mode-chip.snippet {
+  flex: 0 0 auto;
+  color: var(--teal);
+  border-color: color-mix(in srgb, var(--teal) 28%, var(--border));
+  background: color-mix(in srgb, var(--teal) 9%, var(--surface-raised));
+}
+
+.search-mode-chip button {
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  place-items: center;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.search-mode-chip button:hover,
+.search-mode-chip button:focus-visible {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+}
+
+.source-suggestions {
+  position: absolute;
+  top: calc(50% + var(--quick-search-control-height) / 2 + 4px);
+  left: 0;
+  z-index: 12;
+  display: grid;
+  width: 100%;
+  padding: 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-raised);
+  box-shadow: var(--panel-shadow);
+}
+
+.source-suggestions button {
+  display: grid;
+  min-height: 31px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 7px;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  color: var(--text-soft);
+  background: transparent;
+  font: inherit;
+  font-size: 10.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.source-suggestions button.selected,
+.source-suggestions button:hover {
+  color: var(--text);
+  background: var(--surface-brand);
+}
+
+.source-suggestions button span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-suggestion-icon {
+  --source-app-icon-size: 20px;
 }
 
 .search-input::-webkit-search-cancel-button {
@@ -1319,11 +1437,79 @@ button:disabled {
   font-weight: 700;
 }
 
-.preview-ocr-text > div {
+.preview-ocr-text > .recognized-text-content {
   min-width: 0;
   max-height: 66px;
   padding: 0 10px 8px;
   overflow: auto;
+}
+
+.recognized-text-content p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.recognized-text-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.recognized-text-actions button {
+  display: inline-flex;
+  min-height: 23px;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-soft);
+  background: var(--surface-raised);
+  font: inherit;
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.recognized-text-actions button:hover:not(:disabled),
+.recognized-text-actions button:focus-visible {
+  color: var(--brand-strong);
+  border-color: color-mix(in srgb, var(--brand) 32%, var(--border));
+}
+
+.preview-qr {
+  min-width: 0;
+  max-height: 112px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-soft);
+  background: color-mix(in srgb, var(--surface-soft) 68%, var(--surface-raised));
+  font-size: 9px;
+  line-height: 1.55;
+}
+
+.qr-status,
+.qr-results > strong {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  padding: 7px 10px;
+}
+
+.qr-results > strong {
+  color: var(--teal);
+}
+
+.qr-result {
+  padding: 7px 10px;
+  border-top: 1px solid var(--border);
+}
+
+.qr-result p {
+  margin: 0;
   overflow-wrap: anywhere;
   white-space: pre-wrap;
 }
@@ -2955,6 +3141,10 @@ kbd {
   margin-top: 4px;
   color: var(--danger);
   font-size: 9.5px;
+}
+
+.shortcut-card small.shortcut-conflict {
+  color: var(--amber);
 }
 
 .shortcut-card.unavailable {

@@ -1,4 +1,4 @@
-import { captureShortcut, displayShortcut } from './shortcut'
+import { captureShortcut, displayShortcut, shortcutConflict } from './shortcut'
 
 function keyboardInput(overrides: Partial<KeyboardEvent> = {}): KeyboardEvent {
   return {
@@ -50,5 +50,11 @@ describe('global shortcut recording', () => {
     { ctrlKey: true, shiftKey: true, code: 'Escape' },
   ])('rejects Windows shell shortcut $code', (input) => {
     expect(captureShortcut(keyboardInput(input))).toBeNull()
+  })
+
+  it('identifies familiar Windows and Office paste shortcut conflicts', () => {
+    expect(shortcutConflict('Ctrl+Shift+V')).toBe('plainTextPaste')
+    expect(shortcutConflict('Ctrl+Alt+V')).toBe('pasteSpecial')
+    expect(shortcutConflict('Ctrl+Shift+K')).toBeNull()
   })
 })

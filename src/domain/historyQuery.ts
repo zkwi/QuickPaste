@@ -21,6 +21,7 @@ export interface HistoryQuery {
   sourceApps: string[]
   collection: CollectionScope
   pinned?: boolean
+  permanent?: boolean
   limit: number
   cursor?: string
 }
@@ -105,6 +106,9 @@ export function normalizeHistoryQuery(value: HistoryQuery): HistoryQuery {
   if (value.pinned !== undefined && typeof value.pinned !== 'boolean') {
     throw new Error('固定筛选无效')
   }
+  if (value.permanent !== undefined && typeof value.permanent !== 'boolean') {
+    throw new Error('永久片段筛选无效')
+  }
   if (!Number.isInteger(value.limit) || value.limit < 1 || value.limit > MAX_QUERY_LIMIT) {
     throw new Error('历史分页大小无效')
   }
@@ -118,6 +122,7 @@ export function normalizeHistoryQuery(value: HistoryQuery): HistoryQuery {
     sourceApps: normalizeSourceApps(value.sourceApps),
     collection: normalizeCollection(value.collection),
     ...(value.pinned === undefined ? {} : { pinned: value.pinned }),
+    ...(value.permanent === undefined ? {} : { permanent: value.permanent }),
     limit: value.limit,
     ...(value.cursor === undefined ? {} : { cursor: value.cursor }),
   }
@@ -131,6 +136,7 @@ export function historyQueryKey(value: HistoryQuery): string {
     sourceApps: query.sourceApps,
     collection: query.collection,
     ...(query.pinned === undefined ? {} : { pinned: query.pinned }),
+    ...(query.permanent === undefined ? {} : { permanent: query.permanent }),
     limit: query.limit,
   })
 }

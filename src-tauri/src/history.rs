@@ -257,6 +257,8 @@ pub struct HistoryQuery {
     pub collection: CollectionScope,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permanent: Option<bool>,
     pub limit: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
@@ -270,6 +272,7 @@ impl Default for HistoryQuery {
             source_apps: Vec::new(),
             collection: CollectionScope::Any {},
             pinned: None,
+            permanent: None,
             limit: 100,
             cursor: None,
         }
@@ -3106,6 +3109,55 @@ pub(crate) fn load_stored_ocr_image(
     Ok(result)
 }
 
+pub(crate) fn load_stored_image_for_analysis(
+    connection: &Connection,
+    id: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    if !history_id_is_cursor_safe(id) {
+        return Ok(None);
+    }
+    let transaction = Transaction::new_unchecked(connection, TransactionBehavior::Deferred)
+        .map_err(|error| error.to_string())?;
+    let metadata = transaction
+        .query_row(
+            "SELECT clip_formats.mime, length(clip_formats.data)
+             FROM clips
+             JOIN clip_formats
+               ON clip_formats.clip_id = clips.id AND clip_formats.format = 'image'
+             WHERE clips.id = ?1 AND clips.kind = 'image'",
+            [id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let result = match metadata {
+        None => None,
+        Some((mime, length))
+            if mime == "image/png"
+                && (1..=HISTORY_IMAGE_BLOB_MAX_BYTES as i64).contains(&length) =>
+        {
+            let png = transaction
+                .query_row(
+                    "SELECT clip_formats.data
+                     FROM clips
+                     JOIN clip_formats
+                       ON clip_formats.clip_id = clips.id AND clip_formats.format = 'image'
+                     WHERE clips.id = ?1 AND clips.kind = 'image'",
+                    [id],
+                    |row| row.get::<_, Vec<u8>>(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if usize::try_from(length).ok() != Some(png.len()) {
+                return Err("本地图片分析源数据无效".into());
+            }
+            Some(png)
+        }
+        Some(_) => return Err("本地图片分析源数据无效".into()),
+    };
+    transaction.commit().map_err(|error| error.to_string())?;
+    Ok(result)
+}
+
 pub(crate) fn apply_ocr_patch(
     connection: &mut Connection,
     id: &str,
@@ -3471,6 +3523,10 @@ fn history_query_predicate(query: &HistoryQuery) -> (String, String, Vec<Value>)
         predicates.push("clips.pinned = ?".to_owned());
         parameters.push(Value::Integer(i64::from(pinned)));
     }
+    if let Some(permanent) = query.permanent {
+        predicates.push("clips.permanent = ?".to_owned());
+        parameters.push(Value::Integer(i64::from(permanent)));
+    }
     let mut fts_terms = Vec::new();
     for term in terms {
         if term.chars().count() >= 3 {
@@ -3516,6 +3572,7 @@ fn normalize_batch_history_query(query: BatchHistoryQuery) -> Result<BatchHistor
         source_apps: query.source_apps,
         collection: query.collection,
         pinned: query.pinned,
+        permanent: None,
         limit: 1,
         cursor: None,
     })?;
@@ -3535,6 +3592,7 @@ fn batch_history_query_as_history(query: &BatchHistoryQuery) -> HistoryQuery {
         source_apps: query.source_apps.clone(),
         collection: query.collection.clone(),
         pinned: query.pinned,
+        permanent: None,
         limit: 1,
         cursor: None,
     }
@@ -6458,6 +6516,7 @@ mod tests {
             source_apps: Vec::new(),
             collection: CollectionScope::Any {},
             pinned: None,
+            permanent: None,
             limit: 50,
             cursor: None,
         }
@@ -7932,6 +7991,16 @@ mod tests {
             load_stored_ocr_image(&database, "ocr-image", &image_hash)
                 .expect("load stored OCR image"),
             StoredOcrImage::Ready(png.clone())
+        );
+        assert_eq!(
+            load_stored_image_for_analysis(&database, "ocr-image")
+                .expect("load stored image for local analysis"),
+            Some(png.clone())
+        );
+        assert_eq!(
+            load_stored_image_for_analysis(&database, " missing-id")
+                .expect("invalid analysis id is not loaded"),
+            None
         );
         assert_eq!(
             load_stored_ocr_image(&database, "ocr-image", &"b".repeat(64))
@@ -12691,6 +12760,7 @@ mod tests {
                 id: "\u{feff}collection-1\u{0085}".into(),
             },
             pinned: Some(false),
+            permanent: Some(true),
             limit: 50,
             cursor: Some(canonical_cursor.clone()),
         })
@@ -12794,6 +12864,7 @@ mod tests {
         rich.search_terms = vec!["huojian".into(), "hj".into()];
         rich.collection_id = Some("work".into());
         rich.pinned = true;
+        rich.permanent = true;
 
         let mut file = text_item("file", "2026-07-03T00:00:00.000Z");
         file.kind = "file".into();
@@ -12913,6 +12984,16 @@ mod tests {
                     collection: CollectionScope::Collection { id: "work".into() },
                     pinned: Some(true),
                     ..history_query("alpha")
+                }
+            ),
+            vec!["rich"]
+        );
+        assert_eq!(
+            query_ids(
+                &database,
+                HistoryQuery {
+                    permanent: Some(true),
+                    ..history_query("")
                 }
             ),
             vec!["rich"]

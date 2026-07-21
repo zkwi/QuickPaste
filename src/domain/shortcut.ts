@@ -1,5 +1,12 @@
 export const DEFAULT_GLOBAL_SHORTCUT = 'Ctrl+Shift+V'
 
+export type ShortcutConflict = 'plainTextPaste' | 'pasteSpecial'
+
+const FAMILIAR_SHORTCUT_CONFLICTS: Readonly<Record<string, ShortcutConflict>> = {
+  'Ctrl+Alt+V': 'pasteSpecial',
+  'Ctrl+Shift+V': 'plainTextPaste',
+}
+
 const MODIFIER_CODES = new Set([
   'AltLeft',
   'AltRight',
@@ -78,4 +85,8 @@ export function captureShortcut(event: Pick<KeyboardEvent,
 
 export function displayShortcut(shortcut: string): string {
   return shortcut.split('+').join(' + ')
+}
+
+export function shortcutConflict(shortcut: string): ShortcutConflict | null {
+  return FAMILIAR_SHORTCUT_CONFLICTS[shortcut] ?? null
 }

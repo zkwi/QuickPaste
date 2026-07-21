@@ -99,6 +99,7 @@ const nativeQuery: HistoryQuery = {
   sourceApps: [' Word ', 'Edge', 'Word'],
   collection: { mode: 'unfiled' },
   pinned: false,
+  permanent: true,
   limit: 50,
 }
 
@@ -379,6 +380,7 @@ describe('native clipboard history storage', () => {
         sourceApps: ['Edge', 'Word'],
         collection: { mode: 'unfiled' },
         pinned: false,
+        permanent: true,
         limit: 50,
       },
     })

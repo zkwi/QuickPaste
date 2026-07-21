@@ -11,6 +11,7 @@ import {
   Database,
   Download,
   Eye,
+  ExternalLink,
   Image as ImageIcon,
   Keyboard,
   LayoutList,
@@ -20,8 +21,11 @@ import {
   Monitor,
   Moon,
   Minus,
+  PanelTopClose,
+  PanelTopOpen,
   Pin,
   Plus,
+  QrCode,
   RefreshCw,
   Search,
   Settings2,
@@ -32,7 +36,7 @@ import {
 } from 'lucide-vue-next'
 import { demoClips } from './data/demoClips'
 import { translate, type Locale, type MessageKey } from './i18n'
-import { captureShortcut, DEFAULT_GLOBAL_SHORTCUT, displayShortcut } from './domain/shortcut'
+import { captureShortcut, DEFAULT_GLOBAL_SHORTCUT, displayShortcut, shortcutConflict } from './domain/shortcut'
 import {
   applyClipFilter,
   clearUnpinnedHistory,
@@ -70,6 +74,8 @@ import {
   type Theme,
 } from './domain/settings'
 import { createSearchHighlighter } from './domain/searchHighlight'
+import { isSafeExternalUrl } from './domain/externalLink'
+import { parseQuickSearch, suggestSourceApps } from './domain/quickSearch'
 import {
   historyMatchBadge,
   historyQueryKey,
@@ -147,6 +153,7 @@ import {
   setNativeClipboardOcrEnabled,
 } from './platform/ocr'
 import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
+import { detectNativeClipQr } from './platform/qr'
 import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setLaunchAtStartup, setScreenCaptureProtection } from './platform/settings'
 import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
 import {
@@ -264,7 +271,10 @@ function readStoredSettings(): StoredSettings {
 const storedSettings = readStoredSettings()
 const storedRetentionPeriod = retentionPeriodForPolicy(storedSettings.historyPolicy)
 const items = ref<ClipboardItem[]>(pruneExpiredClips(readStoredItems(), storedRetentionPeriod))
+const knownSourceApps = ref(suggestSourceApps(items.value.map((clip) => clip.sourceApp), '', 200))
 const query = ref('')
+const quickSourceFilter = ref('')
+const sourceSuggestionIndex = ref(0)
 const managerQuery = ref('')
 const managerKinds = ref<ClipKind[]>([])
 const managerCollectionFilter = ref<ManagerCollectionFilter>('any')
@@ -287,6 +297,8 @@ const snippetLoading = ref(false)
 const activeFilter = ref<ClipKindFilter>('all')
 const selectedId = ref(items.value[0]?.id ?? '')
 const previewId = ref<string | null>(null)
+const qrScanState = ref<'idle' | 'scanning' | 'complete'>('idle')
+const qrResults = ref<string[]>([])
 const clipContextMenu = ref<ClipContextMenuState | null>(null)
 const lastRemoved = ref<RemovedClip | null>(null)
 const capturePaused = ref(storedSettings.capturePaused)
@@ -397,6 +409,7 @@ let suppressRetentionPolicySync = false
 let previewLoadGeneration = 0
 let suppressedNativeHistoryItems: ClipboardItem[] | null = null
 let quickSessionGeneration = 0
+let qrScanGeneration = 0
 let systemActionGeneration = 0
 let snippetSessionGeneration = 0
 let collectionDeleteRestoreFocus: HTMLElement | null = null
@@ -459,14 +472,24 @@ const onboardingPracticeVisible = computed(() => (
   onboardingStep.value < 0 && onboardingPracticePending.value
 ))
 
+const quickSearchIntent = computed(() => parseQuickSearch(query.value, quickSourceFilter.value))
+const sourceSuggestions = computed(() => (
+  quickSearchIntent.value.sourceFragment === undefined
+    ? []
+    : suggestSourceApps(knownSourceApps.value, quickSearchIntent.value.sourceFragment)
+))
 const visibleItems = computed(() => nativeRuntime
   ? items.value
   : applyClipFilter(items.value, {
-      query: query.value,
+      query: quickSearchIntent.value.text,
       kind: activeFilter.value,
+      ...(quickSearchIntent.value.sourceApp
+        ? { sourceApps: [quickSearchIntent.value.sourceApp] }
+        : {}),
+      ...(quickSearchIntent.value.permanent ? { permanent: true } : {}),
     }))
 
-const directSearchHighlighter = computed(() => createSearchHighlighter(query.value))
+const directSearchHighlighter = computed(() => createSearchHighlighter(quickSearchIntent.value.text))
 const managerSearchHighlighter = computed(() => createSearchHighlighter(managerQuery.value))
 
 function highlightSegments(text: string) {
@@ -570,6 +593,31 @@ const previewClip = computed(() => {
 const previewCodeLanguage = computed(() => {
   const clip = previewClip.value
   return clip?.kind === 'code' ? inferCodeLanguage(clip.title, clip.content) : undefined
+})
+const shortcutConflictMessage = computed(() => {
+  const conflict = shortcutConflict(globalShortcut.value)
+  if (conflict === 'plainTextPaste') return t('shortcutConflictPlainTextPaste')
+  if (conflict === 'pasteSpecial') return t('shortcutConflictPasteSpecial')
+  return ''
+})
+watch(previewClip, (clip) => {
+  const generation = ++qrScanGeneration
+  qrResults.value = []
+  qrScanState.value = 'idle'
+  if (!clip || clip.kind !== 'image') return
+
+  qrScanState.value = 'scanning'
+  void detectNativeClipQr(clip.id).then((results) => {
+    if (appUnmounted
+      || generation !== qrScanGeneration
+      || previewId.value !== clip.id) return
+    if (results === null) {
+      qrScanState.value = 'idle'
+      return
+    }
+    qrResults.value = results
+    qrScanState.value = 'complete'
+  })
 })
 const contextMenuClip = computed(() => (
   clipContextMenu.value
@@ -695,13 +743,18 @@ function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | 
   if (!nativeRuntime || currentView.value === 'library' && librarySection.value === 'settings') return null
 
   let kinds: ClipKind[] = []
-  const sourceApps: string[] = []
+  let sourceApps: string[] = []
   let pinned: boolean | undefined
+  let permanent: boolean | undefined
   let text = query.value
   let collection: HistoryQuery['collection'] = { mode: 'any' }
   let impossible = false
 
   if (currentView.value === 'quick') {
+    text = quickSearchIntent.value.text
+    sourceApps = quickSearchIntent.value.sourceApp ? [quickSearchIntent.value.sourceApp] : []
+    permanent = quickSearchIntent.value.permanent ? true : undefined
+    if (quickSearchIntent.value.sourceFragment !== undefined) impossible = true
     if (activeFilter.value !== 'all' && activeFilter.value !== 'pinned') kinds = [activeFilter.value]
     if (activeFilter.value === 'pinned') pinned = true
   } else {
@@ -729,6 +782,7 @@ function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | 
       sourceApps,
       collection,
       ...(pinned === undefined ? {} : { pinned }),
+      ...(permanent === undefined ? {} : { permanent }),
       limit: NATIVE_HISTORY_PAGE_SIZE,
       ...(cursor ? { cursor } : {}),
     }),
@@ -952,6 +1006,10 @@ async function runSerializedManagerOperation<T>(
 }
 
 watch(items, (value, previous) => {
+  knownSourceApps.value = suggestSourceApps([
+    ...knownSourceApps.value,
+    ...value.map((clip) => clip.sourceApp),
+  ], '', 200)
   if (clipContextMenu.value && !value.some((clip) => clip.id === clipContextMenu.value?.clipId)) {
     closeClipContextMenu()
   }
@@ -1047,6 +1105,10 @@ watch(visibleItems, (value) => {
   }
 })
 
+watch(sourceSuggestions, (value) => {
+  sourceSuggestionIndex.value = Math.min(sourceSuggestionIndex.value, Math.max(0, value.length - 1))
+})
+
 watch(libraryItems, (value) => {
   if (!value.some((clip) => clip.id === managerSelectedId.value)) {
     managerSelectedId.value = value[0]?.id ?? ''
@@ -1094,7 +1156,8 @@ watch(currentView, (view) => {
   managerBatchError.value = ''
 })
 
-watch([query, activeFilter], () => {
+watch([query, activeFilter, quickSourceFilter], () => {
+  if (quickSearchIntent.value.sourceFragment !== undefined) sourceSuggestionIndex.value = 0
   closeClipContextMenu()
   selectedId.value = visibleItems.value[0]?.id ?? ''
   previewId.value = null
@@ -2283,7 +2346,22 @@ function handleFilterKeydown(event: KeyboardEvent, index: number) {
 
 function clearSearchAndFocus(resetFilter = false) {
   query.value = ''
+  quickSourceFilter.value = ''
   if (resetFilter) activeFilter.value = 'all'
+  nextTick(() => searchInput.value?.focus())
+}
+
+function clearQuickSourceFilter() {
+  quickSourceFilter.value = ''
+  nextTick(() => searchInput.value?.focus())
+}
+
+function selectSourceSuggestion(sourceApp: string) {
+  if (!sourceSuggestions.value.includes(sourceApp)) return
+  const remainingText = quickSearchIntent.value.text
+  quickSourceFilter.value = sourceApp
+  query.value = remainingText
+  sourceSuggestionIndex.value = 0
   nextTick(() => searchInput.value?.focus())
 }
 
@@ -2319,6 +2397,8 @@ function resetQuickSession(focusSearch = true) {
   quickSessionGeneration += 1
   closeClipContextMenu()
   query.value = ''
+  quickSourceFilter.value = ''
+  sourceSuggestionIndex.value = 0
   managerQuery.value = ''
   activeFilter.value = 'all'
   previewId.value = null
@@ -2503,6 +2583,40 @@ async function copyClip(clip: ClipboardItem) {
   showToast(copied ? t('copiedFrom', { source: payload.sourceApp }) : t('clipboardUnavailable'), !copied)
 }
 
+async function pasteRecognizedText(text: string) {
+  if (pasteInFlight.value || !text) return
+  const sessionGeneration = quickSessionGeneration
+  const pasteTargetLabel = targetApp.value ?? t('currentApp')
+  pasteInFlight.value = true
+  try {
+    const result = await pasteText(text)
+    if (sessionGeneration !== quickSessionGeneration) return
+    showToast(result.requiresElevation
+      ? t('elevatedPasteApprovalRequired')
+      : result.pasted
+        ? t('pastedTo', { app: pasteTargetLabel })
+        : result.copied
+          ? t('pasteFallbackCopied', { app: pasteTargetLabel })
+          : t('clipboardUnavailable'), result.requiresElevation || !result.pasted)
+  } finally {
+    pasteInFlight.value = false
+  }
+}
+
+async function copyRecognizedText(text: string, sourceApp: string) {
+  if (!text) return
+  const sessionGeneration = quickSessionGeneration
+  const copied = await copyText(text)
+  if (sessionGeneration !== quickSessionGeneration) return
+  showToast(copied ? t('copiedFrom', { source: sourceApp }) : t('clipboardUnavailable'), !copied)
+}
+
+async function openQrLink(value: string) {
+  if (!isSafeExternalUrl(value)) return
+  const opened = await openExternalLink(value)
+  showToast(opened ? t('qrLinkOpened') : t('qrLinkOpenFailed'), !opened)
+}
+
 async function mergeNativeCaptures(payloads: NativeCapturePayload[], announce = true): Promise<boolean> {
   if (payloads.length === 0) return true
   const clips = payloads.map((payload) => (
@@ -2586,6 +2700,12 @@ function directPasteAriaShortcuts(index: number): string | undefined {
   if (index >= DIRECT_PASTE_ITEM_COUNT) return undefined
   const key = directPasteNumber(index)
   return `Alt+${key} Control+${key}`
+}
+
+function directPasteTooltip(index: number): string {
+  return index < DIRECT_PASTE_ITEM_COUNT
+    ? t('clipPasteHintDirect', { shortcut: directPasteLabel(index) })
+    : t('clipPasteHint')
 }
 
 function focusManagerIndex(index: number) {
@@ -3265,7 +3385,7 @@ function handleKeydown(event: KeyboardEvent) {
       else if (librarySection.value !== 'settings' && managerSelectedCount.value > 0) clearManagerSelection()
       else if (librarySection.value !== 'settings' && managerQuery.value) clearManagerSearch()
       else returnToQuickPanel()
-    } else if (!event.shiftKey && (query.value || activeFilter.value !== 'all')) {
+    } else if (!event.shiftKey && (query.value || quickSourceFilter.value || activeFilter.value !== 'all')) {
       event.preventDefault()
       clearSearchAndFocus(true)
     } else {
@@ -3325,6 +3445,28 @@ function handleKeydown(event: KeyboardEvent) {
   const resultPrimary = eventTarget?.closest<HTMLElement>('.clip-primary') ?? null
   const isSearchTarget = eventTarget === searchInput.value
   const isResultNavigationTarget = isSearchTarget || resultPrimary !== null
+
+  if (isSearchTarget && sourceSuggestions.value.length > 0) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      const direction = event.key === 'ArrowDown' ? 1 : -1
+      sourceSuggestionIndex.value = (
+        sourceSuggestionIndex.value + direction + sourceSuggestions.value.length
+      ) % sourceSuggestions.value.length
+      return
+    }
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      selectSourceSuggestion(sourceSuggestions.value[sourceSuggestionIndex.value])
+      return
+    }
+  }
+
+  if (isSearchTarget && event.key === 'Backspace' && !query.value && quickSourceFilter.value) {
+    event.preventDefault()
+    clearQuickSourceFilter()
+    return
+  }
 
   const hasExactDirectPasteModifier = event.altKey !== event.ctrlKey
     && !event.shiftKey
@@ -3593,6 +3735,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   appUnmounted = true
+  qrScanGeneration += 1
   quickFirstFrameGeneration += 1
   invalidateStoredOcrPump()
   ocrCoordinator.shutdown()
@@ -3666,23 +3809,24 @@ onBeforeUnmount(() => {
               :aria-pressed="quickPanelPinned"
               @click="toggleQuickPanelPinned"
             >
-              <Pin :size="16" :fill="quickPanelPinned ? 'currentColor' : 'none'" />
+              <PanelTopClose v-if="quickPanelPinned" :size="16" />
+              <PanelTopOpen v-else :size="16" />
             </button>
-            <button class="icon-button" type="button" :aria-label="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" @click="toggleTheme">
+            <button data-testid="toggle-theme" class="icon-button" type="button" :aria-label="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" :title="theme === 'light' ? t('toggleDarkTheme') : t('toggleLightTheme')" @click="toggleTheme">
               <Moon v-if="theme === 'light'" :size="16" />
               <Sun v-else :size="16" />
             </button>
             <button data-testid="open-library" class="icon-button" type="button" :aria-label="t('manageClipboardShort')" :title="t('manageClipboardShort')" @click="openLibrary()">
               <LayoutList :size="16" />
             </button>
-            <button class="icon-button" type="button" :aria-label="t('openSettings')" @click="openLibrary('settings')">
+            <button data-testid="open-settings" class="icon-button" type="button" :aria-label="t('openSettings')" :title="t('openSettings')" @click="openLibrary('settings')">
               <Settings2 :size="16" />
             </button>
             <span class="window-divider" aria-hidden="true"></span>
-            <button data-testid="window-minimize" class="icon-button window-control" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('minimizeWindow')" @click="performWindowAction('minimize')">
+            <button data-testid="window-minimize" class="icon-button window-control" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('minimizeWindow')" :title="t('minimizeWindow')" @click="performWindowAction('minimize')">
               <Minus :size="16" />
             </button>
-            <button data-testid="window-close" class="icon-button window-control close" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('closeWindow')" @click="performWindowAction('close')">
+            <button data-testid="window-close" class="icon-button window-control close" type="button" :disabled="windowModeTransitioning || windowActionInFlight" :aria-label="t('closeWindow')" :title="t('closeWindow')" @click="performWindowAction('close')">
               <X :size="16" />
             </button>
           </div>
@@ -3704,8 +3848,22 @@ onBeforeUnmount(() => {
           </div>
         </Transition>
 
-        <div class="search-area">
+        <div
+          class="search-area"
+          :class="{
+            'has-source-filter': quickSourceFilter,
+            'has-snippet-mode': quickSearchIntent.permanent,
+            'has-both-prefixes': quickSourceFilter && quickSearchIntent.permanent,
+          }"
+        >
           <Search class="search-icon" :size="19" aria-hidden="true" />
+          <span v-if="quickSourceFilter || quickSearchIntent.permanent" class="search-prefixes">
+            <span v-if="quickSourceFilter" data-testid="source-filter-chip" class="search-mode-chip source">
+              @{{ quickSourceFilter }}
+              <button type="button" :aria-label="t('clearSourceFilter', { source: quickSourceFilter })" @click="clearQuickSourceFilter"><X :size="11" /></button>
+            </span>
+            <span v-if="quickSearchIntent.permanent" data-testid="snippet-mode-indicator" class="search-mode-chip snippet">; {{ t('permanentSnippets') }}</span>
+          </span>
           <input
             ref="searchInput"
             v-model="query"
@@ -3715,6 +3873,8 @@ onBeforeUnmount(() => {
             autocomplete="off"
             spellcheck="false"
             aria-controls="clipboard-results"
+            :aria-expanded="sourceSuggestions.length > 0"
+            :aria-haspopup="sourceSuggestions.length > 0 ? 'listbox' : undefined"
             :aria-activedescendant="previewId === null && selectedClip ? clipResultId(selectedClip.id) : undefined"
             :aria-label="t('searchClipboard')"
             :placeholder="t('searchClipboard')"
@@ -3726,6 +3886,19 @@ onBeforeUnmount(() => {
             <X :size="15" />
           </button>
           <span v-else class="search-hint">Ctrl K</span>
+          <div v-if="sourceSuggestions.length" data-testid="source-suggestions" class="source-suggestions" role="listbox" :aria-label="t('sourceSuggestions')">
+            <button
+              v-for="(sourceApp, index) in sourceSuggestions"
+              :key="sourceApp"
+              :data-testid="`source-suggestion-${index}`"
+              type="button"
+              role="option"
+              :aria-selected="sourceSuggestionIndex === index"
+              :class="{ selected: sourceSuggestionIndex === index }"
+              @mousedown.prevent
+              @click="selectSourceSuggestion(sourceApp)"
+            ><SourceAppIcon class="source-suggestion-icon" :source="sourceApp" /> <span>{{ sourceApp }}</span><kbd v-if="sourceSuggestionIndex === index">Enter</kbd></button>
+          </div>
         </div>
 
         <nav class="filter-strip" :aria-label="t('contentTypes')">
@@ -3790,8 +3963,28 @@ onBeforeUnmount(() => {
                   <img class="preview-image" :src="previewClip.imageUrl" :alt="previewClip.title" />
                   <details v-if="previewClip.ocrStatus === 'completed' && previewClip.ocrText" data-testid="preview-ocr-text" class="preview-ocr-text">
                     <summary><strong>{{ t('ocrRecognizedText') }}</strong></summary>
-                    <div>{{ previewClip.ocrText }}</div>
+                    <div class="recognized-text-content">
+                      <p>{{ previewClip.ocrText }}</p>
+                      <span class="recognized-text-actions">
+                        <button data-testid="copy-ocr-text" type="button" @click="copyRecognizedText(previewClip.ocrText ?? '', previewClip.sourceApp)"><Copy :size="12" />{{ t('copyOcrText') }}</button>
+                        <button data-testid="paste-ocr-text" type="button" :disabled="pasteInFlight" @click="pasteRecognizedText(previewClip.ocrText ?? '')">{{ t('pasteOcrText') }}</button>
+                      </span>
+                    </div>
                   </details>
+                  <section v-if="qrScanState !== 'idle'" class="preview-qr" :aria-label="t('qrCode')" aria-live="polite">
+                    <p v-if="qrScanState === 'scanning'" class="qr-status"><QrCode :size="13" />{{ t('qrRecognizing') }}</p>
+                    <p v-else-if="qrResults.length === 0" class="qr-status"><QrCode :size="13" />{{ t('qrNotFound') }}</p>
+                    <div v-else data-testid="preview-qr-results" class="qr-results">
+                      <strong><QrCode :size="13" />{{ t('qrRecognized', { count: qrResults.length }) }}</strong>
+                      <article v-for="(result, index) in qrResults" :key="`${index}-${result}`" class="qr-result">
+                        <p>{{ result }}</p>
+                        <span class="recognized-text-actions">
+                          <button :data-testid="`copy-qr-result-${index}`" type="button" @click="copyRecognizedText(result, t('qrCode'))"><Copy :size="12" />{{ t('qrCopy') }}</button>
+                          <button v-if="isSafeExternalUrl(result)" :data-testid="`open-qr-result-${index}`" type="button" @click="openQrLink(result)"><ExternalLink :size="12" />{{ t('qrOpenLink') }}</button>
+                        </span>
+                      </article>
+                    </div>
+                  </section>
                 </div>
                 <CodePreview
                   v-else-if="previewClip.kind === 'code'"
@@ -3855,6 +4048,7 @@ onBeforeUnmount(() => {
                   <button
                     class="clip-primary"
                     type="button"
+                    :title="directPasteTooltip(index)"
                     :tabindex="selectedId === clip.id ? 0 : -1"
                     :aria-keyshortcuts="directPasteAriaShortcuts(index)"
                     @mousedown.left.prevent
@@ -3899,7 +4093,19 @@ onBeforeUnmount(() => {
                     </span>
                   </button>
                   <div class="row-actions">
-                    <button :data-testid="`preview-clip-${clip.id}`" type="button" :tabindex="selectedId === clip.id ? 0 : -1" :aria-label="t('preview')" :title="t('preview')" @focus="selectedId = clip.id" @pointerdown="selectedId = clip.id" @click="openPreview(clip.id)"><Eye :size="15" /></button>
+                    <button :data-testid="`preview-clip-${clip.id}`" type="button" :tabindex="selectedId === clip.id ? 0 : -1" :aria-label="t('previewWithShortcut')" :title="t('previewWithShortcut')" @focus="selectedId = clip.id" @pointerdown="selectedId = clip.id" @click="openPreview(clip.id)"><Eye :size="15" /></button>
+                    <button
+                      :data-testid="`pin-clip-${clip.id}`"
+                      type="button"
+                      :tabindex="selectedId === clip.id ? 0 : -1"
+                      :aria-label="`${clip.pinned ? t('unpin') : t('pinClip')}: ${clip.title}`"
+                      :title="clip.pinned ? t('unpin') : t('pinClip')"
+                      :aria-pressed="clip.pinned"
+                      :class="{ active: clip.pinned }"
+                      @focus="selectedId = clip.id"
+                      @pointerdown="selectedId = clip.id"
+                      @click="pinClip(clip.id, 'quick')"
+                    ><Pin :size="15" :fill="clip.pinned ? 'currentColor' : 'none'" /></button>
                   </div>
                 </article>
                   <button
@@ -4098,8 +4304,8 @@ onBeforeUnmount(() => {
               </button>
               <article class="shortcut-card" :class="{ recording: shortcutRecording, unavailable: !globalShortcutAvailable }">
                 <span class="settings-primary-icon" aria-hidden="true"><Keyboard :size="19" /></span>
-                <div><strong>{{ t('openQuickPaste') }}</strong><p>{{ shortcutRecording ? t('shortcutRecordingHint') : t('globalShortcutDescription') }}</p><small v-if="!globalShortcutAvailable" id="shortcut-status" data-testid="shortcut-status">{{ t('shortcutInactive') }}</small></div>
-                <button data-testid="shortcut-recorder" class="shortcut-recorder" type="button" :disabled="shortcutApplyInFlight || (nativeRuntime && !nativeSettingsReady)" :aria-label="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :aria-invalid="!globalShortcutAvailable ? 'true' : undefined" :aria-describedby="!globalShortcutAvailable ? 'shortcut-status' : undefined" @click="startShortcutRecording" @blur="cancelShortcutRecording()">
+                <div><strong>{{ t('openQuickPaste') }}</strong><p>{{ shortcutRecording ? t('shortcutRecordingHint') : t('globalShortcutDescription') }}</p><small v-if="!globalShortcutAvailable" id="shortcut-status" data-testid="shortcut-status">{{ t('shortcutInactive') }}</small><small v-else-if="shortcutConflictMessage" id="shortcut-conflict" data-testid="shortcut-conflict" class="shortcut-conflict">{{ shortcutConflictMessage }}</small></div>
+                <button data-testid="shortcut-recorder" class="shortcut-recorder" type="button" :disabled="shortcutApplyInFlight || (nativeRuntime && !nativeSettingsReady)" :aria-label="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :title="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :aria-invalid="!globalShortcutAvailable ? 'true' : undefined" :aria-describedby="!globalShortcutAvailable ? 'shortcut-status' : shortcutConflictMessage ? 'shortcut-conflict' : undefined" @click="startShortcutRecording" @blur="cancelShortcutRecording()">
                   <kbd>{{ shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) }}</kbd>
                 </button>
               </article>

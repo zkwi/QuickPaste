@@ -327,6 +327,16 @@ describe('clipboard model', () => {
     expect(applyClipFilter(clips, { query: '', kind: 'pinned' }).map((clip) => clip.id)).toEqual(['b'])
   })
 
+  it('filters permanent snippets and exact selected sources without changing source order', () => {
+    const permanent = { ...clips[0], id: 'permanent', permanent: true, sourceApp: '微信' }
+    const ordinary = { ...clips[1], id: 'ordinary', permanent: false, sourceApp: '微信' }
+    const otherSource = { ...clips[2], id: 'other-source', permanent: true, sourceApp: '飞书' }
+
+    expect(applyClipFilter([permanent, ordinary, otherSource], {
+      query: '', kind: 'all', permanent: true, sourceApps: ['微信'],
+    }).map((clip) => clip.id)).toEqual(['permanent'])
+  })
+
   it('toggles pinned state immutably', () => {
     const next = togglePinned(clips, 'a')
     expect(next[0].pinned).toBe(true)

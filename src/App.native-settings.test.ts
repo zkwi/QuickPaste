@@ -201,6 +201,7 @@ describe('native setting reliability', () => {
           && (kinds.length === 0 || kinds.includes(item.kind))
           && (sourceApps.length === 0 || sourceApps.includes(item.sourceApp))
           && (query.pinned === undefined || item.pinned === query.pinned)
+          && (query.permanent === undefined || item.permanent === query.permanent)
       })
       const summaries = filtered.map((item) => {
         const { imageUrl: _imageUrl, html: _html, rtfBase64: _rtf, ocrText: _ocr, ...summary } = item

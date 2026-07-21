@@ -2,6 +2,7 @@ mod clipboard_formats;
 mod history;
 mod metrics;
 mod ocr;
+mod qr;
 mod system_actions;
 mod updater;
 
@@ -204,6 +205,26 @@ impl CurrentQuickPanelSession {
 
 #[derive(Clone, Default)]
 struct QuickPanelPinned(Arc<AtomicBool>);
+
+#[derive(Clone, Default)]
+struct QrRuntimeState(Arc<AtomicBool>);
+
+struct QrRuntimePermit(Arc<AtomicBool>);
+
+impl QrRuntimeState {
+    fn try_reserve(&self) -> Result<QrRuntimePermit, String> {
+        self.0
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| QrRuntimePermit(self.0.clone()))
+            .map_err(|_| "二维码识别正在进行".to_owned())
+    }
+}
+
+impl Drop for QrRuntimePermit {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
 
 #[derive(Clone, Default)]
 struct OnboardingWindowActive(Arc<AtomicBool>);
@@ -4340,6 +4361,28 @@ async fn get_clip_thumbnail(
 }
 
 #[tauri::command]
+async fn detect_clip_qr(
+    id: String,
+    history_state: State<'_, HistoryRuntimeState>,
+    qr_state: State<'_, QrRuntimeState>,
+) -> Result<Vec<String>, String> {
+    let _permit = qr_state.try_reserve()?;
+    let png = run_history_operation(history_state.inner().clone(), move |runtime| {
+        runtime
+            .with_connection(|connection| history::load_stored_image_for_analysis(connection, &id))
+    })
+    .await?
+    .ok_or_else(|| "二维码图片不存在".to_owned())?;
+    tauri::async_runtime::spawn_blocking(move || qr::decode_qr_png(&png))
+        .await
+        .map_err(|_| "二维码识别后台任务异常结束".to_owned())?
+        .map_err(|failure| match failure {
+            qr::QrFailure::Oversized => "二维码图片超过本地识别限制".to_owned(),
+            qr::QrFailure::Decode => "二维码图片无法解码".to_owned(),
+        })
+}
+
+#[tauri::command]
 async fn get_storage_stats(
     history_state: State<'_, HistoryRuntimeState>,
 ) -> Result<history::StorageStats, String> {
@@ -5103,6 +5146,7 @@ pub fn run() {
         .manage(current_window_mode)
         .manage(current_quick_panel_session)
         .manage(quick_panel_pinned)
+        .manage(QrRuntimeState::default())
         .manage(onboarding_window_active)
         .manage(paste_target)
         .plugin(
@@ -5273,6 +5317,7 @@ pub fn run() {
             list_pending_ocr_images,
             get_clip_payload,
             get_clip_thumbnail,
+            detect_clip_qr,
             get_storage_stats,
             open_history_data_directory,
             compact_history_database,
@@ -5487,6 +5532,7 @@ mod tests {
             "query_clipboard_history",
             "get_clip_payload",
             "get_clip_thumbnail",
+            "detect_clip_qr",
             "get_storage_stats",
             "compact_history_database",
             "create_history_backup",

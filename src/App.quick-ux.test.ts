@@ -17,6 +17,10 @@ const systemMocks = vi.hoisted(() => ({
   saveClipboardImage: vi.fn().mockResolvedValue('saved'),
 }))
 
+const qrMocks = vi.hoisted(() => ({
+  detectNativeClipQr: vi.fn().mockResolvedValue([]),
+}))
+
 const windowMocks = vi.hoisted(() => ({
   observeWindowMaximizedState: vi.fn().mockResolvedValue(() => undefined),
   runWindowAction: vi.fn().mockResolvedValue(true),
@@ -25,6 +29,7 @@ const windowMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('./platform/clipboard', () => clipboardMocks)
+vi.mock('./platform/qr', () => qrMocks)
 vi.mock('./platform/system', () => systemMocks)
 vi.mock('./platform/window', () => windowMocks)
 
@@ -65,6 +70,7 @@ describe('quick panel high-frequency interaction', () => {
     localStorage.clear()
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
     vi.clearAllMocks()
+    qrMocks.detectNativeClipQr.mockResolvedValue([])
     wrapper = mount(App, { attachTo: document.body })
   })
 
@@ -103,6 +109,48 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.get('.selection-announcement').text()).toContain('10 / 10')
   })
 
+  it('calls permanent snippets with semicolon and selects an exact @source suggestion', async () => {
+    wrapper.unmount()
+    const copiedAt = '2026-07-21T00:00:00.000Z'
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
+      {
+        id: 'snippet-wechat', kind: 'text', title: '开票信息', content: '抬头与税号', sourceApp: '微信',
+        copiedAt, updatedAt: copiedAt, pinned: false, permanent: true, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'ordinary-wechat', kind: 'text', title: '普通消息', content: '日常内容', sourceApp: '微信',
+        copiedAt, pinned: false, permanent: false, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'snippet-feishu', kind: 'text', title: '开票流程', content: '审批流程', sourceApp: '飞书',
+        copiedAt, updatedAt: copiedAt, pinned: false, permanent: true, searchTerms: [], formats: ['text'],
+      },
+    ]))
+    wrapper = mount(App, { attachTo: document.body })
+    const search = wrapper.get('[data-testid="search-input"]')
+
+    await search.setValue(';开票')
+    expect(wrapper.findAll('[data-clip-id]').map((row) => row.attributes('data-clip-id')))
+      .toEqual(['snippet-wechat', 'snippet-feishu'])
+    expect(wrapper.get('[data-testid="snippet-mode-indicator"]').text()).toContain('永久片段')
+
+    await search.setValue('@微')
+    expect(wrapper.get('[data-testid="source-suggestions"]').text()).toContain('微信')
+    dispatchKey(search.element, 'Enter', { isComposing: true })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="source-filter-chip"]').exists()).toBe(false)
+
+    dispatchKey(search.element, 'Enter')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="source-filter-chip"]').text()).toContain('微信')
+    expect(wrapper.findAll('[data-clip-id]').map((row) => row.attributes('data-clip-id')))
+      .toEqual(['snippet-wechat', 'ordinary-wechat'])
+
+    dispatchKey(search.element, 'Backspace')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="source-filter-chip"]').exists()).toBe(false)
+  })
+
   it('lets focused controls handle Enter and reserves paste for search or a result', async () => {
     dispatchKey(wrapper.get('[data-testid="filter-image"]').element, 'Enter')
     await flushPromises()
@@ -115,12 +163,19 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
   })
 
-  it('keeps quick rows, preview, context menu, and shortcuts free of management actions', async () => {
+  it('keeps quick surfaces free of copy and delete actions while retaining row pinning', async () => {
     const first = wrapper.get('[data-clip-id="clip-1"]')
     const primary = first.get('.clip-primary')
+    const pin = first.get('[data-testid="pin-clip-clip-1"]')
 
-    expect(first.find('[data-testid="pin-clip-clip-1"]').exists()).toBe(false)
+    expect(pin.attributes('aria-pressed')).toBe('false')
+    expect(pin.attributes('title')).toContain('固定内容')
+    expect(primary.attributes('title')).toContain('Enter')
+    expect(first.get('[data-testid="preview-clip-clip-1"]').attributes('title')).toContain('Space')
     expect(first.find('[data-testid="delete-clip-clip-1"]').exists()).toBe(false)
+
+    await pin.trigger('click')
+    expect(pin.attributes('aria-pressed')).toBe('true')
 
     dispatchKey(primary.element, 'c', { ctrlKey: true })
     dispatchKey(primary.element, 'Delete')
@@ -251,6 +306,42 @@ describe('quick panel high-frequency interaction', () => {
     expect(ocrDetails.element.tagName).toBe('DETAILS')
     expect(ocrDetails.attributes('open')).toBeUndefined()
     expect(ocrDetails.text()).toContain('Invoice number 2026-001')
+
+    await ocrDetails.get('[data-testid="copy-ocr-text"]').trigger('click')
+    expect(clipboardMocks.copyText).toHaveBeenCalledWith('Invoice number 2026-001')
+
+    await ocrDetails.get('[data-testid="paste-ocr-text"]').trigger('click')
+    expect(clipboardMocks.pasteText).toHaveBeenCalledWith('Invoice number 2026-001')
+  })
+
+  it('recognizes local QR text in an image preview and opens only safe web links', async () => {
+    wrapper.unmount()
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([{
+      id: 'qr-visible', kind: 'image', title: '付款码截图', content: 'clipboard image', sourceApp: '截图工具',
+      copiedAt: '2026-07-19T02:00:00.000Z', pinned: false, searchTerms: [], formats: ['image'],
+      imageUrl: 'data:image/png;base64,AA==', imageHash: 'b'.repeat(64),
+    }]))
+    qrMocks.detectNativeClipQr.mockResolvedValueOnce([
+      'https://quickpaste.example/docs',
+      'javascript:alert(1)',
+    ])
+    wrapper = mount(App, { attachTo: document.body })
+
+    await wrapper.get('[data-testid="preview-clip-qr-visible"]').trigger('click')
+    await flushPromises()
+
+    const results = wrapper.get('[data-testid="preview-qr-results"]')
+    expect(results.text()).toContain('https://quickpaste.example/docs')
+    expect(results.text()).toContain('javascript:alert(1)')
+    expect(results.find('[data-testid="open-qr-result-0"]').exists()).toBe(true)
+    expect(results.find('[data-testid="open-qr-result-1"]').exists()).toBe(false)
+
+    await results.get('[data-testid="copy-qr-result-1"]').trigger('click')
+    expect(clipboardMocks.copyText).toHaveBeenCalledWith('javascript:alert(1)')
+
+    await results.get('[data-testid="open-qr-result-0"]').trigger('click')
+    expect(systemMocks.openExternalLink).toHaveBeenCalledWith('https://quickpaste.example/docs')
+    expect(qrMocks.detectNativeClipQr).toHaveBeenCalledWith('qr-visible')
   })
 
   it('runs manager-only typed system actions without leaving or mutating the manager', async () => {
@@ -582,8 +673,11 @@ describe('quick panel high-frequency interaction', () => {
 
     const pin = wrapper.get('[data-testid="pin-quick-panel"]')
     expect(pin.attributes('aria-pressed')).toBe('false')
+    expect(pin.attributes('title')).toContain('面板常驻')
+    expect(pin.find('svg').classes()).toContain('lucide-panel-top-open')
     await pin.trigger('click')
     expect(pin.attributes('aria-pressed')).toBe('true')
+    expect(pin.attributes('title')).toContain('取消面板常驻')
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
       quickPanelPinned: true,
     })
@@ -596,6 +690,17 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.find('.keyboard-legend').exists()).toBe(false)
     expect(chrome.find('[data-testid="paste-target"]').exists()).toBe(true)
     expect(chrome.find('[data-testid="open-library"]').exists()).toBe(true)
+    expect(chrome.find('[data-testid="toggle-theme"]').attributes('title')).toBe('切换深色主题')
+    expect(chrome.find('[data-testid="open-settings"]').attributes('title')).toBe('打开设置')
+    expect(chrome.find('[data-testid="window-minimize"]').attributes('title')).toBe('最小化窗口')
+    expect(chrome.find('[data-testid="window-close"]').attributes('title')).toBe('隐藏到系统托盘')
+  })
+
+  it('warns when the global shortcut overlaps a familiar Windows paste action', async () => {
+    await wrapper.get('[data-testid="open-settings"]').trigger('click')
+
+    expect(wrapper.get('[data-testid="shortcut-conflict"]').text()).toContain('纯文本粘贴')
+    expect(wrapper.get('[data-testid="shortcut-recorder"]').attributes('title')).toContain('Ctrl + Shift + V')
   })
 
   it('keeps only the active filter and selected result actions in the Tab order', () => {

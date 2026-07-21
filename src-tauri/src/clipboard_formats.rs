@@ -12,6 +12,9 @@ pub(crate) const MAX_CLIPBOARD_IMAGE_PIXELS: usize = 40_000_000;
 const MAX_FILE_PATH_UTF16_UNITS: usize = 32_766;
 const MAX_FILE_LIST_BYTES: usize = 8 * 1024 * 1024;
 const DROPFILES_HEADER_BYTES: usize = 20;
+const EXCLUDE_CLIPBOARD_MONITOR_FORMAT: &str = "ExcludeClipboardContentFromMonitorProcessing";
+const CAN_INCLUDE_CLIPBOARD_HISTORY_FORMAT: &str = "CanIncludeInClipboardHistory";
+const CAN_UPLOAD_TO_CLOUD_CLIPBOARD_FORMAT: &str = "CanUploadToCloudClipboard";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -108,6 +111,13 @@ pub(crate) enum ClipboardFormatProbe<T> {
     Absent,
     Present(T),
     Failed,
+}
+
+fn clipboard_history_is_excluded(
+    exclude_monitor_processing: bool,
+    can_include_history: Result<Option<u32>, ()>,
+) -> bool {
+    exclude_monitor_processing || matches!(can_include_history, Ok(Some(0)) | Err(()))
 }
 
 pub(crate) trait ClipboardFormatReader {
@@ -663,6 +673,67 @@ struct WindowsClipboardReader {
     html_format: Option<clipboard_win::formats::Html>,
     rtf_format: Option<u32>,
     png_format: Option<u32>,
+    history_control_formats: Vec<u32>,
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Default)]
+struct WindowsHistoryControlFormats {
+    exclude_monitor_processing: Option<u32>,
+    can_include_history: Option<u32>,
+    can_upload_to_cloud: Option<u32>,
+}
+
+#[cfg(target_os = "windows")]
+impl WindowsHistoryControlFormats {
+    fn register() -> Self {
+        Self {
+            exclude_monitor_processing: clipboard_win::raw::register_format(
+                EXCLUDE_CLIPBOARD_MONITOR_FORMAT,
+            )
+            .map(|format| format.get()),
+            can_include_history: clipboard_win::raw::register_format(
+                CAN_INCLUDE_CLIPBOARD_HISTORY_FORMAT,
+            )
+            .map(|format| format.get()),
+            can_upload_to_cloud: clipboard_win::raw::register_format(
+                CAN_UPLOAD_TO_CLOUD_CLIPBOARD_FORMAT,
+            )
+            .map(|format| format.get()),
+        }
+    }
+
+    fn registered_ids(&self) -> Vec<u32> {
+        [
+            self.exclude_monitor_processing,
+            self.can_include_history,
+            self.can_upload_to_cloud,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    fn excludes_history(&self) -> bool {
+        let exclude_monitor_processing = self
+            .exclude_monitor_processing
+            .is_some_and(clipboard_win::raw::is_format_avail);
+        let can_include_history = match self.can_include_history {
+            None => Ok(None),
+            Some(format) if !clipboard_win::raw::is_format_avail(format) => Ok(None),
+            Some(format) => (|| -> Result<Option<u32>, ()> {
+                let mut bytes = Vec::new();
+                clipboard_win::raw::get_vec(format, &mut bytes).map_err(|_| ())?;
+                let serialized: [u8; size_of::<u32>()] = bytes
+                    .get(..size_of::<u32>())
+                    .ok_or(())?
+                    .try_into()
+                    .map_err(|_| ())?;
+                Ok(Some(u32::from_le_bytes(serialized)))
+            })(),
+        };
+        clipboard_history_is_excluded(exclude_monitor_processing, can_include_history)
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -799,7 +870,7 @@ impl ClipboardFormatReader for WindowsClipboardReader {
     }
 
     fn probe_objects(&self) -> ClipboardFormatProbe<usize> {
-        let excluded = [
+        let mut excluded = vec![
             self.html_format
                 .as_ref()
                 .map(|format| format.code())
@@ -807,6 +878,7 @@ impl ClipboardFormatReader for WindowsClipboardReader {
             self.rtf_format.unwrap_or_default(),
             self.png_format.unwrap_or_default(),
         ];
+        excluded.extend(self.history_control_formats.iter().copied());
         match registered_object_format_count(&excluded) {
             0 => ClipboardFormatProbe::Absent,
             count => ClipboardFormatProbe::Present(count),
@@ -842,17 +914,30 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
     let html_format = clipboard_win::formats::Html::new();
     let rtf_format = clipboard_win::raw::register_format("Rich Text Format").map(|code| code.get());
     let png_format = clipboard_win::raw::register_format("PNG").map(|code| code.get());
+    let history_controls = WindowsHistoryControlFormats::register();
     let before = clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()));
     let guard = match clipboard_win::Clipboard::new() {
         Ok(guard) => guard,
         Err(_) => return PackageReadOutcome::Retryable,
     };
+    if history_controls.excludes_history() {
+        let after = clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()));
+        return if after == before {
+            PackageReadOutcome::Ignored {
+                package: FormatPackage::default(),
+                sequence: after,
+            }
+        } else {
+            PackageReadOutcome::Retryable
+        };
+    }
     read_package_with_guard(
         guard,
         &WindowsClipboardReader {
             html_format,
             rtf_format,
             png_format,
+            history_control_formats: history_controls.registered_ids(),
         },
         before,
         || clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())),
@@ -1022,6 +1107,16 @@ mod tests {
             rtf: Some(br"{\rtf1 QuickPaste}".to_vec()),
             ..FormatPackage::default()
         }
+    }
+
+    #[test]
+    fn windows_history_control_formats_exclude_only_explicitly_sensitive_content() {
+        assert!(clipboard_history_is_excluded(true, Ok(None)));
+        assert!(clipboard_history_is_excluded(true, Ok(Some(1))));
+        assert!(clipboard_history_is_excluded(false, Ok(Some(0))));
+        assert!(clipboard_history_is_excluded(false, Err(())));
+        assert!(!clipboard_history_is_excluded(false, Ok(Some(1))));
+        assert!(!clipboard_history_is_excluded(false, Ok(None)));
     }
 
     #[test]
