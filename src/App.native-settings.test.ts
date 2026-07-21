@@ -761,6 +761,27 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="update-open-releases"]').text()).toBe('Open releases')
   })
 
+  it('keeps manual check recovery visible when the pending automatic check timer elapses', async () => {
+    vi.useFakeTimers()
+    updaterMocks.checkForUpdate.mockRejectedValueOnce(new Error('network is unreachable'))
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    await wrapper.get('[data-testid="check-update"]').trigger('click')
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="update-retry"]').text()).toBe('重试')
+
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    expect(wrapper.get('[data-testid="update-retry"]').text()).toBe('重试')
+    expect(wrapper.get('[data-testid="update-open-releases"]').text()).toBe('打开发布页')
+  })
+
   it('recovers from an unreachable download without duplicate retries and allows dismissing the notice', async () => {
     updaterMocks.checkForUpdate.mockResolvedValueOnce({
       currentVersion: '0.1.0',

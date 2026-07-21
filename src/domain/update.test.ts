@@ -31,8 +31,16 @@ describe('update domain rules', () => {
     expect(classifyUpdateFailure(error)).toBe(expected)
   })
 
+  it.each([
+    '连接 GitHub 更新服务失败：请检查网络、代理或防火墙设置。',
+    '下载安装包失败：请检查网络、代理或防火墙设置。',
+  ])('classifies the native updater network guidance as unreachable: %s', (message) => {
+    expect(classifyUpdateFailure(new Error(message))).toBe('unreachable')
+  })
+
   it('falls back to a generic updater failure without exposing arbitrary values', () => {
     expect(classifyUpdateFailure(new Error('invalid release signature'))).toBe('generic')
+    expect(classifyUpdateFailure(new Error('下载安装包失败，HTTP 404。'))).toBe('generic')
     expect(classifyUpdateFailure({ secret: 'do not render' })).toBe('generic')
   })
 

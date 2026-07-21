@@ -16,7 +16,7 @@ function readableFailureText(error: unknown): string {
 export function classifyUpdateFailure(error: unknown): UpdateFailureKind {
   const message = readableFailureText(error).toLocaleLowerCase()
   if (/\b(?:timed?\s*out|etimedout)\b|超时/.test(message)) return 'timeout'
-  if (/network\s+is\s+unreachable|could\s+not\s+resolve|failed\s+to\s+(?:connect|lookup)|connection\s+(?:refused|reset)|dns|无法连接|网络不可用|主机不可达/.test(message)) {
+  if (/network\s+is\s+unreachable|could\s+not\s+resolve|failed\s+to\s+(?:connect|lookup)|connection\s+(?:refused|reset)|dns|无法连接|网络不可用|主机不可达|请检查网络、代理或防火墙设置/.test(message)) {
     return 'unreachable'
   }
   return 'generic'

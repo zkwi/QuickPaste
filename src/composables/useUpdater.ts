@@ -117,6 +117,10 @@ export function useUpdater(options: UseUpdaterOptions) {
 
   async function runUpdateCheck(manual: boolean) {
     if (!options.nativeRuntime || updateBusy.value) return
+    if (manual && autoUpdateCheckTimer) {
+      clearTimeout(autoUpdateCheckTimer)
+      autoUpdateCheckTimer = undefined
+    }
     updateState.value = 'checking'
     updateError.value = ''
     updateFailurePhase.value = null
