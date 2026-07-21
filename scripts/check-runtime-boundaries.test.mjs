@@ -1,28 +1,27 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  extractQuickPanelTemplate,
+  scanQuickPanelComponentBoundary,
   scanForbiddenRuntimeDependencies,
   scanLocalOnlyModule,
   scanPackagedResources,
   scanQuickPanelBoundary,
 } from './check-runtime-boundaries.mjs'
 
-test('extracts the quick panel before the manager branch and enforces its management allowlist', () => {
-  const app = `
-    <section v-if="currentView === 'quick'" class="quick-panel">
+test('scans the extracted quick panel component instead of relying on App.vue branch text', () => {
+  const quickPanel = `
+    <section class="quick-panel">
       <input data-testid="quick-search-input" />
       <div class="clip-list"></div>
       <section class="preview-panel"></section>
     </section>
-    <section v-else key="library"><ManagerBulkToolbar /></section>
   `
-  const quick = extractQuickPanelTemplate(app)
-  assert.match(quick, /quick-search-input/)
-  assert.doesNotMatch(quick, /ManagerBulkToolbar/)
-  assert.deepEqual(scanQuickPanelBoundary(quick), [])
+  assert.deepEqual(scanQuickPanelComponentBoundary(quickPanel), [])
+  assert.deepEqual(scanQuickPanelComponentBoundary(`${quickPanel}<ManagerBulkToolbar />`), [
+    'quick panel contains forbidden manager control: ManagerBulkToolbar',
+  ])
 
-  assert.deepEqual(scanQuickPanelBoundary(`${quick}<SnippetEditor />`), [
+  assert.deepEqual(scanQuickPanelBoundary(`${quickPanel}<SnippetEditor />`), [
     'quick panel contains forbidden manager control: SnippetEditor',
   ])
 })

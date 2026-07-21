@@ -25,20 +25,14 @@ const NETWORK_CAPABILITIES = [
 const FORBIDDEN_DEPENDENCY = /(?:^|[/@_-])(?:ffmpeg|fluent-ffmpeg|tesseract|onnx|tensorflow|whisper|transformers|paddleocr)(?:$|[/@_.-])/iu
 const FORBIDDEN_RESOURCE = /(?:^|[/\\])ffmpeg(?:\.exe)?$|\.(?:onnx|tflite|gguf|traineddata|mlmodelc?|ort)$/iu
 
-export function extractQuickPanelTemplate(appSource) {
-  const condition = appSource.indexOf("currentView === 'quick'")
-  if (condition < 0) throw new Error('quick panel branch was not found')
-  const start = appSource.lastIndexOf('<section', condition)
-  const libraryCondition = appSource.indexOf('v-else key="library"', condition)
-  const end = libraryCondition < 0 ? -1 : appSource.lastIndexOf('<section', libraryCondition)
-  if (start < 0 || end <= start) throw new Error('quick panel boundary was not found')
-  return appSource.slice(start, end)
-}
-
 export function scanQuickPanelBoundary(quickTemplate) {
   return QUICK_MANAGER_CONTROLS
     .filter((control) => quickTemplate.includes(control))
     .map((control) => `quick panel contains forbidden manager control: ${control}`)
+}
+
+export function scanQuickPanelComponentBoundary(componentSource) {
+  return scanQuickPanelBoundary(componentSource)
 }
 
 export function scanLocalOnlyModule(file, source) {
@@ -103,8 +97,8 @@ async function readOptional(path) {
 
 export async function scanRuntimeBoundaries(root) {
   const issues = []
-  const appSource = await readFile(resolve(root, 'src/App.vue'), 'utf8')
-  issues.push(...scanQuickPanelBoundary(extractQuickPanelTemplate(appSource)))
+  const quickPanelSource = await readFile(resolve(root, 'src/components/QuickPanel.vue'), 'utf8')
+  issues.push(...scanQuickPanelComponentBoundary(quickPanelSource))
 
   for (const file of [
     'src/platform/history.ts',
