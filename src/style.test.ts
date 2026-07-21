@@ -32,6 +32,21 @@ function cssRule(selector: string): string {
 }
 
 describe('quick-panel density contract', () => {
+  it('makes every transition and keyframe immediate when reduced motion is requested', () => {
+    const reducedMotion = styles.match(
+      /@media \(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\}/,
+    )?.[1]
+
+    expect(reducedMotion).toBeDefined()
+    expect(reducedMotion).toMatch(/\*,\s*\*::before,\s*\*::after\s*\{/)
+    expect(reducedMotion).toMatch(/scroll-behavior:\s*auto\s*!important/)
+    expect(reducedMotion).toMatch(/transition-duration:\s*0s\s*!important/)
+    expect(reducedMotion).toMatch(/transition-delay:\s*0s\s*!important/)
+    expect(reducedMotion).toMatch(/animation-duration:\s*0s\s*!important/)
+    expect(reducedMotion).toMatch(/animation-delay:\s*0s\s*!important/)
+    expect(reducedMotion).toMatch(/animation-iteration-count:\s*1\s*!important/)
+  })
+
   it('shows at least ten readable single-line clips in the standard shell', () => {
     const rowHeight = quickPanelMetric('--quick-row-height', 'standard')
 
