@@ -103,8 +103,6 @@ import {
   createSerializedHistoryOperationLane,
   deleteNativeHistoryCollection,
   listNativeHistoryCollections,
-  loadNativeClipPayload,
-  queryNativeHistory,
   renameNativeHistoryCollection,
   saveNativeHistorySnippet,
   type CapacityPolicy,
@@ -147,6 +145,7 @@ import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 import { useNativeSettingsSync } from './composables/useNativeSettingsSync'
 import { useStorageOperations } from './composables/useStorageOperations'
+import { useNativeHistory, type NativeQueryDescriptor } from './composables/useNativeHistory'
 
 type AppView = 'quick' | 'library'
 type HistoryState = 'loading' | 'ready' | 'error'
@@ -185,7 +184,6 @@ const MAX_HISTORY_ITEMS = DEFAULT_HISTORY_POLICY.maxRecords
 const MAX_PENDING_NATIVE_CAPTURES = MAX_HISTORY_ITEMS
 const HISTORY_RETRY_ATTEMPTS = 3
 const HISTORY_RETRY_DELAY_MS = 200
-const HISTORY_LOAD_TIMEOUT_MS = 1_400
 const HISTORY_QUIT_FLUSH_TIMEOUT_MS = 900
 const DELETE_UNDO_TIMEOUT_MS = 6_000
 const PASTE_TARGET_TTL_MS = 5 * 60 * 1_000
@@ -193,7 +191,6 @@ const EVENT_SUBSCRIPTION_ATTEMPTS = 3
 const PAGE_NAVIGATION_STEP = 5
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
-const NATIVE_SEARCH_DEBOUNCE_MS = 120
 const nativeRuntime = isTauriRuntime()
 
 function writeStoredValue(key: string, value: unknown): void {
@@ -315,10 +312,6 @@ const pasteInFlight = ref(false)
 const shortcutApplyInFlight = ref(false)
 const relativeTimeNow = ref(new Date())
 const historyState = ref<HistoryState>(nativeRuntime ? 'loading' : 'ready')
-const nativeHistoryNextCursor = ref<string | undefined>(undefined)
-const nativeHistoryTotalCount = ref(items.value.length)
-const nativeHistoryPageLoading = ref(false)
-const nativeHistoryRefreshGeneration = ref<number | null>(null)
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let shortcutRecordingToastActive = false
 let undoTimer: ReturnType<typeof setTimeout> | undefined
@@ -336,11 +329,6 @@ let quitFlushInProgress = false
 let capturedSequence = 0
 const pendingNativeCaptures: NativeCapturePayload[] = []
 const deferredStorageCaptures: NativeCapturePayload[] = []
-let nativeQueryGeneration = 0
-let nativeQueryRefreshQueued = false
-let nativeQueryRefreshForced = false
-let nativeSearchDebounceTimer: ReturnType<typeof setTimeout> | undefined
-let nativeAppliedQueryKey = ''
 let nativeRefreshAfterExclusive = false
 let nativeRefreshAfterExclusiveForced = false
 let suppressRetentionPolicySync = false
@@ -415,9 +403,6 @@ const {
   isUnmounted: () => appUnmounted,
 })
 let restoreResultFocusAfterPreview = false
-const hydratedPayloads = new Map<string, { generation: number; item: LoadedClipboardItem }>()
-const pendingPayloadLoads = new Map<string, { generation: number; promise: Promise<LoadedClipboardItem | null> }>()
-const pendingNativeUpserts = new Map<string, ClipboardItem>()
 let storedOcrPumpGeneration = 0
 let storedOcrPumpPromise: Promise<void> | null = null
 
@@ -431,6 +416,58 @@ const { syncBooleanSetting: syncNativeBooleanSetting, resetExcludedApps: resetNa
   excludedApps,
   t,
   showToast,
+})
+
+const {
+  nextCursor: nativeHistoryNextCursor,
+  totalCount: nativeHistoryTotalCount,
+  pageLoading: nativeHistoryPageLoading,
+  refreshGeneration: nativeHistoryRefreshGeneration,
+  pendingUpserts: pendingNativeUpserts,
+  invalidateQuery: invalidateNativeHistoryQuery,
+  isCurrentGeneration: isCurrentNativeHistoryGeneration,
+  cachedPayload,
+  resolvePayload: resolveClipPayload,
+  queryWithRetry: queryHistoryWithRetry,
+  applyPageState: commitNativeHistoryPageState,
+  runQuery: runNativeHistoryQuery,
+  cancelSearchRefresh: cancelNativeHistorySearchRefresh,
+  scheduleSearchRefresh: scheduleNativeHistorySearchRefresh,
+  queueRefresh: queueNativeHistoryRefresh,
+} = useNativeHistory({
+  nativeRuntime,
+  nativeSettingsReady,
+  historyState,
+  items,
+  currentDescriptor: currentNativeQueryDescriptor,
+  isFrozen: () => historyPersistence.isFrozen(),
+  flush: () => historyPersistence.flush(),
+  isUnmounted: () => appUnmounted,
+  deferRefresh: (force) => {
+    nativeRefreshAfterExclusive = true
+    nativeRefreshAfterExclusiveForced ||= force
+  },
+  prepareRefresh: (force) => {
+    if (currentView.value === 'library' && librarySection.value === 'settings'
+      || historyPersistence.isFrozen()) {
+      nativeRefreshAfterExclusive = true
+      nativeRefreshAfterExclusiveForced ||= force
+      return null
+    }
+    if (nativeRefreshAfterExclusive) {
+      force ||= nativeRefreshAfterExclusiveForced
+      nativeRefreshAfterExclusive = false
+      nativeRefreshAfterExclusiveForced = false
+    }
+    return force
+  },
+  onPayloadsInvalidated: () => {
+    previewLoadGeneration += 1
+  },
+  onQueryStarted: () => {
+    previewId.value = null
+  },
+  applyPage: applyNativeHistoryPage,
 })
 
 const {
@@ -847,11 +884,6 @@ function setQuickSearchElement(element: HTMLInputElement | null) {
   searchInput.value = element
 }
 
-interface NativeQueryDescriptor {
-  query: HistoryQuery
-  impossible: boolean
-}
-
 function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | null {
   if (!nativeRuntime || currentView.value === 'library' && librarySection.value === 'settings') return null
 
@@ -901,19 +933,6 @@ function currentNativeQueryDescriptor(cursor?: string): NativeQueryDescriptor | 
     }),
     impossible,
   }
-}
-
-function cachedPayload(clip: ClipboardItem): LoadedClipboardItem | null {
-  if (clip.payloadLoaded !== false) return clip
-  if (!nativeRuntime) return null
-  const cached = hydratedPayloads.get(clip.id)
-  return cached?.generation === nativeQueryGeneration ? cached.item : null
-}
-
-function invalidateNativePayloads() {
-  previewLoadGeneration += 1
-  hydratedPayloads.clear()
-  pendingPayloadLoads.clear()
 }
 
 function currentHistoryPolicy(): CapacityPolicy {
@@ -1068,8 +1087,7 @@ async function runSerializedManagerOperation<T>(
   }
   managerOperationBusy.value = true
   historyOperationLane.invalidate()
-  nativeQueryGeneration += 1
-  invalidateNativePayloads()
+  invalidateNativeHistoryQuery()
   let refreshedPage: HistoryPage | null = null
   let refreshedQueryKey = ''
   try {
@@ -1093,9 +1111,7 @@ async function runSerializedManagerOperation<T>(
         const nextItems = pruneExpiredClips(snapshot.items, retentionDays.value)
         suppressedNativeHistoryItems = nextItems
         items.value = nextItems
-        nativeHistoryNextCursor.value = refreshedPage.nextCursor
-        nativeHistoryTotalCount.value = refreshedPage.totalCount
-        nativeAppliedQueryKey = refreshedQueryKey
+        commitNativeHistoryPageState(refreshedPage, refreshedQueryKey)
         historyState.value = 'ready'
         const focusedStillVisible = libraryItems.value.some((clip) => clip.id === managerSelectedId.value)
         if (!focusedStillVisible) {
@@ -1316,24 +1332,6 @@ function showToast(message: string, urgent = false) {
   }, 2600)
 }
 
-function waitForHistoryRetry(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, HISTORY_RETRY_DELAY_MS))
-}
-
-async function queryHistoryWithRetry(nativeQuery: HistoryQuery): Promise<HistoryPage | null> {
-  for (let attempt = 0; attempt < HISTORY_RETRY_ATTEMPTS; attempt += 1) {
-    let timeout: ReturnType<typeof setTimeout> | undefined
-    const timedOut = new Promise<null>((resolve) => {
-      timeout = setTimeout(() => resolve(null), HISTORY_LOAD_TIMEOUT_MS)
-    })
-    const loaded = await Promise.race([queryNativeHistory(nativeQuery), timedOut])
-    if (timeout) clearTimeout(timeout)
-    if (loaded !== null) return loaded
-    if (attempt < HISTORY_RETRY_ATTEMPTS - 1) await waitForHistoryRetry()
-  }
-  return null
-}
-
 async function applyNativeHistoryPage(
   page: HistoryPage,
   append: boolean,
@@ -1352,13 +1350,11 @@ async function applyNativeHistoryPage(
     pendingNativeUpserts.set(clip.id, clip)
   }
 
-  if (appUnmounted || generation !== nativeQueryGeneration) return false
+  if (appUnmounted || !isCurrentNativeHistoryGeneration(generation)) return false
   historyPersistence.reset(confirmed, currentHistoryPolicy())
   suppressedNativeHistoryItems = nextItems
   items.value = nextItems
-  nativeHistoryNextCursor.value = page.nextCursor
-  nativeHistoryTotalCount.value = page.totalCount
-  nativeAppliedQueryKey = queryKey
+  commitNativeHistoryPageState(page, queryKey)
   historyState.value = 'ready'
   if (currentView.value === 'quick') {
     if (!append || !items.value.some((clip) => clip.id === selectedId.value)) {
@@ -1374,7 +1370,7 @@ async function applyNativeHistoryPage(
     historyPersistence.schedule(confirmed, persistenceTarget, currentHistoryPolicy())
     const saved = await historyPersistence.flush()
     if (!saved) return false
-    if (appUnmounted || generation !== nativeQueryGeneration) return false
+    if (appUnmounted || !isCurrentNativeHistoryGeneration(generation)) return false
     if (pending.length > 0) queueNativeHistoryRefresh(true)
   }
   nextTick(() => {
@@ -1382,102 +1378,6 @@ async function applyNativeHistoryPage(
   })
   resumePendingOcr(persistenceTarget)
   return true
-}
-
-async function runNativeHistoryQuery(append = false, force = false): Promise<boolean> {
-  if (historyPersistence.isFrozen()) {
-    nativeRefreshAfterExclusive = true
-    nativeRefreshAfterExclusiveForced ||= force
-    return false
-  }
-  const cursor = append ? nativeHistoryNextCursor.value : undefined
-  const descriptor = currentNativeQueryDescriptor(cursor)
-  if (!descriptor || append && (!cursor || nativeHistoryPageLoading.value)) return false
-
-  const requestedKey = historyQueryKey(descriptor.query)
-  if (!append && !force && historyState.value === 'ready' && requestedKey === nativeAppliedQueryKey) return true
-  const generation = append ? nativeQueryGeneration : ++nativeQueryGeneration
-  if (!append) {
-    nativeHistoryRefreshGeneration.value = generation
-    invalidateNativePayloads()
-    previewId.value = null
-    nativeHistoryNextCursor.value = undefined
-  } else {
-    nativeHistoryPageLoading.value = true
-  }
-
-  try {
-    // SQLite 必须先观察到当前乐观 UI 的最后一次变更，查询结果才不会把旧元数据带回界面。
-    const flushed = await historyPersistence.flush()
-    if (appUnmounted || generation !== nativeQueryGeneration) return false
-    const latestDescriptor = currentNativeQueryDescriptor()
-    if (!latestDescriptor || historyQueryKey(latestDescriptor.query) !== requestedKey) return false
-    if (!flushed) return false
-    const resolvedUpsertIds = [...pendingNativeUpserts.keys()]
-
-    if (descriptor.impossible) {
-      return applyNativeHistoryPage({ items: [], totalCount: 0 }, false, generation, requestedKey, resolvedUpsertIds)
-    }
-
-    const page = await queryHistoryWithRetry(descriptor.query)
-    if (appUnmounted || generation !== nativeQueryGeneration) return false
-    const currentDescriptor = currentNativeQueryDescriptor()
-    if (!currentDescriptor || historyQueryKey(currentDescriptor.query) !== requestedKey) return false
-    if (!page) {
-      historyState.value = 'error'
-      return false
-    }
-    return applyNativeHistoryPage(page, append, generation, requestedKey, resolvedUpsertIds)
-  } finally {
-    if (append || generation === nativeQueryGeneration) nativeHistoryPageLoading.value = false
-    if (!append && nativeHistoryRefreshGeneration.value === generation) {
-      nativeHistoryRefreshGeneration.value = null
-    }
-  }
-}
-
-function cancelNativeHistorySearchRefresh() {
-  if (nativeSearchDebounceTimer) clearTimeout(nativeSearchDebounceTimer)
-  nativeSearchDebounceTimer = undefined
-}
-
-function scheduleNativeHistorySearchRefresh() {
-  cancelNativeHistorySearchRefresh()
-  nativeSearchDebounceTimer = setTimeout(() => {
-    nativeSearchDebounceTimer = undefined
-    queueNativeHistoryRefresh()
-  }, NATIVE_SEARCH_DEBOUNCE_MS)
-}
-
-function queueNativeHistoryRefresh(force = false) {
-  cancelNativeHistorySearchRefresh()
-  if (!nativeRuntime
-    || !nativeSettingsReady.value
-    || historyState.value === 'error') return
-  if (currentView.value === 'library' && librarySection.value === 'settings') {
-    nativeRefreshAfterExclusive = true
-    nativeRefreshAfterExclusiveForced ||= force
-    return
-  }
-  if (historyPersistence.isFrozen()) {
-    nativeRefreshAfterExclusive = true
-    nativeRefreshAfterExclusiveForced ||= force
-    return
-  }
-  if (nativeRefreshAfterExclusive) {
-    force ||= nativeRefreshAfterExclusiveForced
-    nativeRefreshAfterExclusive = false
-    nativeRefreshAfterExclusiveForced = false
-  }
-  nativeQueryRefreshForced ||= force
-  if (nativeQueryRefreshQueued) return
-  nativeQueryRefreshQueued = true
-  void nextTick(() => {
-    nativeQueryRefreshQueued = false
-    const shouldForce = nativeQueryRefreshForced
-    nativeQueryRefreshForced = false
-    if (!appUnmounted) void runNativeHistoryQuery(false, shouldForce)
-  })
 }
 
 async function acquireStorageOperationLease(
@@ -1492,8 +1392,7 @@ async function acquireStorageOperationLease(
 
   busyStorageOperation.value = operation
   storageStatusMessage.value = ''
-  nativeQueryGeneration += 1
-  invalidateNativePayloads()
+  invalidateNativeHistoryQuery()
   try {
     return await historyPersistence.acquireExclusiveLease()
   } catch {
@@ -1543,11 +1442,10 @@ async function reloadHistoryAfterRestore(): Promise<boolean> {
     collection: { mode: 'any' },
     limit: NATIVE_HISTORY_PAGE_SIZE,
   })
-  const generation = ++nativeQueryGeneration
-  invalidateNativePayloads()
+  const generation = invalidateNativeHistoryQuery()
   nativeHistoryNextCursor.value = undefined
   const page = await queryHistoryWithRetry(query)
-  if (!page || appUnmounted || generation !== nativeQueryGeneration) return false
+  if (!page || appUnmounted || !isCurrentNativeHistoryGeneration(generation)) return false
   const resolvedUpsertIds = [...pendingNativeUpserts.keys()]
   return applyNativeHistoryPage(
     page,
@@ -1596,7 +1494,9 @@ async function flushHistoryWithRetry(): Promise<boolean> {
     const saved = await Promise.race([historyPersistence.flush(), timedOut])
     if (timeout) clearTimeout(timeout)
     if (saved) return true
-    if (attempt < HISTORY_RETRY_ATTEMPTS - 1) await waitForHistoryRetry()
+    if (attempt < HISTORY_RETRY_ATTEMPTS - 1) {
+      await new Promise((resolve) => setTimeout(resolve, HISTORY_RETRY_DELAY_MS))
+    }
   }
   return false
 }
@@ -2189,32 +2089,6 @@ async function toggleQuickPanelPinned() {
     }
   } finally {
     quickPanelPinInFlight.value = false
-  }
-}
-
-async function resolveClipPayload(clip: ClipboardItem): Promise<LoadedClipboardItem | null> {
-  const available = cachedPayload(clip)
-  if (available) return available
-
-  const generation = nativeQueryGeneration
-  const pending = pendingPayloadLoads.get(clip.id)
-  if (pending?.generation === generation) return pending.promise
-
-  const promise = (async () => {
-    const result = await loadNativeClipPayload(clip.id)
-    if (appUnmounted
-      || generation !== nativeQueryGeneration
-      || !items.value.some((candidate) => candidate.id === clip.id)) return null
-    if (result.status !== 'loaded') return null
-    hydratedPayloads.set(clip.id, { generation, item: result.item })
-    return result.item
-  })()
-  pendingPayloadLoads.set(clip.id, { generation, promise })
-  try {
-    return await promise
-  } finally {
-    const current = pendingPayloadLoads.get(clip.id)
-    if (current?.promise === promise) pendingPayloadLoads.delete(clip.id)
   }
 }
 
