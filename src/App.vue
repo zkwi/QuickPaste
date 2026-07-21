@@ -18,7 +18,6 @@ import {
   Link2,
   Maximize2,
   Minimize2,
-  Monitor,
   Moon,
   Minus,
   PanelTopClose,
@@ -26,7 +25,6 @@ import {
   Pin,
   Plus,
   QrCode,
-  RefreshCw,
   Search,
   Settings2,
   ShieldCheck,
@@ -172,7 +170,7 @@ import ManagerFilters from './components/ManagerFilters.vue'
 import ManagerBulkToolbar from './components/ManagerBulkToolbar.vue'
 import SnippetEditor from './components/SnippetEditor.vue'
 import SourceAppIcon from './components/SourceAppIcon.vue'
-import StorageManager from './components/StorageManager.vue'
+import SettingsPanel from './components/SettingsPanel.vue'
 import OnboardingDialog from './components/OnboardingDialog.vue'
 import { ONBOARDING_SAMPLE_ID, useOnboarding } from './composables/useOnboarding'
 
@@ -2059,7 +2057,8 @@ async function runContextAction(action: ClipAction) {
   }
 }
 
-function openSensitiveApps() {
+function openSensitiveApps(trigger?: HTMLButtonElement) {
+  if (trigger) sensitiveAppsTrigger.value = trigger
   cancelShortcutRecording()
   sensitiveAppsOpen.value = true
   nextTick(() => sensitiveAppInput.value?.focus())
@@ -2097,6 +2096,7 @@ function applyRetentionPeriod(value: RetentionPeriod) {
 
 function requestRetentionChange(event: Event) {
   const select = event.target as HTMLSelectElement
+  retentionSelect.value = select
   if (historyState.value !== 'ready') {
     select.value = retentionSelectValue.value
     return
@@ -2121,6 +2121,7 @@ function requestRetentionChange(event: Event) {
 
 function closeRetentionChange() {
   pendingRetentionChange.value = null
+  if (retentionSelect.value) retentionSelect.value.value = retentionSelectValue.value
   restoreFocus(retentionSelect.value)
 }
 
@@ -4080,68 +4081,54 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section v-else class="settings-content" :aria-busy="nativeRuntime && !nativeSettingsReady">
-            <p v-if="nativeRuntime && !nativeSettingsReady" class="settings-loading" role="status">{{ t('settingsLoading') }}</p>
-            <section class="settings-primary-actions" data-testid="settings-primary-actions" :aria-label="t('settingsPrimaryActions')">
-              <button data-testid="settings-open-clipboard" class="settings-primary-card settings-clipboard-card" type="button" :aria-label="t('manageClipboard')" @click="selectLibrarySection('all')">
-                <span class="settings-primary-icon" aria-hidden="true"><LayoutList :size="19" /></span>
-                <span class="settings-primary-copy"><strong>{{ t('manageClipboard') }}</strong><small>{{ t('settingsClipboardEntryDescription') }}</small></span>
-                <span class="settings-primary-link">{{ t('manageClipboardShort') }}</span>
-              </button>
-              <article class="shortcut-card" :class="{ recording: shortcutRecording, unavailable: !globalShortcutAvailable }">
-                <span class="settings-primary-icon" aria-hidden="true"><Keyboard :size="19" /></span>
-                <div><strong>{{ t('openQuickPaste') }}</strong><p>{{ shortcutRecording ? t('shortcutRecordingHint') : t('globalShortcutDescription') }}</p><small v-if="!globalShortcutAvailable" id="shortcut-status" data-testid="shortcut-status">{{ t('shortcutInactive') }}</small><small v-else-if="shortcutConflictMessage" id="shortcut-conflict" data-testid="shortcut-conflict" class="shortcut-conflict">{{ shortcutConflictMessage }}</small></div>
-                <button data-testid="shortcut-recorder" class="shortcut-recorder" type="button" :disabled="shortcutApplyInFlight || (nativeRuntime && !nativeSettingsReady)" :aria-label="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :title="t('globalShortcutControl', { shortcut: shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) })" :aria-invalid="!globalShortcutAvailable ? 'true' : undefined" :aria-describedby="!globalShortcutAvailable ? 'shortcut-status' : shortcutConflictMessage ? 'shortcut-conflict' : undefined" @click="startShortcutRecording" @blur="cancelShortcutRecording()">
-                  <kbd>{{ shortcutRecording ? t('shortcutRecording') : displayShortcut(globalShortcut) }}</kbd>
-                </button>
-              </article>
-            </section>
-            <article class="setting-group">
-              <div class="setting-heading"><Monitor :size="18" /><div><h2>{{ t('startupAppearance') }}</h2><p>{{ t('startupAppearanceDescription') }}</p></div></div>
-              <label class="setting-row"><span><strong>{{ t('launchAtStartup') }}</strong><small>{{ t('launchAtStartupDescription') }}</small></span><input v-model="launchAtStartup" data-testid="launch-at-startup-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
-              <div class="setting-row"><span><strong>{{ t('interfaceTheme') }}</strong><small>{{ t('themeDescription', { theme: theme === 'light' ? t('light') : t('dark') }) }}</small></span><button data-testid="settings-theme-button" class="select-button" type="button" :aria-label="t('interfaceThemeControl', { theme: theme === 'light' ? t('light') : t('dark') })" @click="toggleTheme">{{ theme === 'light' ? t('light') : t('dark') }}</button></div>
-              <label class="setting-row"><span><strong>{{ t('language') }}</strong><small>{{ t('languageDescription') }}</small></span><select data-testid="locale-select" v-model="locale"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
-            </article>
-            <article class="setting-group">
-              <div class="setting-heading"><ShieldCheck :size="18" /><div><h2>{{ t('privacy') }}</h2><p>{{ t('privacyDescription') }}</p></div></div>
-              <label class="setting-row"><span><strong>{{ t('retention') }}</strong><small id="retention-description">{{ historyState === 'loading' ? t('retentionUnavailableLoading') : historyState === 'error' ? t('retentionUnavailableError') : t('retentionDescription') }}</small></span><select ref="retentionSelect" data-testid="retention-select" :value="retentionSelectValue" :disabled="historyState !== 'ready' || busyStorageOperation !== null" aria-describedby="retention-description" @change="requestRetentionChange"><option v-if="customRetentionDays !== null" :value="String(customRetentionDays)">{{ t('currentCustomRetentionDays', { count: customRetentionDays }) }}</option><option value="7">{{ t('daysOption', { count: 7 }) }}</option><option value="30">{{ t('daysOption', { count: 30 }) }}</option><option value="90">{{ t('daysOption', { count: 90 }) }}</option><option value="forever">{{ t('forever') }}</option></select></label>
-              <label class="setting-row"><span><strong>{{ t('captureProtection') }}</strong><small>{{ t('captureProtectionDescription') }}</small></span><input v-model="hideDuringSharing" data-testid="capture-protection-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
-              <label v-if="nativeRuntime" class="setting-row"><span><strong>{{ t('localImageOcr') }}</strong><small id="ocr-setting-description">{{ t('localImageOcrDescription') }}</small></span><input v-model="ocrEnabled" data-testid="ocr-enabled-toggle" class="switch" type="checkbox" :disabled="!nativeSettingsReady" aria-describedby="ocr-setting-description" /></label>
-              <label class="setting-row"><span><strong>{{ t('elevatedPaste') }}</strong><small>{{ t('elevatedPasteDescription') }}</small></span><input v-model="elevatedPasteEnabled" data-testid="elevated-paste-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
-              <button ref="sensitiveAppsTrigger" data-testid="open-sensitive-apps" class="setting-row action" type="button" :disabled="nativeRuntime && !nativeSettingsReady" @click="openSensitiveApps"><span><strong>{{ t('excludeSensitiveApps') }}</strong><small>{{ t('excludedAppsCount', { count: excludedApps.length }) }}</small></span><span class="select-button">{{ t('manage') }}</span></button>
-            </article>
-            <StorageManager
-              v-if="nativeRuntime"
-              :locale="locale"
-              :stats="storageStats"
-              :health="historyHealth"
-              :prepared-restore="preparedRestore"
-              :busy-operation="busyStorageOperation"
-              :status-message="storageStatusMessage"
-              @backup="createHistoryBackup"
-              @prepare-restore="prepareHistoryRestore"
-              @commit-restore="commitHistoryRestore"
-              @discard-restore="discardHistoryRestore"
-              @compact="compactHistoryDatabase"
-              @open-data-directory="openHistoryDataDirectory"
-              @refresh="refreshHistoryStorage"
-            />
-            <article class="update-card" :aria-busy="updateBusy">
-              <Download :size="18" aria-hidden="true" />
-              <div class="update-copy">
-                <div class="update-title"><strong>{{ t('softwareUpdate') }}</strong><span data-testid="current-version">v{{ currentVersion }}</span></div>
-                <p data-testid="update-status" :class="{ error: updateState === 'error' }">{{ updateStatusText }}</p>
-                <div v-if="updateProgress && ['downloading', 'verifying', 'installing'].includes(updateState)" class="update-progress" role="progressbar" :aria-label="updateStatusText" :aria-valuenow="updateProgress.percent" aria-valuemin="0" aria-valuemax="100"><span :style="{ width: `${updateProgress.percent}%` }"></span></div>
-                <small v-if="updateStatus?.assetSize">{{ formatUpdateSize(updateStatus.assetSize) }} · {{ t('updateIntegrityNotice') }}</small>
-                <small v-else>{{ t('updatePrivacyNotice') }}</small>
-              </div>
-              <div class="update-actions">
-                <label class="update-auto"><input v-model="autoCheckUpdates" class="switch" type="checkbox" /><span>{{ t('autoCheckUpdates') }}</span></label>
-                <button data-testid="check-update" class="select-button" type="button" :disabled="!nativeRuntime || updateBusy" @click="runUpdateCheck(true)"><RefreshCw :size="14" />{{ t('checkUpdates') }}</button>
-                <button v-if="updateStatus?.updateAvailable && updateStatus.automaticInstallAvailable" data-testid="install-update" class="select-button primary" type="button" :disabled="updateBusy" @click="installAvailableUpdate"><Download :size="14" />{{ t('downloadInstall') }}</button>
-              </div>
-            </article>
-          </section>
+          <SettingsPanel
+            v-else
+            v-model:launch-at-startup="launchAtStartup"
+            v-model:theme="theme"
+            v-model:locale="locale"
+            v-model:hide-during-sharing="hideDuringSharing"
+            v-model:ocr-enabled="ocrEnabled"
+            v-model:elevated-paste-enabled="elevatedPasteEnabled"
+            v-model:auto-check-updates="autoCheckUpdates"
+            :native-runtime="nativeRuntime"
+            :native-settings-ready="nativeSettingsReady"
+            :global-shortcut="globalShortcut"
+            :global-shortcut-available="globalShortcutAvailable"
+            :shortcut-recording="shortcutRecording"
+            :shortcut-apply-in-flight="shortcutApplyInFlight"
+            :shortcut-conflict-message="shortcutConflictMessage"
+            :history-state="historyState"
+            :retention-select-value="retentionSelectValue"
+            :custom-retention-days="customRetentionDays"
+            :excluded-apps-count="excludedApps.length"
+            :storage-stats="storageStats"
+            :history-health="historyHealth"
+            :prepared-restore="preparedRestore"
+            :busy-storage-operation="busyStorageOperation"
+            :storage-status-message="storageStatusMessage"
+            :current-version="currentVersion"
+            :update-status="updateStatus"
+            :update-progress="updateProgress"
+            :update-state="updateState"
+            :update-busy="updateBusy"
+            :update-status-text="updateStatusText"
+            :t="t"
+            @open-clipboard="selectLibrarySection('all')"
+            @toggle-theme="toggleTheme"
+            @start-shortcut-recording="startShortcutRecording"
+            @cancel-shortcut-recording="cancelShortcutRecording()"
+            @retention-change="requestRetentionChange"
+            @open-sensitive-apps="openSensitiveApps"
+            @backup="createHistoryBackup"
+            @prepare-restore="prepareHistoryRestore"
+            @commit-restore="commitHistoryRestore"
+            @discard-restore="discardHistoryRestore"
+            @compact="compactHistoryDatabase"
+            @open-data-directory="openHistoryDataDirectory"
+            @refresh-storage="refreshHistoryStorage"
+            @check-update="runUpdateCheck(true)"
+            @install-update="installAvailableUpdate"
+          />
         </main>
       </section>
     </Transition>
