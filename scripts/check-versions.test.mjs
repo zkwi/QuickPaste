@@ -163,6 +163,16 @@ test('validateProjectMetadata rejects an additional unapproved Rust cache major'
   ])
 })
 
+test('validateProjectMetadata recognizes whitespace and quoted YAML uses keys', () => {
+  const metadata = validMetadata()
+  metadata.ciWorkflow += '\nuses : Swatinem/rust-cache@v3\n"uses" : Swatinem/rust-cache@v1'
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    'CI 使用未批准的 GitHub Action：Swatinem/rust-cache@v3',
+    'CI 使用未批准的 GitHub Action：Swatinem/rust-cache@v1',
+  ])
+})
+
 test('validateProjectMetadata requires every custom titlebar window permission', () => {
   const metadata = validMetadata()
   metadata.tauriCapabilities.permissions = metadata.tauriCapabilities.permissions.filter(

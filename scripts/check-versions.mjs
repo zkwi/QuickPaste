@@ -50,7 +50,7 @@ const approvedCiActions = new Set([
 ])
 
 function ciActions(workflow) {
-  return [...(workflow ?? '').matchAll(/^\s*uses:\s*([^\s#]+)/gm)].map(([, action]) => action)
+  return [...(workflow ?? '').matchAll(/^\s*(?:uses|["']uses["'])\s*:\s*([^\s#]+)/gm)].map(([, action]) => action)
 }
 
 export function validateProjectMetadata(metadata) {
