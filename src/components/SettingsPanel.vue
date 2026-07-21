@@ -33,6 +33,7 @@ defineProps<{
   updateStatus: UpdateStatus | null
   updateProgress: UpdateProgress | null
   updateState: UpdateState
+  updateFailurePhase: 'check' | 'download' | 'install' | null
   updateBusy: boolean
   updateStatusText: string
   t: Translator
@@ -62,6 +63,8 @@ const emit = defineEmits<{
   refreshStorage: []
   checkUpdate: []
   installUpdate: []
+  retryUpdate: []
+  openReleases: []
 }>()
 
 function openSensitiveApps(event: MouseEvent) {
@@ -128,7 +131,9 @@ function openSensitiveApps(event: MouseEvent) {
       <div class="update-actions">
         <label class="update-auto"><input v-model="autoCheckUpdates" class="switch" type="checkbox" /><span>{{ t('autoCheckUpdates') }}</span></label>
         <button data-testid="check-update" class="select-button" type="button" :disabled="!nativeRuntime || updateBusy" @click="emit('checkUpdate')"><RefreshCw :size="14" />{{ t('checkUpdates') }}</button>
-        <button v-if="updateStatus?.updateAvailable && updateStatus.automaticInstallAvailable" data-testid="install-update" class="select-button primary" type="button" :disabled="updateBusy" @click="emit('installUpdate')"><Download :size="14" />{{ t('downloadInstall') }}</button>
+        <button v-if="updateState !== 'error' && updateStatus?.updateAvailable && updateStatus.automaticInstallAvailable" data-testid="install-update" class="select-button primary" type="button" :disabled="updateBusy" @click="emit('installUpdate')"><Download :size="14" />{{ t('downloadInstall') }}</button>
+        <button v-if="updateState === 'error' && ['check', 'download'].includes(updateFailurePhase ?? '')" data-testid="update-retry" class="select-button primary" type="button" :disabled="updateBusy" @click="emit('retryUpdate')"><RefreshCw :size="14" />{{ t('retryUpdate') }}</button>
+        <button v-if="updateState === 'error'" data-testid="update-open-releases" class="select-button" type="button" @click="emit('openReleases')">{{ t('openReleases') }}</button>
       </div>
     </article>
   </section>

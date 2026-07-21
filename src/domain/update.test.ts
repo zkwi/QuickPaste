@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { formatUpdateSize, shouldAutoCheckUpdate } from './update'
+import {
+  OFFICIAL_RELEASES_URL,
+  classifyUpdateFailure,
+  formatUpdateSize,
+  shouldAutoCheckUpdate,
+} from './update'
 
 describe('update domain rules', () => {
   it('limits automatic checks to once every 24 hours', () => {
@@ -15,5 +20,23 @@ describe('update domain rules', () => {
     expect(formatUpdateSize(0)).toBe('0 MB')
     expect(formatUpdateSize(1_572_864)).toBe('1.5 MB')
     expect(formatUpdateSize(undefined)).toBe('—')
+  })
+
+  it.each([
+    [new Error('operation timed out after 30s'), 'timeout'],
+    ['请求超时，请稍后重试', 'timeout'],
+    [new Error('network is unreachable'), 'unreachable'],
+    [{ message: 'Could not resolve host: api.github.com' }, 'unreachable'],
+  ])('classifies recoverable updater network failures', (error, expected) => {
+    expect(classifyUpdateFailure(error)).toBe(expected)
+  })
+
+  it('falls back to a generic updater failure without exposing arbitrary values', () => {
+    expect(classifyUpdateFailure(new Error('invalid release signature'))).toBe('generic')
+    expect(classifyUpdateFailure({ secret: 'do not render' })).toBe('generic')
+  })
+
+  it('keeps the official project releases page as the single escape-hatch URL', () => {
+    expect(OFFICIAL_RELEASES_URL).toBe('https://github.com/zkwi/QuickPaste/releases')
   })
 })

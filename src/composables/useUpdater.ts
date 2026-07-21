@@ -1,5 +1,10 @@
 import { computed, onBeforeUnmount, ref, watch, type Ref } from 'vue'
-import { shouldAutoCheckUpdate } from '../domain/update'
+import {
+  OFFICIAL_RELEASES_URL,
+  classifyUpdateFailure,
+  shouldAutoCheckUpdate,
+  type UpdateFailureKind,
+} from '../domain/update'
 import type { MessageKey } from '../i18n'
 import {
   checkForUpdate,
@@ -10,6 +15,7 @@ import {
   type UpdateProgress,
   type UpdateStatus,
 } from '../platform/updater'
+import { openExternalLink } from '../platform/system'
 
 type Translator = (key: MessageKey, replacements?: Record<string, string | number>) => string
 
@@ -50,6 +56,7 @@ export function useUpdater(options: UseUpdaterOptions) {
   const updateProgress = ref<UpdateProgress | null>(null)
   const updateState = ref<'idle' | 'checking' | 'available' | 'latest' | 'downloading' | 'verifying' | 'installing' | 'error'>('idle')
   const updateError = ref('')
+  const updateFailurePhase = ref<'check' | 'download' | 'install' | null>(null)
   const updateNoticeVisible = ref(false)
   let disconnectUpdateCheckRequested: (() => void) | undefined
   let autoUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined
@@ -84,10 +91,35 @@ export function useUpdater(options: UseUpdaterOptions) {
     }, 12_000)
   }
 
+  function updateFailureMessage(
+    phase: 'check' | 'download' | 'install',
+    kind: UpdateFailureKind,
+  ): string {
+    if (phase === 'check') {
+      if (kind === 'timeout') return options.t('updateCheckTimeout')
+      if (kind === 'unreachable') return options.t('updateCheckUnreachable')
+      return options.t('updateCheckFailed')
+    }
+    if (phase === 'download') {
+      if (kind === 'timeout') return options.t('updateDownloadTimeout')
+      if (kind === 'unreachable') return options.t('updateDownloadUnreachable')
+      return options.t('updateDownloadFailed')
+    }
+    return options.t('updateInstallFailed')
+  }
+
+  function setUpdateFailure(phase: 'check' | 'download' | 'install', error: unknown) {
+    updateFailurePhase.value = phase
+    updateError.value = updateFailureMessage(phase, classifyUpdateFailure(error))
+    updateState.value = 'error'
+    options.showToast(updateError.value, true)
+  }
+
   async function runUpdateCheck(manual: boolean) {
     if (!options.nativeRuntime || updateBusy.value) return
     updateState.value = 'checking'
     updateError.value = ''
+    updateFailurePhase.value = null
     updateProgress.value = null
     const attemptedAt = Date.now()
     try {
@@ -103,13 +135,10 @@ export function useUpdater(options: UseUpdaterOptions) {
       else hideUpdateNotice()
     } catch (error) {
       if (manual) {
-        updateError.value = error instanceof Error && error.message.trim()
-          ? error.message
-          : options.t('updateCheckFailed')
-        updateState.value = 'error'
-        options.showToast(options.t('updateCheckFailed'), true)
+        setUpdateFailure('check', error)
       } else {
         updateState.value = 'idle'
+        updateFailurePhase.value = null
       }
     } finally {
       writeLastUpdateCheckAt(attemptedAt)
@@ -124,23 +153,44 @@ export function useUpdater(options: UseUpdaterOptions) {
     updateNoticeTimer = undefined
     updateState.value = 'downloading'
     updateError.value = ''
+    updateFailurePhase.value = null
     updateProgress.value = null
+    let failurePhase: 'download' | 'install' = 'download'
     try {
       const prepared = await downloadUpdate(status.latestVersion, (progress) => {
         updateProgress.value = progress
         updateState.value = progress.phase
       })
       if (!prepared) throw new Error(options.t('updateInstallFailed'))
+      failurePhase = 'install'
       if (!await options.flushHistory()) throw new Error(options.t('historyQuitSaveFailed'))
       updateState.value = 'installing'
       const result = await installDownloadedUpdate(prepared.token)
       if (!result) throw new Error(options.t('updateInstallFailed'))
     } catch (error) {
-      updateError.value = error instanceof Error && error.message.trim()
-        ? error.message
-        : options.t('updateInstallFailed')
-      updateState.value = 'error'
-      options.showToast(updateError.value, true)
+      if (failurePhase === 'install'
+        && error instanceof Error
+        && error.message === options.t('historyQuitSaveFailed')) {
+        updateFailurePhase.value = 'install'
+        updateError.value = error.message
+        updateState.value = 'error'
+        options.showToast(updateError.value, true)
+      } else {
+        setUpdateFailure(failurePhase, error)
+      }
+    }
+  }
+
+  async function retryFailedUpdate() {
+    if (updateBusy.value) return
+    const phase = updateFailurePhase.value
+    if (phase === 'check') await runUpdateCheck(true)
+    else if (phase === 'download') await installAvailableUpdate()
+  }
+
+  async function openOfficialReleases() {
+    if (!await openExternalLink(OFFICIAL_RELEASES_URL)) {
+      options.showToast(options.t('releasesOpenFailed'), true)
     }
   }
 
@@ -188,11 +238,14 @@ export function useUpdater(options: UseUpdaterOptions) {
     updateProgress,
     updateState,
     updateNoticeVisible,
+    updateFailurePhase,
     updateBusy,
     updateStatusText,
     hideUpdateNotice,
     runUpdateCheck,
     installAvailableUpdate,
+    retryFailedUpdate,
+    openOfficialReleases,
     connectUpdaterBridge,
   }
 }

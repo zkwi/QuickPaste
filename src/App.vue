@@ -10,6 +10,7 @@ import {
   LayoutList,
   Link2,
   Pin,
+  RefreshCw,
   Search,
   ShieldCheck,
   X,
@@ -386,11 +387,14 @@ const {
   updateProgress,
   updateState,
   updateNoticeVisible,
+  updateFailurePhase,
   updateBusy,
   updateStatusText,
   hideUpdateNotice,
   runUpdateCheck,
   installAvailableUpdate,
+  retryFailedUpdate,
+  openOfficialReleases,
   connectUpdaterBridge,
 } = useUpdater({
   nativeRuntime,
@@ -3293,6 +3297,7 @@ onBeforeUnmount(() => {
             :update-status="updateStatus"
             :update-progress="updateProgress"
             :update-state="updateState"
+            :update-failure-phase="updateFailurePhase"
             :update-busy="updateBusy"
             :update-status-text="updateStatusText"
             :t="t"
@@ -3311,6 +3316,8 @@ onBeforeUnmount(() => {
             @refresh-storage="refreshHistoryStorage"
             @check-update="runUpdateCheck(true)"
             @install-update="installAvailableUpdate"
+            @retry-update="retryFailedUpdate"
+            @open-releases="openOfficialReleases"
           />
         </template>
       </LibraryManager>
@@ -3475,7 +3482,7 @@ onBeforeUnmount(() => {
         <span class="update-notice-actions">
           <button data-testid="update-notice-dismiss" class="update-notice-dismiss" type="button" :aria-label="t('dismissUpdate')" @click="hideUpdateNotice"><X :size="15" /></button>
           <button
-            v-if="updateStatus.automaticInstallAvailable"
+            v-if="updateState !== 'error' && updateStatus.automaticInstallAvailable"
             data-testid="update-notice-install"
             class="update-notice-install"
             type="button"
@@ -3484,6 +3491,8 @@ onBeforeUnmount(() => {
           >
             <Download :size="14" />{{ updateBusy ? updateStatusText : t('downloadInstall') }}
           </button>
+          <button v-if="updateState === 'error' && updateFailurePhase === 'download'" data-testid="update-notice-retry" class="update-notice-install" type="button" :disabled="updateBusy" @click="retryFailedUpdate"><RefreshCw :size="14" />{{ t('retryUpdate') }}</button>
+          <button v-if="updateState === 'error'" data-testid="update-notice-open-releases" class="update-notice-install" type="button" @click="openOfficialReleases">{{ t('openReleases') }}</button>
         </span>
         <span v-if="updateProgress && updateBusy" class="update-notice-progress" aria-hidden="true"><span :style="{ width: `${updateProgress.percent}%` }"></span></span>
       </aside>

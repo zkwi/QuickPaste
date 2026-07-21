@@ -715,6 +715,92 @@ describe('native setting reliability', () => {
     expect(updaterMocks.installDownloadedUpdate).toHaveBeenCalledWith('prepared-token')
   })
 
+  it('explains a timed-out check, opens the official releases page, and retries once', async () => {
+    updaterMocks.checkForUpdate.mockRejectedValueOnce(new Error('request timed out after 30s'))
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    await wrapper.get('[data-testid="check-update"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="update-status"]').text()).toContain('检查更新超时')
+    expect(wrapper.get('[data-testid="update-retry"]').text()).toBe('重试')
+    expect(wrapper.get('[data-testid="update-open-releases"]').text()).toBe('打开发布页')
+
+    await wrapper.get('[data-testid="update-open-releases"]').trigger('click')
+    await flushPromises()
+    expect(systemMocks.openExternalLink).toHaveBeenCalledWith('https://github.com/zkwi/QuickPaste/releases')
+
+    let finishRetry: ((value: null) => void) | undefined
+    updaterMocks.checkForUpdate.mockImplementationOnce(() => new Promise<null>((resolve) => {
+      finishRetry = resolve
+    }))
+    const retry = wrapper.get('[data-testid="update-retry"]')
+    await Promise.all([retry.trigger('click'), retry.trigger('click')])
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="update-retry"]').exists()).toBe(false)
+    finishRetry?.(null)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="update-retry"]').exists()).toBe(false)
+  })
+
+  it('uses localized generic check recovery copy without exposing the raw error', async () => {
+    updaterMocks.checkForUpdate.mockRejectedValueOnce(new Error('invalid release signature: internal detail'))
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    await wrapper.get('[data-testid="locale-select"]').setValue('en-US')
+    await wrapper.get('[data-testid="check-update"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="update-status"]').text()).toContain('Could not check for updates')
+    expect(wrapper.get('[data-testid="update-status"]').text()).not.toContain('internal detail')
+    expect(wrapper.get('[data-testid="update-retry"]').text()).toBe('Retry')
+    expect(wrapper.get('[data-testid="update-open-releases"]').text()).toBe('Open releases')
+  })
+
+  it('recovers from an unreachable download without duplicate retries and allows dismissing the notice', async () => {
+    updaterMocks.checkForUpdate.mockResolvedValueOnce({
+      currentVersion: '0.1.0',
+      latestVersion: '0.2.0',
+      updateAvailable: true,
+      prerelease: false,
+      releaseName: 'QuickPaste 0.2.0',
+      releaseNotes: 'Recovery UX',
+      releaseUrl: 'https://github.com/zkwi/QuickPaste/releases/tag/v0.2.0',
+      publishedAt: '2026-07-19T08:00:00Z',
+      assetName: 'QuickPaste_0.2.0_x64-setup.exe',
+      assetSize: 12_582_912,
+      automaticInstallAvailable: true,
+    })
+    updaterMocks.downloadUpdate.mockRejectedValueOnce(new Error('network is unreachable'))
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    await wrapper.get('[data-testid="check-update"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="install-update"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="update-status"]').text()).toContain('无法连接 GitHub 下载安装包')
+    expect(wrapper.get('[data-testid="update-notice"]').text()).toContain('重试')
+    await wrapper.get('[data-testid="update-notice-dismiss"]').trigger('click')
+    expect(wrapper.find('[data-testid="update-notice"]').exists()).toBe(false)
+
+    let finishDownload: ((value: null) => void) | undefined
+    updaterMocks.downloadUpdate.mockImplementationOnce(() => new Promise<null>((resolve) => {
+      finishDownload = resolve
+    }))
+    const retry = wrapper.get('[data-testid="update-retry"]')
+    await Promise.all([retry.trigger('click'), retry.trigger('click')])
+    expect(updaterMocks.downloadUpdate).toHaveBeenCalledTimes(2)
+    finishDownload?.(null)
+    await flushPromises()
+  })
+
   it('downloads first and refuses to launch the installer when the latest history cannot be saved', async () => {
     vi.useFakeTimers()
     updaterMocks.checkForUpdate.mockResolvedValueOnce({
