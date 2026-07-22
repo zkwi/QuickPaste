@@ -3018,6 +3018,85 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="manager-collections"]').text()).not.toContain('项目')
   })
 
+  it('uses one useful manager summary instead of repeating generated titles', async () => {
+    const copiedAt = '2026-07-22T00:00:00.000Z'
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({
+      items: [
+        {
+          id: 'repeated', kind: 'text', title: '建议优化排版',
+          content: '建议优化排版，将默认显示行数调整为两行，以提升信息密度',
+          sourceApp: 'Chrome', copiedAt, pinned: false, searchTerms: [], payloadLoaded: false,
+        },
+        {
+          id: 'snippet', kind: 'text', title: '常用地址', content: '上海市浦东新区',
+          sourceApp: 'QuickPaste', copiedAt, pinned: true, permanent: true,
+          searchTerms: [], payloadLoaded: false,
+        },
+        {
+          id: 'image', kind: 'image', title: '剪贴板图片 · 1400 × 1013', content: '图片数据',
+          sourceApp: 'Snipping Tool', copiedAt, pinned: false, searchTerms: [], payloadLoaded: false,
+        },
+        {
+          id: 'link', kind: 'link', title: 'example.com/docs', content: 'https://example.com/docs',
+          sourceApp: 'Edge', copiedAt, pinned: false, searchTerms: [], payloadLoaded: false,
+        },
+        {
+          id: 'files', kind: 'file', title: '2 个文件', content: 'first.txt\nsecond.txt',
+          files: [
+            { path: 'C:\\Fixtures\\first.txt', name: 'first.txt', directory: false, exists: true },
+            { path: 'C:\\Fixtures\\second.txt', name: 'second.txt', directory: false, exists: true },
+          ],
+          sourceApp: 'Explorer', copiedAt, pinned: false, searchTerms: [], payloadLoaded: false,
+        },
+      ],
+      totalCount: 5,
+    })
+
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-manager-clip-id="repeated"] .manager-summary-text').text())
+      .toBe('建议优化排版，将默认显示行数调整为两行，以提升信息密度')
+    expect(wrapper.get('[data-manager-clip-id="snippet"] .manager-summary-text').text())
+      .toBe('常用地址 · 上海市浦东新区')
+    expect(wrapper.get('[data-manager-clip-id="image"] .manager-summary-text').text())
+      .toBe('剪贴板图片 · 1400 × 1013')
+    expect(wrapper.get('[data-manager-clip-id="link"] .manager-summary-text').text())
+      .toBe('https://example.com/docs')
+    expect(wrapper.get('[data-manager-clip-id="files"] .manager-summary-text').text())
+      .toContain('2 个文件 · first.txt')
+    expect(wrapper.findAll('.manager-title-text')).toHaveLength(0)
+    expect(wrapper.get('[data-manager-clip-id="repeated"]').find('p').exists()).toBe(false)
+    wrapper.unmount()
+  })
+
+  it('shows a title-only manager search match in the unified summary', async () => {
+    vi.useFakeTimers()
+    historyMocks.queryNativeHistory.mockReset().mockResolvedValue({
+      items: [{
+        id: 'named', kind: 'text', title: '专用标题', content: '正文没有查询词', sourceApp: 'QuickPaste',
+        copiedAt: '2026-07-22T00:00:00.000Z', pinned: true, permanent: true,
+        searchTerms: [], payloadLoaded: false,
+      }],
+      totalCount: 1,
+    })
+
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="manager-search-input"]').setValue('专用标题')
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+
+    const summary = wrapper.get('[data-manager-clip-id="named"] .manager-summary-text')
+    expect(summary.text()).toBe('专用标题')
+    expect(summary.get('mark.search-highlight').text()).toBe('专用标题')
+    wrapper.unmount()
+  })
+
   it('keeps manager focus separate from a frozen all-matching selection and preserves failure state', async () => {
     const newest = {
       id: 'selection-newest', kind: 'text', title: '最新', content: 'new', sourceApp: 'Editor',

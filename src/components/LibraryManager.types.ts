@@ -54,6 +54,7 @@ export interface LibraryManagerState {
 export interface LibraryManagerHelpers {
   t: (key: MessageKey, replacements?: Record<string, string | number>) => string
   kindIcon: (kind: ClipKind) => Component
+  managerClipText: (clip: ClipboardItem) => string
   managerHighlightSegments: (text: string) => Array<{ text: string; matched: boolean }>
   isOcrOnlyMatch: (clip: ClipboardItem) => boolean
   isPhoneticOnlyMatch: (clip: ClipboardItem) => boolean

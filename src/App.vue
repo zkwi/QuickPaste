@@ -54,7 +54,7 @@ import {
   type StoredSettings,
   type Theme,
 } from './domain/settings'
-import { createSearchHighlighter } from './domain/searchHighlight'
+import { createSearchHighlighter, type SearchHighlighter } from './domain/searchHighlight'
 import { isSafeExternalUrl } from './domain/externalLink'
 import { parseQuickSearch, suggestSourceApps } from './domain/quickSearch'
 import {
@@ -590,30 +590,39 @@ function ocrStatusLabel(clip: ClipboardItem): string {
   return t('ocrFailed')
 }
 
-function searchPreviewText(text: string): string {
-  return directSearchHighlighter.value.preview(text)
-}
-
-function quickClipText(clip: ClipboardItem): string {
+function clipSummaryText(
+  clip: ClipboardItem,
+  highlighter: SearchHighlighter,
+  phoneticOnly: boolean,
+  preserveDistinctTitle = false,
+): string {
   const title = clip.title.trim()
   const content = clip.content.trim()
   if (!content) return title
 
-  if (isPhoneticOnlyMatch(clip)) return title || content
+  if (phoneticOnly) return title || content
 
-  const highlighter = directSearchHighlighter.value
   const titleMatches = highlighter.segments(title).some((segment) => segment.matched)
   const contentMatches = highlighter.segments(content).some((segment) => segment.matched)
   if (highlighter.hasTerms) {
-    return searchPreviewText(titleMatches && !contentMatches ? title : content)
+    if (titleMatches && !contentMatches) return highlighter.preview(title)
+    if (!titleMatches && !contentMatches) return title || highlighter.preview(content)
+    if (preserveDistinctTitle && title && clip.kind !== 'image' && clip.kind !== 'link' && clip.kind !== 'file') {
+      const comparableTitle = title.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ')
+      const comparableContent = content.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ')
+      if (!comparableContent.startsWith(comparableTitle) && !comparableTitle.startsWith(comparableContent)) {
+        return `${title} · ${highlighter.preview(content)}`
+      }
+    }
+    return highlighter.preview(content)
   }
 
   if (clip.kind === 'image') return title
-  if (clip.kind === 'link') return searchPreviewText(content)
+  if (clip.kind === 'link') return highlighter.preview(content)
   if (clip.kind === 'file') {
     return (clip.files?.length ?? 0) > 1
-      ? `${title} · ${searchPreviewText(content)}`
-      : searchPreviewText(content)
+      ? `${title} · ${highlighter.preview(content)}`
+      : highlighter.preview(content)
   }
 
   const comparableTitle = title.normalize('NFKC').toLocaleLowerCase().replace(/\s+/g, ' ')
@@ -622,7 +631,15 @@ function quickClipText(clip: ClipboardItem): string {
     || comparableTitle === comparableContent
     || comparableContent.startsWith(comparableTitle)
     || comparableTitle.startsWith(comparableContent)
-  return titleRepeatsContent ? searchPreviewText(content) : `${title} · ${searchPreviewText(content)}`
+  return titleRepeatsContent ? highlighter.preview(content) : `${title} · ${highlighter.preview(content)}`
+}
+
+function quickClipText(clip: ClipboardItem): string {
+  return clipSummaryText(clip, directSearchHighlighter.value, isPhoneticOnlyMatch(clip))
+}
+
+function managerClipText(clip: ClipboardItem): string {
+  return clipSummaryText(clip, managerSearchHighlighter.value, isPhoneticOnlyMatch(clip, true), true)
 }
 
 const selectedIndex = computed(() => visibleItems.value.findIndex((clip) => clip.id === selectedId.value))
@@ -868,6 +885,7 @@ const libraryManagerState = computed(() => ({
 const libraryManagerHelpers: LibraryManagerHelpers = {
   t,
   kindIcon,
+  managerClipText,
   managerHighlightSegments,
   isOcrOnlyMatch: (clip) => isOcrOnlyMatch(clip, true),
   isPhoneticOnlyMatch: (clip) => isPhoneticOnlyMatch(clip, true),
