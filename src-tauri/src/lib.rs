@@ -3581,6 +3581,10 @@ fn verified_format_package_sequence(expected: &clipboard_formats::FormatPackage)
             clipboard_formats::PackageReadOutcome::Captured {
                 package: actual,
                 sequence,
+            }
+            | clipboard_formats::PackageReadOutcome::Ignored {
+                package: actual,
+                sequence,
             } => clipboard_formats::verified_package_sequence(
                 sequence,
                 expected,
@@ -3595,16 +3599,19 @@ fn verified_format_package_sequence(expected: &clipboard_formats::FormatPackage)
 fn write_and_verify_package(
     internal_writes: &InternalClipboardWrites,
     expected: &clipboard_formats::FormatPackage,
-    write: impl FnOnce(&clipboard_formats::FormatPackage) -> Result<(), String>,
+    write: impl FnOnce(&clipboard_formats::FormatPackage) -> Result<Option<u64>, String>,
     verify: impl FnOnce(&clipboard_formats::FormatPackage) -> Option<u64>,
 ) -> Result<Option<u64>, String> {
     let snapshot = ClipboardSnapshot::Package(expected.clone());
     let signature = internal_writes.begin(&snapshot);
-    if let Err(error) = write(expected) {
-        internal_writes.cancel(signature);
-        return Err(error);
-    }
-    let sequence = verify(expected);
+    let written_sequence = match write(expected) {
+        Ok(sequence) => sequence,
+        Err(error) => {
+            internal_writes.cancel(signature);
+            return Err(error);
+        }
+    };
+    let sequence = verify(expected).or(written_sequence);
     internal_writes.commit(signature, sequence);
     Ok(sequence)
 }
@@ -5770,11 +5777,20 @@ mod tests {
         .expect("valid package");
         let writes = InternalClipboardWrites::default();
 
-        let sequence = write_and_verify_package(&writes, &expected, |_| Ok(()), |_| Some(101))
-            .expect("write succeeds");
+        let sequence =
+            write_and_verify_package(&writes, &expected, |_| Ok(Some(100)), |_| Some(101))
+                .expect("write succeeds");
         assert_eq!(sequence, Some(101));
         assert!(writes.consume(
             Some(101),
+            snapshot_signature(&ClipboardSnapshot::Package(expected.clone()))
+        ));
+
+        let occupied = write_and_verify_package(&writes, &expected, |_| Ok(Some(103)), |_| None)
+            .expect("successful write survives temporary reader contention");
+        assert_eq!(occupied, Some(103));
+        assert!(writes.consume(
+            Some(103),
             snapshot_signature(&ClipboardSnapshot::Package(expected.clone()))
         ));
 
