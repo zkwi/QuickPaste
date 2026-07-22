@@ -1119,6 +1119,12 @@ button:disabled {
   vertical-align: 1px;
 }
 
+.phonetic-match,
+.ocr-match {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .ocr-match,
 .ocr-status {
   display: inline-flex;
@@ -4397,6 +4403,7 @@ kbd {
 
   .format-badge,
   .format-omission-warning,
+  .phonetic-match,
   .ocr-match,
   .ocr-status {
     border: 1px solid CanvasText;

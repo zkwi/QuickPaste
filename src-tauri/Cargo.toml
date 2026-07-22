@@ -1,6 +1,6 @@
 [package]
 name = "quickpaste"
-version = "0.19.1"
+version = "0.19.2"
 description = "闪电剪贴板 QuickPaste — 快速、本地优先的 Windows 剪贴板"
 authors = ["QuickPaste"]
 publish = false

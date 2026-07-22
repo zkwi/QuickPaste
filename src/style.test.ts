@@ -209,6 +209,19 @@ describe('quick-panel density contract', () => {
     expect(testingGuide).toContain('条目摘要默认显示两行')
   })
 
+  it('keeps search-origin badges compact instead of letting them wrap and increase row height', () => {
+    const matchBadges = cssRule('.phonetic-match,\n.ocr-match')
+
+    expect(matchBadges).toMatch(/flex:\s*0\s+0\s+auto/)
+    expect(matchBadges).toMatch(/white-space:\s*nowrap/)
+  })
+
+  it('keeps phonetic and index match badges distinct in forced-color mode', () => {
+    expect(styles).toMatch(
+      /@media \(forced-colors:\s*active\)[\s\S]*?\.phonetic-match,[\s\S]*?\.ocr-match,[\s\S]*?\.ocr-status\s*\{[\s\S]*?border:\s*1px\s+solid\s+CanvasText/,
+    )
+  })
+
   it('keeps update actions in a dismissible bottom-right notice', () => {
     expect(cssRule('.update-notice')).toMatch(/position:\s*fixed/)
     expect(cssRule('.update-notice')).toMatch(/right:\s*16px/)
