@@ -192,6 +192,23 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.manager-row')).toMatch(/grid-template-columns:\s*24px\s+42px\s+minmax\(0,\s*1fr\)\s+96px\s+90px/)
   })
 
+  it('uses two unique-content lines without increasing quick or manager rows', () => {
+    const quickSummary = cssRule('.clip-content-text')
+    const managerSummary = cssRule('.manager-summary-text')
+
+    for (const rule of [quickSummary, managerSummary]) {
+      expect(rule).toMatch(/display:\s*-webkit-box/)
+      expect(rule).toMatch(/-webkit-box-orient:\s*vertical/)
+      expect(rule).toMatch(/-webkit-line-clamp:\s*2/)
+      expect(rule).toMatch(/white-space:\s*normal/)
+      expect(rule).toMatch(/overflow-wrap:\s*anywhere/)
+    }
+    expect(quickPanelMetric('--quick-row-height', 'standard')).toBe(44)
+    expect(quickPanelMetric('--quick-row-height', 'compact')).toBe(40)
+    expect(cssRule('.manager-row')).toMatch(/min-height:\s*54px/)
+    expect(testingGuide).toContain('条目摘要默认显示两行')
+  })
+
   it('keeps update actions in a dismissible bottom-right notice', () => {
     expect(cssRule('.update-notice')).toMatch(/position:\s*fixed/)
     expect(cssRule('.update-notice')).toMatch(/right:\s*16px/)
@@ -209,8 +226,9 @@ describe('quick-panel density contract', () => {
     const contentTextRules = cssRule('.clip-content-text')
     expect(cssRule('.clip-content')).toMatch(/display:\s*flex/)
     expect(contentTextRules).toMatch(/min-width:\s*0/)
-    expect(contentTextRules).toMatch(/text-overflow:\s*ellipsis/)
-    expect(cssRule('.manager-row strong')).toMatch(/display:\s*flex/)
+    expect(contentTextRules).toMatch(/overflow:\s*hidden/)
+    expect(cssRule('.manager-copy')).toMatch(/display:\s*flex/)
+    expect(cssRule('.manager-summary-text')).toMatch(/flex:\s*1\s+1\s+auto/)
     expect(cssRule('.file-availability')).toMatch(/flex:\s*0\s+0\s+auto/)
   })
 

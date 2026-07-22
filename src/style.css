@@ -1087,17 +1087,15 @@ button:disabled {
 }
 
 .clip-content-text {
+  display: -webkit-box;
+  flex: 1 1 auto;
   min-width: 0;
+  max-height: 36px;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.manager-title-text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .search-highlight {
@@ -2437,25 +2435,27 @@ kbd {
   border-radius: 9px;
 }
 
-.manager-row strong,
-.manager-row p {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.manager-row strong {
+.manager-copy {
   display: flex;
+  min-width: 0;
   align-items: center;
-  margin-bottom: 3px;
-  font-size: 11.5px;
+  gap: 6px;
 }
 
-.manager-row p {
-  margin: 0;
-  color: var(--text-soft);
-  font-size: 9.5px;
+.manager-summary-text {
+  display: -webkit-box;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-height: 32px;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: normal;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .file-availability {
