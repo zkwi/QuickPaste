@@ -2010,6 +2010,33 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="quick-history-page-status"]').text()).toContain('已加载 1 条，共 123 条匹配')
   })
 
+  it('uses the content summary for a native pinyin index match', async () => {
+    vi.useFakeTimers()
+    const title = '厦门为什么没有成为超级城市？'
+    const content = `${title} 厦门经历了明显的阶段演变，这直接决定了城市的发展路径。`
+    historyMocks.queryNativeHistory.mockReset()
+      .mockResolvedValueOnce({ items: [], totalCount: 0 })
+      .mockResolvedValue({
+        items: [{
+          id: 'pinyin-summary', kind: 'text', title, content, sourceApp: 'Google Chrome',
+          copiedAt: '2026-07-22T05:00:00.000Z', pinned: false, searchTerms: [],
+          payloadLoaded: false, matchSource: 'index',
+        }],
+        totalCount: 1,
+      })
+
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="search-input"]').setValue('xiamen')
+    await vi.advanceTimersByTimeAsync(120)
+    await flushPromises()
+
+    const row = wrapper.get('[data-clip-id="pinyin-summary"]')
+    expect(row.get('.clip-content-text').text()).toBe(content)
+    expect(row.get('.phonetic-match').text()).toContain('索引命中')
+    wrapper.unmount()
+  })
+
   it('ignores an older native query after a newer input result has rendered', async () => {
     vi.useFakeTimers()
     historyMocks.queryNativeHistory.mockReset().mockResolvedValueOnce({ items: [], totalCount: 0 })

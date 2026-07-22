@@ -600,11 +600,9 @@ function clipSummaryText(
   const content = clip.content.trim()
   if (!content) return title
 
-  if (phoneticOnly) return title || content
-
   const titleMatches = highlighter.segments(title).some((segment) => segment.matched)
   const contentMatches = highlighter.segments(content).some((segment) => segment.matched)
-  if (highlighter.hasTerms) {
+  if (highlighter.hasTerms && !phoneticOnly) {
     if (titleMatches && !contentMatches) return highlighter.preview(title)
     if (!titleMatches && !contentMatches) return title || highlighter.preview(content)
     if (preserveDistinctTitle && title && clip.kind !== 'image' && clip.kind !== 'link' && clip.kind !== 'file') {
