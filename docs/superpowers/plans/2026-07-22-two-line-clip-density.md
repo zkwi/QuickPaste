@@ -413,7 +413,7 @@ Expected: `npm run check` exits 0; npm reports no high-severity production vulne
 
 - [ ] **Step 2: Run Playwright CLI visual checks**
 
-Start Vite on `127.0.0.1:4173` and use `C:\Users\zkwi\.codex\skills\playwright\scripts\playwright_cli.sh` through Git Bash. Check 800×580 light standard mode, 640×440 dark compact mode, and the manager page. Verify computed 44px/40px row heights, two-line clamps, 8/6 visible-row thresholds, manager summary deduplication, keyboard focus, badges, and zero console errors. Do not use Computer Use.
+Start Vite on `127.0.0.1:4173` and use the installed Playwright skill CLI script through Git Bash. Check 800×580 light standard mode, 640×440 dark compact mode, and the manager page. Verify computed 44px/40px row heights, two-line clamps, 8/6 visible-row thresholds, manager summary deduplication, keyboard focus, badges, and zero console errors. Do not use Computer Use.
 
 - [ ] **Step 3: Build and verify Windows artifacts**
 
