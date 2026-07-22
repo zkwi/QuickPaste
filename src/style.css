@@ -202,7 +202,7 @@ button:disabled {
   --quick-search-control-height: 36px;
   --quick-filter-height: 34px;
   --quick-list-padding-block: 3px;
-  --quick-row-height: 36px;
+  --quick-row-height: 44px;
   --quick-row-gap: 1px;
   display: flex;
   flex-direction: column;
@@ -469,7 +469,7 @@ button:disabled {
 .search-input {
   width: 100%;
   height: var(--quick-search-control-height);
-  padding: 0 72px 0 39px;
+  padding: 0 104px 0 39px;
   border: 1px solid var(--border);
   border-radius: 11px;
   outline: none;
@@ -620,7 +620,7 @@ button:disabled {
 .search-hint,
 .clear-search {
   position: absolute;
-  right: 10px;
+  right: 40px;
 }
 
 .search-hint {
@@ -651,6 +651,70 @@ button:disabled {
 
 .clear-search:hover {
   background: var(--surface-hover);
+}
+
+.search-help-toggle {
+  position: absolute;
+  right: 7px;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  place-items: center;
+  color: var(--text-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.search-help-toggle:hover,
+.search-help-toggle:focus-visible {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.quick-search-help {
+  position: absolute;
+  top: calc(50% + var(--quick-search-control-height) / 2 + 4px);
+  right: 0;
+  z-index: 13;
+  width: min(340px, 100%);
+  padding: 10px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  color: var(--text-soft);
+  background: var(--surface-raised);
+  box-shadow: var(--panel-shadow);
+  font-size: 10px;
+}
+
+.quick-search-help strong {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--text);
+  font-size: 11px;
+}
+
+.quick-search-help dl {
+  display: grid;
+  margin: 0;
+  gap: 4px;
+}
+
+.quick-search-help dl > div {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.quick-search-help dt {
+  color: var(--brand-strong);
+  font-weight: 700;
+}
+
+.quick-search-help dd {
+  margin: 0;
 }
 
 .filter-strip {
@@ -2303,9 +2367,21 @@ kbd {
   min-height: 54px;
   padding: 5px 9px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
-  grid-template-columns: 42px minmax(0, 1fr) 96px 90px;
+  grid-template-columns: 24px 42px minmax(0, 1fr) 96px 90px;
   column-gap: 8px;
   align-items: center;
+}
+
+.manager-select {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
+.manager-select:disabled {
+  cursor: wait;
 }
 
 .manager-actions {
@@ -3981,7 +4057,7 @@ kbd {
   }
 
   .manager-row {
-    grid-template-columns: 36px minmax(0, 1fr) 94px;
+    grid-template-columns: 22px 36px minmax(0, 1fr) 94px;
   }
 
   .manager-meta {
@@ -4115,7 +4191,7 @@ kbd {
     --quick-search-area-height: 44px;
     --quick-search-control-height: 34px;
     --quick-list-padding-block: 2px;
-    --quick-row-height: 36px;
+    --quick-row-height: 40px;
     min-height: 0;
   }
 

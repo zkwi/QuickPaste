@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Database, Eye, Keyboard, LayoutList, Minus, Moon, PanelTopClose, PanelTopOpen, Pin, Search, Settings2, ShieldCheck, Sun, X } from 'lucide-vue-next'
+import { CircleHelp, Database, Eye, Keyboard, LayoutList, Minus, Moon, PanelTopClose, PanelTopOpen, Pin, Search, Settings2, ShieldCheck, Sun, X } from 'lucide-vue-next'
 import { formatRelativeTime, type ClipboardItem, type ClipKindFilter } from '../domain/clipboard'
 import { displayShortcut } from '../domain/shortcut'
 import type { WindowAction } from '../platform/window'
@@ -37,13 +37,18 @@ const emit = defineEmits<{
 }>()
 
 const searchInput = ref<HTMLInputElement | null>(null)
-const HOVER_PREVIEW_DELAY_MS = 200
+const searchHelpOpen = ref(false)
+const HOVER_PREVIEW_DELAY_MS = 400
 const HOVER_PREVIEW_TEXT_LIMIT = 4_096
 let hoverPreviewTimer: ReturnType<typeof setTimeout> | undefined
 let pendingHoverClipId: string | null = null
 
-onMounted(() => emit('searchElement', searchInput.value))
+onMounted(() => {
+  emit('searchElement', searchInput.value)
+  window.addEventListener('blur', clearHoverPreview)
+})
 onBeforeUnmount(() => {
+  window.removeEventListener('blur', clearHoverPreview)
   clearHoverPreview()
   emit('searchElement', null)
 })
@@ -55,9 +60,14 @@ function clearHoverPreview() {
   emit('hoverPreviewClip', null)
 }
 
-function scheduleHoverPreview(clip: ClipboardItem) {
+function scheduleHoverPreview(clip: ClipboardItem, event: MouseEvent) {
   clearHoverPreview()
   if (props.state.previewActive || !['text', 'image'].includes(clip.kind)) return
+  if (clip.kind === 'text') {
+    const row = event.currentTarget instanceof HTMLElement ? event.currentTarget : null
+    const text = row?.querySelector<HTMLElement>('.clip-content-text')
+    if (!text || (text.scrollWidth <= text.clientWidth && text.scrollHeight <= text.clientHeight)) return
+  }
 
   pendingHoverClipId = clip.id
   hoverPreviewTimer = setTimeout(() => {
@@ -83,8 +93,18 @@ watch(
   clearHoverPreview,
 )
 
+watch(() => props.state.query, closeSearchHelp)
+
 function updateQuery(event: Event) {
   if (event.target instanceof HTMLInputElement) emit('updateQuery', event.target.value)
+}
+
+function closeSearchHelp() {
+  searchHelpOpen.value = false
+}
+
+function toggleSearchHelp() {
+  searchHelpOpen.value = !searchHelpOpen.value
 }
 </script>
 
@@ -124,10 +144,15 @@ function updateQuery(event: Event) {
         <span v-if="state.quickSourceFilter" data-testid="source-filter-chip" class="search-mode-chip source">@{{ state.quickSourceFilter }}<button type="button" :aria-label="helpers.t('clearSourceFilter', { source: state.quickSourceFilter })" @click="emit('clearSource')"><X :size="11" /></button></span>
         <span v-if="state.permanentSearch" data-testid="snippet-mode-indicator" class="search-mode-chip snippet">; {{ helpers.t('permanentSnippets') }}</span>
       </span>
-      <input ref="searchInput" :value="state.query" data-testid="search-input" class="search-input" type="search" autocomplete="off" spellcheck="false" aria-controls="clipboard-results" :aria-expanded="state.sourceSuggestions.length > 0" :aria-haspopup="state.sourceSuggestions.length > 0 ? 'listbox' : undefined" :aria-activedescendant="state.activeDescendant" :aria-label="helpers.t('searchClipboard')" :placeholder="helpers.t('searchClipboard')" @input="updateQuery" @compositionstart="emit('compositionStart')" @compositionend="emit('compositionEnd')" @blur="emit('compositionBlur')" />
+      <input ref="searchInput" :value="state.query" data-testid="search-input" class="search-input" type="search" role="combobox" autocomplete="off" spellcheck="false" aria-autocomplete="list" :aria-controls="state.sourceSuggestions.length > 0 ? 'source-suggestions' : undefined" :aria-expanded="state.sourceSuggestions.length > 0" aria-haspopup="listbox" :aria-activedescendant="state.activeDescendant" :aria-label="helpers.t('searchClipboard')" :placeholder="helpers.t('searchClipboard')" @input="updateQuery" @compositionstart="emit('compositionStart')" @compositionend="emit('compositionEnd')" @blur="emit('compositionBlur')" />
       <button v-if="state.query" class="clear-search" type="button" :aria-label="helpers.t('clearSearch')" @click="emit('clearSearch')"><X :size="15" /></button><span v-else class="search-hint">Ctrl K</span>
-      <div v-if="state.sourceSuggestions.length" data-testid="source-suggestions" class="source-suggestions" role="listbox" :aria-label="helpers.t('sourceSuggestions')">
-        <button v-for="(sourceApp, index) in state.sourceSuggestions" :key="sourceApp" :data-testid="`source-suggestion-${index}`" type="button" role="option" :aria-selected="state.sourceSuggestionIndex === index" :class="{ selected: state.sourceSuggestionIndex === index }" @mousedown.prevent @click="emit('selectSource', sourceApp)"><SourceAppIcon class="source-suggestion-icon" :source="sourceApp" /> <span>{{ sourceApp }}</span><kbd v-if="state.sourceSuggestionIndex === index">Enter</kbd></button>
+      <button data-testid="search-help-toggle" class="search-help-toggle" type="button" aria-controls="quick-search-help" :aria-expanded="searchHelpOpen" :aria-label="helpers.t('searchHelp')" :title="helpers.t('searchHelp')" @click="toggleSearchHelp" @keydown.esc.stop.prevent="closeSearchHelp"><CircleHelp :size="15" /></button>
+      <div v-if="searchHelpOpen" id="quick-search-help" data-testid="quick-search-help" class="quick-search-help" role="note">
+        <strong>{{ helpers.t('searchHelpTitle') }}</strong>
+        <dl><div><dt>@</dt><dd>{{ helpers.t('searchHelpSource') }}</dd></div><div><dt>;</dt><dd>{{ helpers.t('searchHelpSnippets') }}</dd></div><div><dt>Space</dt><dd>{{ helpers.t('searchHelpPreview') }}</dd></div><div><dt>Enter</dt><dd>{{ helpers.t('searchHelpPaste') }}</dd></div><div><dt>Alt + 1…0</dt><dd>{{ helpers.t('searchHelpDirectPaste') }}</dd></div></dl>
+      </div>
+      <div v-if="state.sourceSuggestions.length" id="source-suggestions" data-testid="source-suggestions" class="source-suggestions" role="listbox" :aria-label="helpers.t('sourceSuggestions')">
+        <button v-for="(sourceApp, index) in state.sourceSuggestions" :id="`source-suggestion-${index}`" :key="sourceApp" :data-testid="`source-suggestion-${index}`" type="button" role="option" :aria-selected="state.sourceSuggestionIndex === index" :class="{ selected: state.sourceSuggestionIndex === index }" @mousedown.prevent @click="emit('selectSource', sourceApp)"><SourceAppIcon class="source-suggestion-icon" :source="sourceApp" /> <span>{{ sourceApp }}</span><kbd v-if="state.sourceSuggestionIndex === index">Enter</kbd></button>
       </div>
     </div>
 
@@ -148,8 +173,8 @@ function updateQuery(event: Event) {
           <div v-if="state.historyState === 'loading'" data-testid="history-loading" class="empty-state history-state" role="status"><span class="history-loader" aria-hidden="true"><span></span><span></span><span></span></span><h2>{{ helpers.t('historyLoading') }}</h2><p>{{ helpers.t('historyLoadingHint') }}</p></div>
           <div v-else-if="state.historyState === 'error'" data-testid="history-error" class="empty-state history-state error" role="alert"><span class="empty-symbol"><ShieldCheck :size="25" /></span><h2>{{ helpers.t('historyUnavailable') }}</h2><p>{{ helpers.t('historyLoadFailed') }}</p><button data-testid="history-retry" class="secondary-button" type="button" @click="emit('retryHistory')">{{ helpers.t('retryHistory') }}</button></div>
           <template v-else-if="state.visibleItems.length">
-            <div id="clipboard-results" class="clip-list" role="list" :aria-label="helpers.t('clipboardResults')">
-              <article v-for="(clip, index) in state.visibleItems" :id="helpers.clipResultId(clip.id)" :key="clip.id" :data-clip-id="clip.id" class="clip-row" :class="{ 'is-selected': state.selectedId === clip.id }" role="listitem" :aria-current="state.selectedId === clip.id ? 'true' : undefined" @mouseenter="scheduleHoverPreview(clip)" @mouseleave="clearHoverPreview">
+            <div id="clipboard-results" class="clip-list" role="list" :aria-label="helpers.t('clipboardResults')" @scroll.passive="clearHoverPreview" @keydown="clearHoverPreview" @pointerdown="clearHoverPreview">
+              <article v-for="(clip, index) in state.visibleItems" :id="helpers.clipResultId(clip.id)" :key="clip.id" :data-clip-id="clip.id" class="clip-row" :class="{ 'is-selected': state.selectedId === clip.id }" role="listitem" :aria-current="state.selectedId === clip.id ? 'true' : undefined" @mouseenter="scheduleHoverPreview(clip, $event)" @mouseleave="clearHoverPreview">
                 <button class="clip-primary" type="button" :tabindex="state.selectedId === clip.id ? 0 : -1" :aria-keyshortcuts="helpers.directPasteAriaShortcuts(index)" @mousedown.left.prevent @click="emit('selectClip', clip.id)" @dblclick="emit('useClip', clip)">
                   <span v-if="index < 10" class="quick-number" aria-hidden="true">{{ helpers.directPasteLabel(index) }}</span>
                   <span class="kind-icon" :style="{ '--source-color': clip.color }"><ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" /><component v-else :is="helpers.kindIcon(clip.kind)" :size="18" /></span>

@@ -1,6 +1,8 @@
 import { readFileSync } from 'node:fs'
 
 const styles = readFileSync('src/style.css', 'utf8')
+const testingGuide = readFileSync('docs/testing.md', 'utf8')
+const securityPolicy = readFileSync('SECURITY.md', 'utf8')
 
 type DensityVariant = 'standard' | 'compact'
 
@@ -47,22 +49,27 @@ describe('quick-panel density contract', () => {
     expect(reducedMotion).toMatch(/animation-iteration-count:\s*1\s*!important/)
   })
 
-  it('shows at least ten readable single-line clips in the standard shell', () => {
+  it('shows at least eight readable clips with the documented standard row height', () => {
     const rowHeight = quickPanelMetric('--quick-row-height', 'standard')
 
-    expect(rowHeight).toBeGreaterThanOrEqual(34)
-    expect(rowHeight).toBeLessThanOrEqual(38)
+    expect(rowHeight).toBe(44)
     expect(quickPanelMetric('--quick-search-control-height', 'standard')).toBeGreaterThanOrEqual(32)
-    expect(visibleClipRows(quickPanelMetric('--quick-shell-height', 'standard'), 'standard')).toBeGreaterThanOrEqual(10)
+    expect(visibleClipRows(quickPanelMetric('--quick-shell-height', 'standard'), 'standard')).toBeGreaterThanOrEqual(8)
+    expect(testingGuide).toContain('标准行高不低于 44px')
   })
 
-  it('keeps seven clips visible when native positioning selects the compact 640 by 440 window', () => {
+  it('keeps six readable clips with the documented compact row height', () => {
     const compactVisibleShellHeight = 440 - 2 * 16
 
-    expect(quickPanelMetric('--quick-row-height', 'compact')).toBeGreaterThanOrEqual(34)
-    expect(quickPanelMetric('--quick-row-height', 'compact')).toBeLessThanOrEqual(36)
+    expect(quickPanelMetric('--quick-row-height', 'compact')).toBe(40)
     expect(quickPanelMetric('--quick-search-control-height', 'compact')).toBeGreaterThanOrEqual(32)
-    expect(visibleClipRows(compactVisibleShellHeight, 'compact')).toBeGreaterThanOrEqual(7)
+    expect(visibleClipRows(compactVisibleShellHeight, 'compact')).toBeGreaterThanOrEqual(6)
+    expect(testingGuide).toContain('紧凑行高不低于 40px')
+  })
+
+  it('keeps the security support statement independent of a stale minor version', () => {
+    expect(securityPolicy).toContain('最新稳定版本')
+    expect(securityPolicy).not.toMatch(/最新的 `\d+\.\d+\.x`/)
   })
 
   it('stacks source and time in one narrow right-side metadata track', () => {
@@ -182,7 +189,7 @@ describe('quick-panel density contract', () => {
     expect(cssRule('.manager-filters')).toMatch(/overflow-x:\s*auto/)
     expect(cssRule('.manager-filters button')).toMatch(/flex:\s*0\s+0\s+auto/)
     expect(cssRule('.manager-filters button')).toMatch(/white-space:\s*nowrap/)
-    expect(cssRule('.manager-row')).toMatch(/grid-template-columns:\s*42px\s+minmax\(0,\s*1fr\)\s+96px\s+90px/)
+    expect(cssRule('.manager-row')).toMatch(/grid-template-columns:\s*24px\s+42px\s+minmax\(0,\s*1fr\)\s+96px\s+90px/)
   })
 
   it('keeps update actions in a dismissible bottom-right notice', () => {

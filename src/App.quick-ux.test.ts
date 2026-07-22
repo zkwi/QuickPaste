@@ -63,6 +63,14 @@ function dispatchContextMenu(
   return event
 }
 
+function markTextAsTruncated(row: ReturnType<VueWrapper['get']>) {
+  const text = row.get('.clip-content-text').element
+  Object.defineProperties(text, {
+    clientWidth: { configurable: true, value: 100 },
+    scrollWidth: { configurable: true, value: 240 },
+  })
+}
+
 describe('quick panel high-frequency interaction', () => {
   let wrapper: VueWrapper
 
@@ -149,6 +157,73 @@ describe('quick panel high-frequency interaction', () => {
     dispatchKey(search.element, 'Backspace')
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="source-filter-chip"]').exists()).toBe(false)
+  })
+
+  it('exposes source suggestions as the search combobox active descendant only while open', async () => {
+    wrapper.unmount()
+    const copiedAt = '2026-07-21T00:00:00.000Z'
+    localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
+      {
+        id: 'wechat', kind: 'text', title: '微信内容', content: 'alpha', sourceApp: '微信',
+        copiedAt, pinned: false, searchTerms: [], formats: ['text'],
+      },
+      {
+        id: 'weibo', kind: 'text', title: '微博内容', content: 'beta', sourceApp: '微博',
+        copiedAt, pinned: false, searchTerms: [], formats: ['text'],
+      },
+    ]))
+    wrapper = mount(App, { attachTo: document.body })
+    const search = wrapper.get('[data-testid="search-input"]')
+
+    expect(search.attributes('role')).toBe('combobox')
+    expect(search.attributes('aria-autocomplete')).toBe('list')
+    expect(search.attributes('aria-expanded')).toBe('false')
+    expect(search.attributes('aria-controls')).toBeUndefined()
+    expect(search.attributes('aria-activedescendant')).toBeUndefined()
+
+    await search.setValue('@微')
+    expect(search.attributes('aria-expanded')).toBe('true')
+    expect(search.attributes('aria-controls')).toBe('source-suggestions')
+    expect(search.attributes('aria-activedescendant')).toBe('source-suggestion-0')
+    expect(wrapper.get('[data-testid="source-suggestions"]').attributes('id')).toBe('source-suggestions')
+    expect(wrapper.get('[data-testid="source-suggestion-0"]').attributes('id')).toBe('source-suggestion-0')
+
+    dispatchKey(search.element, 'ArrowDown')
+    await wrapper.vm.$nextTick()
+    expect(document.activeElement).toBe(search.element)
+    expect(search.attributes('aria-activedescendant')).toBe('source-suggestion-1')
+
+    await wrapper.get('[data-testid="source-suggestion-1"]').trigger('click')
+    expect(wrapper.get('[data-testid="source-filter-chip"]').text()).toContain('微博')
+    expect(search.attributes('aria-expanded')).toBe('false')
+    expect(search.attributes('aria-controls')).toBeUndefined()
+    expect(search.attributes('aria-activedescendant')).toBeUndefined()
+
+    await search.setValue('@微')
+    dispatchKey(search.element, 'Escape')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="source-suggestions"]').exists()).toBe(false)
+    expect(search.attributes('aria-activedescendant')).toBeUndefined()
+  })
+
+  it('opens a keyboard-accessible search syntax guide without disturbing search', async () => {
+    const toggle = wrapper.get('[data-testid="search-help-toggle"]')
+    expect(toggle.attributes('aria-controls')).toBe('quick-search-help')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
+
+    await toggle.trigger('click')
+    const help = wrapper.get('[data-testid="quick-search-help"]')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    expect(help.text()).toContain('@来源应用')
+    expect(help.text()).toContain(';永久片段')
+    expect(help.text()).toContain('Alt + 1…0')
+    expect(help.text()).toContain('空格')
+    expect(help.text()).toContain('Enter')
+
+    dispatchKey(toggle.element, 'Escape')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="quick-search-help"]').exists()).toBe(false)
+    expect(windowMocks.runWindowAction).not.toHaveBeenCalled()
   })
 
   it('lets focused controls handle Enter and reserves paste for search or a result', async () => {
@@ -956,9 +1031,10 @@ describe('quick panel high-frequency interaction', () => {
   it('shows a delayed text hover preview without changing keyboard selection', async () => {
     vi.useFakeTimers()
     const row = wrapper.get('[data-clip-id="clip-4"]')
+    markTextAsTruncated(row)
 
     await row.trigger('mouseenter')
-    await vi.advanceTimersByTimeAsync(199)
+    await vi.advanceTimersByTimeAsync(399)
     expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
 
     await vi.advanceTimersByTimeAsync(1)
@@ -972,6 +1048,22 @@ describe('quick panel high-frequency interaction', () => {
 
     await row.trigger('mouseleave')
     await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
+  })
+
+  it('does not preview a text row whose visible content is not truncated', async () => {
+    vi.useFakeTimers()
+    const row = wrapper.get('[data-clip-id="clip-4"]')
+    const text = row.get('.clip-content-text').element
+    Object.defineProperties(text, {
+      clientWidth: { configurable: true, value: 240 },
+      scrollWidth: { configurable: true, value: 240 },
+    })
+
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(400)
+    await wrapper.vm.$nextTick()
+
     expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
   })
 
@@ -992,8 +1084,10 @@ describe('quick panel high-frequency interaction', () => {
     }]))
     wrapper = mount(App, { attachTo: document.body })
 
-    await wrapper.get('[data-clip-id="long-hover-text"]').trigger('mouseenter')
-    await vi.advanceTimersByTimeAsync(200)
+    const row = wrapper.get('[data-clip-id="long-hover-text"]')
+    markTextAsTruncated(row)
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(400)
     await wrapper.vm.$nextTick()
 
     expect(wrapper.get('[data-testid="clip-hover-preview-text"]').text())
@@ -1005,11 +1099,38 @@ describe('quick panel high-frequency interaction', () => {
     const row = wrapper.get('[data-clip-id="clip-5"]')
 
     await row.trigger('mouseenter')
-    await vi.advanceTimersByTimeAsync(200)
+    await vi.advanceTimersByTimeAsync(400)
     await wrapper.vm.$nextTick()
 
     const image = wrapper.get('[data-testid="clip-hover-preview-image"] img')
     expect(image.attributes('src')).toBe('/sample-layout.svg')
+  })
+
+  it('dismisses an open hover preview when the result list scrolls', async () => {
+    vi.useFakeTimers()
+    const row = wrapper.get('[data-clip-id="clip-4"]')
+    markTextAsTruncated(row)
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(400)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(true)
+
+    await wrapper.get('.clip-list').trigger('scroll')
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
+  })
+
+  it('dismisses an open hover preview when the app loses focus', async () => {
+    vi.useFakeTimers()
+    const row = wrapper.get('[data-clip-id="clip-4"]')
+    markTextAsTruncated(row)
+    await row.trigger('mouseenter')
+    await vi.advanceTimersByTimeAsync(400)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(true)
+
+    window.dispatchEvent(new Event('blur'))
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="clip-hover-preview"]').exists()).toBe(false)
   })
 
   it('refreshes relative timestamps while the panel stays open', async () => {
@@ -1053,14 +1174,15 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.get('[data-manager-clip-id="clip-2"]').attributes('aria-current')).toBe('true')
   })
 
-  it('keeps search focus while exposing its active result to assistive technology', async () => {
+  it('keeps search focus without pointing the combobox at the separate result list', async () => {
     const search = wrapper.get('[data-testid="search-input"]')
     ;(search.element as HTMLElement).focus()
     dispatchKey(search.element, 'ArrowDown')
     await wrapper.vm.$nextTick()
 
     expect(document.activeElement).toBe(search.element)
-    expect(search.attributes('aria-activedescendant')).toBe('clip-result-clip-2')
+    expect(wrapper.get('[data-clip-id="clip-2"]').classes()).toContain('is-selected')
+    expect(search.attributes('aria-activedescendant')).toBeUndefined()
   })
 
   it('starts a clean quick session while preserving manager filters across view detours', async () => {

@@ -3,6 +3,12 @@ import { test } from 'node:test'
 
 import { validateProjectMetadata } from './check-versions.mjs'
 
+const CHECKOUT_ACTION = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
+const SETUP_NODE_ACTION = 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38'
+const RUST_TOOLCHAIN_ACTION = 'dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0'
+const RUST_CACHE_ACTION = 'Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae'
+const RUST_AUDIT_ACTION = 'rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998'
+
 function validMetadata() {
   return {
     packageJson: {
@@ -62,10 +68,11 @@ function validMetadata() {
       'components = ["clippy", "rustfmt"]',
     ].join('\n'),
     ciWorkflow: [
-      'uses: actions/checkout@v6',
-      'uses: actions/setup-node@v6',
-      'uses: dtolnay/rust-toolchain@1.88.0',
-      'uses: Swatinem/rust-cache@v2',
+      `uses: ${CHECKOUT_ACTION} # v6`,
+      `uses: ${SETUP_NODE_ACTION} # v6`,
+      `uses: ${RUST_TOOLCHAIN_ACTION} # 1.88.0`,
+      `uses: ${RUST_CACHE_ACTION} # v2`,
+      `uses: ${RUST_AUDIT_ACTION} # v2.0.0`,
     ].join('\n'),
     updaterSource: [
       'https://api.github.com/repos/zkwi/QuickPaste/releases?per_page=10',
@@ -132,13 +139,15 @@ test('validateProjectMetadata enforces private NSIS current-user packaging', () 
   ])
 })
 
-test('validateProjectMetadata rejects unavailable GitHub Actions major versions', () => {
+test('validateProjectMetadata rejects movable GitHub Action tags', () => {
   const metadata = validMetadata()
-  metadata.ciWorkflow = metadata.ciWorkflow.replaceAll('@v6', '@v7')
+  metadata.ciWorkflow = metadata.ciWorkflow
+    .replace(CHECKOUT_ACTION, 'actions/checkout@v7')
+    .replace(SETUP_NODE_ACTION, 'actions/setup-node@v7')
 
   assert.deepEqual(validateProjectMetadata(metadata), [
-    'CI 必须使用 actions/checkout@v6',
-    'CI 必须使用 actions/setup-node@v6',
+    'CI 必须固定 actions/checkout 到批准的 v6 提交',
+    'CI 必须固定 actions/setup-node 到批准的 v6 提交',
     'CI 使用未批准的 GitHub Action：actions/checkout@v7',
     'CI 使用未批准的 GitHub Action：actions/setup-node@v7',
   ])
@@ -146,10 +155,10 @@ test('validateProjectMetadata rejects unavailable GitHub Actions major versions'
 
 test('validateProjectMetadata requires the pinned Rust cache action', () => {
   const metadata = validMetadata()
-  metadata.ciWorkflow = metadata.ciWorkflow.replace('Swatinem/rust-cache@v2', 'Swatinem/rust-cache@v3')
+  metadata.ciWorkflow = metadata.ciWorkflow.replace(RUST_CACHE_ACTION, 'Swatinem/rust-cache@v3')
 
   assert.deepEqual(validateProjectMetadata(metadata), [
-    'CI 必须使用 Swatinem/rust-cache@v2',
+    'CI 必须固定 Swatinem/rust-cache 到批准的 v2 提交',
     'CI 使用未批准的 GitHub Action：Swatinem/rust-cache@v3',
   ])
 })
@@ -177,7 +186,7 @@ test('validateProjectMetadata protects setup-node npm cache bootstrap from the p
   const metadata = validMetadata()
   metadata.ciWorkflow += `\n${[
     '      - name: Set up Node.js',
-    '        uses: actions/setup-node@v6',
+    `        uses: ${SETUP_NODE_ACTION} # v6`,
     '        with:',
     '          node-version-file: .nvmrc',
     '          cache: npm',
@@ -193,7 +202,7 @@ test('validateProjectMetadata rejects npm_config_force nested under setup-node w
   const metadata = validMetadata()
   metadata.ciWorkflow += `\n${[
     '      - name: Set up Node.js',
-    '        uses: actions/setup-node@v6',
+    `        uses: ${SETUP_NODE_ACTION} # v6`,
     '        with:',
     '          node-version-file: .nvmrc',
     '          cache: npm',

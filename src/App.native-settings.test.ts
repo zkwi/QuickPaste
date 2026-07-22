@@ -529,7 +529,7 @@ describe('native setting reliability', () => {
     const wrapper = mount(App)
     await flushPromises()
     await wrapper.get('[data-clip-id="hover-image"]').trigger('mouseenter')
-    await vi.advanceTimersByTimeAsync(200)
+    await vi.advanceTimersByTimeAsync(400)
     await flushPromises()
 
     expect(historyMocks.loadNativeClipPayload).toHaveBeenCalledWith('hover-image')
@@ -3042,10 +3042,12 @@ describe('native setting reliability', () => {
     const list = wrapper.get('.manager-list')
     const first = wrapper.get('[data-manager-clip-id="selection-newest"]')
     const second = wrapper.get('[data-manager-clip-id="selection-older"]')
-    expect(list.attributes('role')).toBe('listbox')
-    expect(list.attributes('aria-multiselectable')).toBe('true')
-    expect(first.attributes('role')).toBe('option')
-    expect(first.attributes('aria-selected')).toBe('false')
+    expect(list.attributes('role')).toBe('list')
+    expect(list.attributes('aria-multiselectable')).toBeUndefined()
+    expect(first.attributes('role')).toBe('listitem')
+    expect(first.attributes('aria-selected')).toBeUndefined()
+    expect(wrapper.get('[data-testid="manager-select-selection-newest"]').attributes('aria-label')).toContain('最新')
+    expect((wrapper.get('[data-testid="manager-select-selection-newest"]').element as HTMLInputElement).checked).toBe(false)
 
     const composingSpace = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: ' ' })
     Object.defineProperty(composingSpace, 'isComposing', { value: true })
@@ -3073,14 +3075,17 @@ describe('native setting reliability', () => {
 
     await first.trigger('focus')
     await first.trigger('keydown', { key: ' ' })
-    expect(first.attributes('aria-selected')).toBe('true')
+    expect((wrapper.get('[data-testid="manager-select-selection-newest"]').element as HTMLInputElement).checked).toBe(true)
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('1')
 
     await second.trigger('focus')
     await second.trigger('keydown', { key: ' ', shiftKey: true })
-    expect(first.attributes('aria-selected')).toBe('true')
-    expect(second.attributes('aria-selected')).toBe('true')
+    expect((wrapper.get('[data-testid="manager-select-selection-newest"]').element as HTMLInputElement).checked).toBe(true)
+    expect((wrapper.get('[data-testid="manager-select-selection-older"]').element as HTMLInputElement).checked).toBe(true)
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('2')
+
+    await wrapper.get('[data-testid="manager-select-selection-older"]').setValue(false)
+    expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('1')
 
     await first.trigger('focus')
     await first.trigger('keydown', { key: 'a', ctrlKey: true })

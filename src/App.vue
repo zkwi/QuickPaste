@@ -789,7 +789,9 @@ const quickPanelState = computed(() => ({
   permanentSearch: Boolean(quickSearchIntent.value.permanent),
   sourceSuggestions: sourceSuggestions.value,
   sourceSuggestionIndex: sourceSuggestionIndex.value,
-  activeDescendant: previewId.value === null && selectedClip.value ? clipResultId(selectedClip.value.id) : undefined,
+  activeDescendant: sourceSuggestions.value.length > 0
+    ? `source-suggestion-${sourceSuggestionIndex.value}`
+    : undefined,
   filters: filters.value,
   activeFilter: activeFilter.value,
   pinnedCount: pinnedCount.value,
@@ -2407,6 +2409,11 @@ function toggleManagerClipSelection(clip: ClipboardItem, contiguous = false) {
   }
 }
 
+function toggleManagerClipFromControl(clip: ClipboardItem) {
+  managerSelectedId.value = clip.id
+  toggleManagerClipSelection(clip)
+}
+
 function selectAllManagerMatches() {
   if (managerSelectionBusy.value) return
   if (managerBulkSelectionState.value === 'all') {
@@ -3284,6 +3291,7 @@ onBeforeUnmount(() => {
         @apply-batch="applyManagerBatch"
         @retry-history="retryHistoryLoad"
         @focus-manager-clip="managerSelectedId = $event"
+        @toggle-manager-clip-selection="toggleManagerClipFromControl"
         @manager-row-click="handleManagerRowClick"
         @manager-row-keydown="handleManagerRowKeydown"
         @edit-snippet="openSnippetEditor"

@@ -1154,6 +1154,18 @@ mod tests {
             PackageReadOutcome::Retryable
         }
 
+        fn read_matching_internal_write_with_retry(expected: &FormatPackage) -> FormatPackage {
+            for _ in 0..100 {
+                if let PackageReadOutcome::Ignored { package, .. } = read_format_package() {
+                    if package_matches_requested(expected, &package) {
+                        return package;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            panic!("QuickPaste 写入没有携带完整格式包与可验证的自写抑制标记")
+        }
+
         struct ClipboardRestore(FormatPackage);
 
         impl Drop for ClipboardRestore {
@@ -1181,10 +1193,7 @@ mod tests {
         .expect("Chrome 风格富文本有效");
 
         write_format_package(&expected).expect("写入富文本格式包");
-        let actual = match read_with_retry() {
-            PackageReadOutcome::Ignored { package, .. } => package,
-            _ => panic!("QuickPaste 写入没有携带可验证的自写抑制标记"),
-        };
+        let actual = read_matching_internal_write_with_retry(&expected);
 
         assert_eq!(actual.plain_text, expected.plain_text);
         assert_eq!(actual.html, expected.html);

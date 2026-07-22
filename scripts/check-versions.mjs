@@ -42,12 +42,15 @@ const requiredMainWindowPermissions = [
   'core:window:allow-toggle-maximize',
 ]
 
-const approvedCiActions = new Set([
-  'actions/checkout@v6',
-  'actions/setup-node@v6',
-  'dtolnay/rust-toolchain@1.88.0',
-  'Swatinem/rust-cache@v2',
-])
+const requiredCiActions = [
+  { name: 'actions/checkout', version: 'v6', action: 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' },
+  { name: 'actions/setup-node', version: 'v6', action: 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38' },
+  { name: 'dtolnay/rust-toolchain', version: '1.88.0', action: 'dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0' },
+  { name: 'Swatinem/rust-cache', version: 'v2', action: 'Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae' },
+  { name: 'rustsec/audit-check', version: 'v2.0.0', action: 'rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998' },
+]
+
+const approvedCiActions = new Set(requiredCiActions.map(({ action }) => action))
 
 function ciActions(workflow) {
   return [...(workflow ?? '').matchAll(/^\s*(?:uses|["']uses["'])\s*:\s*([^\s#]+)/gm)].map(([, action]) => action)
@@ -121,20 +124,17 @@ export function validateProjectMetadata(metadata) {
   if (metadata.packageJson.scripts?.['build:windows'] !== 'tauri build --bundles nsis --target x86_64-pc-windows-msvc') {
     issues.push('build:windows 必须显式构建 x86_64-pc-windows-msvc 的 NSIS 安装包')
   }
-  if (!metadata.ciWorkflow?.includes('actions/checkout@v6')) {
-    issues.push('CI 必须使用 actions/checkout@v6')
+  const configuredCiActions = ciActions(metadata.ciWorkflow)
+  for (const { name, version, action } of requiredCiActions) {
+    if (!configuredCiActions.includes(action)) {
+      issues.push(`CI 必须固定 ${name} 到批准的 ${version} 提交`)
+    }
   }
-  if (!metadata.ciWorkflow?.includes('actions/setup-node@v6')) {
-    issues.push('CI 必须使用 actions/setup-node@v6')
-  }
-  if (!metadata.ciWorkflow?.includes('Swatinem/rust-cache@v2')) {
-    issues.push('CI 必须使用 Swatinem/rust-cache@v2')
-  }
-  for (const action of ciActions(metadata.ciWorkflow)) {
+  for (const action of configuredCiActions) {
     if (!approvedCiActions.has(action)) issues.push(`CI 使用未批准的 GitHub Action：${action}`)
   }
   for (const step of ciNamedSteps(metadata.ciWorkflow)) {
-    if (step.includes('actions/setup-node@v6')
+    if (step.includes('actions/setup-node@')
       && /^\s*cache\s*:\s*npm\s*$/mu.test(step)
       && !stepHasEnvironmentValue(step, 'npm_config_force', 'true')) {
       issues.push('使用 npm 缓存的 setup-node 步骤必须临时设置 npm_config_force: true')
@@ -188,7 +188,7 @@ export function validateProjectMetadata(metadata) {
 }
 
 async function readProjectMetadata(root) {
-  const [packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow, updaterSource] = await Promise.all([
+  const [packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow, securityWorkflow, updaterSource] = await Promise.all([
     readFile(resolve(root, 'package.json'), 'utf8').then(JSON.parse),
     readFile(resolve(root, 'package-lock.json'), 'utf8').then(JSON.parse),
     readFile(resolve(root, 'src-tauri/tauri.conf.json'), 'utf8').then(JSON.parse),
@@ -198,9 +198,10 @@ async function readProjectMetadata(root) {
     readFile(resolve(root, '.nvmrc'), 'utf8'),
     readFile(resolve(root, 'rust-toolchain.toml'), 'utf8'),
     readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8'),
+    readFile(resolve(root, '.github/workflows/security-audit.yml'), 'utf8'),
     readFile(resolve(root, 'src-tauri/src/updater.rs'), 'utf8'),
   ])
-  return { packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow, updaterSource }
+  return { packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow: `${ciWorkflow}\n${securityWorkflow}`, updaterSource }
 }
 
 async function main() {
