@@ -2860,13 +2860,14 @@ fn focus_snapshot_matches_target(
     focused_root_window_handle: Option<isize>,
     focused_process_id: Option<u32>,
 ) -> bool {
-    let expected_focus = identity
-        .focus_window_handle
-        .unwrap_or(identity.window_handle);
     focused_window_handle != 0
-        && focused_window_handle == expected_focus
         && focused_root_window_handle == Some(identity.window_handle)
-        && focused_process_id == Some(identity.process_id)
+        // Chromium/Electron 可把实际输入窗口放在协作进程中；捕获不到精确子窗口时，
+        // 以仍属于原目标根窗口作为边界，避免把合法焦点误判为其他应用。
+        && identity.focus_window_handle.is_none_or(|expected_focus| {
+            focused_window_handle == expected_focus
+                && focused_process_id == Some(identity.process_id)
+        })
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -7181,6 +7182,23 @@ mod tests {
             101,
             Some(101),
             Some(303)
+        ));
+    }
+
+    #[test]
+    fn paste_focus_snapshot_accepts_a_renderer_process_within_the_target_root() {
+        let identity = PasteTargetIdentity {
+            window_handle: 101,
+            focus_window_handle: None,
+            process_id: 303,
+            captured_at: Instant::now(),
+        };
+
+        assert!(focus_snapshot_matches_target(
+            &identity,
+            202,
+            Some(101),
+            Some(304)
         ));
     }
 
