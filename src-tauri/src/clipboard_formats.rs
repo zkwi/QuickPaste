@@ -425,6 +425,23 @@ fn read_package_with_guard<G>(
     outcome
 }
 
+fn ignored_package_after_guard<G>(
+    guard: G,
+    before: Option<u64>,
+    observe_after: impl FnOnce() -> Option<u64>,
+) -> PackageReadOutcome {
+    drop(guard);
+    let after = observe_after();
+    if after == before {
+        PackageReadOutcome::Ignored {
+            package: FormatPackage::default(),
+            sequence: after,
+        }
+    } else {
+        PackageReadOutcome::Retryable
+    }
+}
+
 pub(crate) fn package_payload(package: &FormatPackage) -> Option<PackagePayload> {
     if !package.files.is_empty() {
         return Some(PackagePayload {
@@ -934,15 +951,9 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
     };
     let quickpaste_internal_write = history_controls.is_quickpaste_internal_write();
     if !quickpaste_internal_write && history_controls.excludes_history() {
-        let after = clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()));
-        return if after == before {
-            PackageReadOutcome::Ignored {
-                package: FormatPackage::default(),
-                sequence: after,
-            }
-        } else {
-            PackageReadOutcome::Retryable
-        };
+        return ignored_package_after_guard(guard, before, || {
+            clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()))
+        });
     }
     let outcome = read_package_with_guard(
         guard,
@@ -1034,6 +1045,7 @@ mod tests {
     use std::{
         cell::{Cell, RefCell},
         path::PathBuf,
+        rc::Rc,
     };
 
     use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -1792,6 +1804,31 @@ mod tests {
                 package: FormatPackage { ref files, .. },
                 sequence: Some(77),
             } if files[0].exists && files[0].size == Some(12)
+        ));
+    }
+
+    #[test]
+    fn excluded_history_observes_sequence_only_after_guard_drop() {
+        struct GuardProbe(Rc<Cell<bool>>);
+
+        impl Drop for GuardProbe {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+
+        let open = Rc::new(Cell::new(true));
+        let outcome = ignored_package_after_guard(GuardProbe(open.clone()), Some(41), || {
+            assert!(!open.get(), "sequence observed before clipboard guard drop");
+            Some(41)
+        });
+
+        assert!(matches!(
+            outcome,
+            PackageReadOutcome::Ignored {
+                package,
+                sequence: Some(41)
+            } if package == FormatPackage::default()
         ));
     }
 }
