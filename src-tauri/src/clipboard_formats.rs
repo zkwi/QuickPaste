@@ -996,7 +996,7 @@ pub(crate) fn write_format_package(package: &FormatPackage) -> Result<Option<u64
         clipboard_win::raw::register_format(QUICKPASTE_INTERNAL_WRITE_FORMAT)
             .map(|format| format.get())
             .ok_or("无法注册 QuickPaste 剪贴板写入标记")?;
-    let _guard = clipboard_win::Clipboard::new().map_err(|error| error.to_string())?;
+    let guard = clipboard_win::Clipboard::new().map_err(|error| error.to_string())?;
     clipboard_win::raw::empty().map_err(|error| error.to_string())?;
     clipboard_win::raw::set_without_clear(internal_write_format, &[1])
         .map_err(|error| error.to_string())?;
@@ -1008,6 +1008,7 @@ pub(crate) fn write_format_package(package: &FormatPackage) -> Result<Option<u64
             .map(|file| file.path.as_str())
             .collect::<Vec<_>>();
         clipboard_win::raw::set_file_list(&paths).map_err(|error| error.to_string())?;
+        drop(guard);
         return Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())));
     }
 
@@ -1019,6 +1020,7 @@ pub(crate) fn write_format_package(package: &FormatPackage) -> Result<Option<u64
     if let (Some(format), Some(rtf)) = (rtf_format, package.rtf.as_deref()) {
         clipboard_win::raw::set_without_clear(format, rtf).map_err(|error| error.to_string())?;
     }
+    drop(guard);
     Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())))
 }
 
@@ -1192,7 +1194,12 @@ mod tests {
         )
         .expect("Chrome 风格富文本有效");
 
-        write_format_package(&expected).expect("写入富文本格式包");
+        let written_sequence = write_format_package(&expected).expect("写入富文本格式包");
+        assert_eq!(
+            written_sequence,
+            clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())),
+            "格式包写入必须返回关闭剪贴板后的稳定序列"
+        );
         let actual = read_matching_internal_write_with_retry(&expected);
 
         assert_eq!(actual.plain_text, expected.plain_text);

@@ -5,7 +5,7 @@
 把“复制 → 切窗口 → 粘贴”一步搞定。支持中文、拼音、来源与类型组合搜索，历史正文只存在本机
 SQLite 中；没有云同步或远程遥测。
 
-> 当前版本：[`0.20.1` GitHub Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.20.1)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包或绿色版 ZIP。
+> 当前版本：[`0.20.2` GitHub Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.20.2)。请只从该 Release 下载严格命名的 Windows x64 NSIS 安装包或绿色版 ZIP。
 
 ## 界面预览
 
