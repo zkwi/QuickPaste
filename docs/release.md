@@ -1,6 +1,6 @@
 # Windows 发布检查清单
 
-`0.20.2` 是当前 GitHub Release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.20.2>。本清单把“GitHub 发布渠道”和“验证完成度”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须保留 `pending real-machine`，不得宣称已经全面验收。是否使用 Pre-release 由维护者在发布时明确决定，不能用渠道标签替代验证证据。
+`0.21.0` 是本次目标 GitHub Release。发布页固定为 <https://github.com/zkwi/QuickPaste/releases/tag/v0.21.0>。本清单把“GitHub 发布渠道”和“验证完成度”分开：本地代码、隐私、许可证、构建和产物核验均为发布阻断项；真实机长循环未完成时必须保留 `pending real-machine`，不得宣称已经全面验收。是否使用 Pre-release 由维护者在发布时明确决定，不能用渠道标签替代验证证据。
 
 ## 版本定级
 
@@ -14,6 +14,7 @@
 - `main` 上的目标修改已评审，工作区只包含本次发布内容。
 - `CHANGELOG.md` 中的 `Unreleased` 已归入目标版本和日期。
 - `package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 使用相同版本。
+- `README.md` 与 `README.en.md` 互相链接，并指向与包版本一致的正式 GitHub Release URL。
 - 已选定公开源码许可证，或明确以 `UNLICENSED`/保留全部权利方式公开源码；未选择许可证时不得对外宣称开源。
 - `SECURITY.md` 已提供真实、可验证的私密漏洞报告渠道和响应时间。
 - 更新界面和 GitHub Release 只突出版本、功能与 SHA-256 完整性校验，不把代码签名状态作为面向用户的重点提示。

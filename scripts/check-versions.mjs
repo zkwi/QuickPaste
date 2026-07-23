@@ -113,6 +113,18 @@ export function validateProjectMetadata(metadata) {
   reportVersion(issues, 'src-tauri/Cargo.lock quickpaste', cargoLockVersion(metadata.cargoLock, 'quickpaste'), expectedVersion)
   reportVersion(issues, 'src-tauri/tauri.conf.json', metadata.tauriConfig.version, expectedVersion)
 
+  const readme = metadata.readme ?? ''
+  const readmeEnglish = metadata.readmeEnglish ?? ''
+  const expectedReleaseUrl = `https://github.com/zkwi/QuickPaste/releases/tag/v${expectedVersion}`
+  if (!readme.includes('(README.en.md)')) issues.push('README.md 必须链接 README.en.md')
+  if (!readmeEnglish.includes('(README.md)')) issues.push('README.en.md 必须链接 README.md')
+  if (!readme.includes(expectedReleaseUrl)) {
+    issues.push(`README.md 必须指向当前版本 Release：${expectedReleaseUrl}`)
+  }
+  if (!readmeEnglish.includes(expectedReleaseUrl)) {
+    issues.push(`README.en.md 必须指向当前版本 Release：${expectedReleaseUrl}`)
+  }
+
   if (metadata.packageJson.private !== true) issues.push('package.json 必须保持 private = true')
   if (tomlBoolean(packageSection, 'publish') !== false) issues.push('src-tauri/Cargo.toml 必须保持 publish = false')
   if (JSON.stringify(metadata.tauriConfig.bundle?.targets) !== JSON.stringify(['nsis'])) {
@@ -188,7 +200,7 @@ export function validateProjectMetadata(metadata) {
 }
 
 async function readProjectMetadata(root) {
-  const [packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow, securityWorkflow, updaterSource] = await Promise.all([
+  const [packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow, securityWorkflow, updaterSource, readme, readmeEnglish] = await Promise.all([
     readFile(resolve(root, 'package.json'), 'utf8').then(JSON.parse),
     readFile(resolve(root, 'package-lock.json'), 'utf8').then(JSON.parse),
     readFile(resolve(root, 'src-tauri/tauri.conf.json'), 'utf8').then(JSON.parse),
@@ -200,8 +212,10 @@ async function readProjectMetadata(root) {
     readFile(resolve(root, '.github/workflows/ci.yml'), 'utf8'),
     readFile(resolve(root, '.github/workflows/security-audit.yml'), 'utf8'),
     readFile(resolve(root, 'src-tauri/src/updater.rs'), 'utf8'),
+    readFile(resolve(root, 'README.md'), 'utf8'),
+    readFile(resolve(root, 'README.en.md'), 'utf8'),
   ])
-  return { packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow: `${ciWorkflow}\n${securityWorkflow}`, updaterSource }
+  return { packageJson, packageLock, tauriConfig, tauriCapabilities, cargoManifest, cargoLock, nvmrc, rustToolchain, ciWorkflow: `${ciWorkflow}\n${securityWorkflow}`, updaterSource, readme, readmeEnglish }
 }
 
 async function main() {

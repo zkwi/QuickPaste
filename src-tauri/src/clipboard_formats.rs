@@ -1157,15 +1157,23 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_writer_round_trips_chrome_style_multiblock_html_before_paste() {
-        fn read_with_retry() -> PackageReadOutcome {
+        fn read_with_retry() -> Option<FormatPackage> {
             for _ in 0..100 {
-                let outcome = read_format_package();
-                if outcome != PackageReadOutcome::Retryable {
-                    return outcome;
+                match read_format_package() {
+                    PackageReadOutcome::Captured { package, .. }
+                    | PackageReadOutcome::Ignored { package, .. } => return Some(package),
+                    PackageReadOutcome::Retryable => {}
+                }
+                if let Ok(guard) = clipboard_win::Clipboard::new_attempts(50) {
+                    let empty = clipboard_win::raw::count_formats() == Some(0);
+                    drop(guard);
+                    if empty {
+                        return None;
+                    }
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
-            PackageReadOutcome::Retryable
+            panic!("测试前无法备份非空系统剪贴板")
         }
 
         fn read_matching_internal_write_with_retry(expected: &FormatPackage) -> FormatPackage {
@@ -1180,20 +1188,20 @@ mod tests {
             panic!("QuickPaste 写入没有携带完整格式包与可验证的自写抑制标记")
         }
 
-        struct ClipboardRestore(FormatPackage);
+        struct ClipboardRestore(Option<FormatPackage>);
 
         impl Drop for ClipboardRestore {
             fn drop(&mut self) {
-                let _ = write_format_package(&self.0);
+                if let Some(package) = &self.0 {
+                    let _ = write_format_package(package);
+                } else if let Ok(guard) = clipboard_win::Clipboard::new_attempts(1_000) {
+                    let _ = clipboard_win::raw::empty();
+                    drop(guard);
+                }
             }
         }
 
-        let original = match read_with_retry() {
-            PackageReadOutcome::Captured { package, .. }
-            | PackageReadOutcome::Ignored { package, .. } => package,
-            _ => panic!("测试前无法备份系统剪贴板"),
-        };
-        let _restore = ClipboardRestore(original);
+        let _restore = ClipboardRestore(read_with_retry());
         let expected = prepare_format_package(
             "第一段：参考链接\r\n\r\n第二段：浏览器输入框\r\n\r\n第三段：记事本",
             Some(concat!(

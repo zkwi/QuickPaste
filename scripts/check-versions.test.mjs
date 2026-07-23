@@ -79,6 +79,14 @@ function validMetadata() {
       'https://github.com/zkwi/QuickPaste/releases/download/',
       'QuickPaste_{version}_x64-setup.exe',
     ].join('\n'),
+    readme: [
+      '[English](README.en.md) | 简体中文',
+      '[v0.1.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.1.0)',
+    ].join('\n'),
+    readmeEnglish: [
+      'English | [简体中文](README.md)',
+      '[v0.1.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.1.0)',
+    ].join('\n'),
   }
 }
 
@@ -117,6 +125,19 @@ test('validateProjectMetadata catches version and toolchain drift', () => {
     '版本号不一致：src-tauri/Cargo.lock quickpaste = 0.2.0（期望 0.1.0）',
     '.nvmrc = 22.13.0，与 package.json devEngines.runtime.version = 22.14.0 不一致',
     'rust-toolchain.toml channel = 1.89.0，与 Cargo.toml rust-version = 1.88 不一致',
+  ])
+})
+
+test('validateProjectMetadata keeps bilingual README links and release versions synchronized', () => {
+  const metadata = validMetadata()
+  metadata.readme = '简体中文\n[v0.0.9](https://github.com/zkwi/QuickPaste/releases/tag/v0.0.9)'
+  metadata.readmeEnglish = 'English\n[v0.0.9](https://github.com/zkwi/QuickPaste/releases/tag/v0.0.9)'
+
+  assert.deepEqual(validateProjectMetadata(metadata), [
+    'README.md 必须链接 README.en.md',
+    'README.en.md 必须链接 README.md',
+    'README.md 必须指向当前版本 Release：https://github.com/zkwi/QuickPaste/releases/tag/v0.1.0',
+    'README.en.md 必须指向当前版本 Release：https://github.com/zkwi/QuickPaste/releases/tag/v0.1.0',
   ])
 })
 
