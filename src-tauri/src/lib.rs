@@ -78,6 +78,7 @@ const ELEVATED_PIPE_NAMESPACE: &str = "MyPaste.ElevatedPaste";
 const MODIFIER_RELEASE_TIMEOUT: Duration = Duration::from_millis(800);
 const FOREGROUND_ACTIVATION_ATTEMPTS: usize = 50;
 const FOREGROUND_ACTIVATION_RETRY_DELAY: Duration = Duration::from_millis(10);
+const TARGET_ACTIVATION_SETTLE_DELAY: Duration = Duration::from_millis(100);
 const CLIPBOARD_INITIALIZATION_ATTEMPTS: usize = 4;
 const CLIPBOARD_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(250);
 const CLIPBOARD_READ_ATTEMPTS: usize = 4;
@@ -1796,6 +1797,21 @@ fn window_process_id(window_handle: isize) -> Option<u32> {
     (process_id != 0).then_some(process_id)
 }
 
+#[cfg(target_os = "windows")]
+fn root_window_handle(window_handle: isize) -> Option<isize> {
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{GetAncestor, IsWindow, GA_ROOT},
+    };
+
+    let window = HWND(window_handle as *mut core::ffi::c_void);
+    if !unsafe { IsWindow(Some(window)) }.as_bool() {
+        return None;
+    }
+    let root = unsafe { GetAncestor(window, GA_ROOT) };
+    (!root.0.is_null()).then_some(root.0 as isize)
+}
+
 #[cfg(not(target_os = "windows"))]
 fn window_process_id(_window_handle: isize) -> Option<u32> {
     None
@@ -1926,6 +1942,20 @@ impl Drop for ThreadInputAttachment {
                 unsafe { AttachThreadInput(self.current_thread_id, self.target_thread_id, false) };
         }
     }
+}
+
+#[cfg(target_os = "windows")]
+fn attach_to_foreground_thread() -> Option<ThreadInputAttachment> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.0.is_null() {
+        return None;
+    }
+    let foreground_thread_id = unsafe { GetWindowThreadProcessId(foreground, None) };
+    (foreground_thread_id != 0)
+        .then(|| ThreadInputAttachment::new(foreground_thread_id))
+        .flatten()
 }
 
 #[cfg(target_os = "windows")]
@@ -2658,7 +2688,8 @@ fn focused_child_window(window_handle: isize, process_id: u32) -> Option<isize> 
     };
     let focused_handle = focused.0 as isize;
     (unsafe { IsWindow(Some(focused)) }.as_bool()
-        && window_process_id(focused_handle) == Some(process_id))
+        && window_process_id(focused_handle) == Some(process_id)
+        && root_window_handle(focused_handle) == Some(window_handle))
     .then_some(focused_handle)
 }
 
@@ -2743,6 +2774,13 @@ fn ctrl_v_partial_cleanup_range(sent: u32) -> Option<(usize, usize)> {
     }
 }
 
+fn wait_for_target_activation_settle(activated_at: Instant) {
+    let elapsed = activated_at.elapsed();
+    if elapsed < TARGET_ACTIVATION_SETTLE_DELAY {
+        thread::sleep(TARGET_ACTIVATION_SETTLE_DELAY - elapsed);
+    }
+}
+
 fn helper_deadline_allows_injection(deadline_ms: u64, now_ms: u64) -> bool {
     deadline_ms > now_ms
 }
@@ -2816,6 +2854,21 @@ fn target_identity_is_current(identity: &PasteTargetIdentity) -> bool {
         && window_process_id(identity.window_handle) == Some(identity.process_id)
 }
 
+fn focus_snapshot_matches_target(
+    identity: &PasteTargetIdentity,
+    focused_window_handle: isize,
+    focused_root_window_handle: Option<isize>,
+    focused_process_id: Option<u32>,
+) -> bool {
+    let expected_focus = identity
+        .focus_window_handle
+        .unwrap_or(identity.window_handle);
+    focused_window_handle != 0
+        && focused_window_handle == expected_focus
+        && focused_root_window_handle == Some(identity.window_handle)
+        && focused_process_id == Some(identity.process_id)
+}
+
 #[cfg(not(target_os = "windows"))]
 fn target_identity_is_current(_identity: &PasteTargetIdentity) -> bool {
     false
@@ -2827,28 +2880,50 @@ fn restore_target_focus(identity: &PasteTargetIdentity) -> bool {
         Foundation::HWND,
         UI::{
             Input::KeyboardAndMouse::SetFocus,
-            WindowsAndMessaging::{GetWindowThreadProcessId, IsWindow},
+            WindowsAndMessaging::{GetForegroundWindow, IsWindow},
         },
     };
 
-    let Some(focus_window_handle) = identity.focus_window_handle else {
-        return true;
-    };
+    let focus_window_handle = identity
+        .focus_window_handle
+        .unwrap_or(identity.window_handle);
     let focus = HWND(focus_window_handle as *mut core::ffi::c_void);
     if !unsafe { IsWindow(Some(focus)) }.as_bool()
         || window_process_id(focus_window_handle) != Some(identity.process_id)
+        || root_window_handle(focus_window_handle) != Some(identity.window_handle)
     {
         return false;
     }
-    if focus_window_handle == identity.window_handle {
-        return true;
-    }
     let target = HWND(identity.window_handle as *mut core::ffi::c_void);
-    let target_thread_id = unsafe { GetWindowThreadProcessId(target, None) };
+    let Some((target_thread_id, _)) = gui_thread_info_for_window(identity.window_handle) else {
+        return false;
+    };
     let Some(_attachment) = ThreadInputAttachment::new(target_thread_id) else {
         return false;
     };
-    unsafe { SetFocus(Some(focus)) }.is_ok()
+    if focus_window_handle != identity.window_handle {
+        // SetFocus 返回的是“此前焦点窗口”；此前无焦点时成功也可能返回 NULL，
+        // 因此不能用 windows-rs 的 Result 判断本次设置是否成功。
+        let _ = unsafe { SetFocus(Some(focus)) };
+    }
+
+    let Some((_, info)) = gui_thread_info_for_window(identity.window_handle) else {
+        return false;
+    };
+    let focused = if info.hwndFocus.0.is_null() {
+        info.hwndActive
+    } else {
+        info.hwndFocus
+    };
+    let focused_window_handle = focused.0 as isize;
+    (unsafe { GetForegroundWindow() }) == target
+        && info.hwndActive == target
+        && focus_snapshot_matches_target(
+            identity,
+            focused_window_handle,
+            root_window_handle(focused_window_handle),
+            window_process_id(focused_window_handle),
+        )
 }
 
 #[cfg(target_os = "windows")]
@@ -2879,16 +2954,21 @@ fn focus_target_and_send_ctrl_v(
         let _ = unsafe { ShowWindow(target, SW_RESTORE) };
     }
 
-    let focused = (0..FOREGROUND_ACTIVATION_ATTEMPTS).any(|_| {
-        let _ = unsafe { BringWindowToTop(target) };
-        let _ = unsafe { SetForegroundWindow(target) };
-        if unsafe { GetForegroundWindow() } == target {
-            true
-        } else {
-            thread::sleep(FOREGROUND_ACTIVATION_RETRY_DELAY);
-            false
-        }
-    });
+    let focused = {
+        // Ditto 在切换回原窗口前先共享当前前台线程的输入队列，避免后台 IPC
+        // 线程直接调用 SetForegroundWindow 时丢失焦点交接资格。
+        let _foreground_attachment = attach_to_foreground_thread();
+        (0..FOREGROUND_ACTIVATION_ATTEMPTS).any(|_| {
+            let _ = unsafe { BringWindowToTop(target) };
+            let _ = unsafe { SetForegroundWindow(target) };
+            if unsafe { GetForegroundWindow() } == target {
+                true
+            } else {
+                thread::sleep(FOREGROUND_ACTIVATION_RETRY_DELAY);
+                false
+            }
+        })
+    };
     if !focused
         || !target_identity_is_current(identity)
         || unsafe { GetForegroundWindow() } != target
@@ -2899,9 +2979,25 @@ fn focus_target_and_send_ctrl_v(
         return false;
     }
 
+    let activated_at = Instant::now();
     // 快捷键松开前不注入 Ctrl+V，避免与用户仍按住的 Alt/Shift/Ctrl/Win 混键。
     if !wait_for_physical_modifiers_released(deadline_ms)
         || !target_identity_is_current(identity)
+        || unsafe { GetForegroundWindow() } != target
+        || !restore_target_focus(identity)
+        || deadline_ms.is_some_and(|deadline| {
+            unix_time_millis().is_none_or(|now| !helper_deadline_allows_injection(deadline, now))
+        })
+        || expected_clipboard_sequence
+            .is_some_and(|expected| !clipboard_sequence_matches(expected, clipboard_sequence()))
+    {
+        return false;
+    }
+
+    // Ditto 默认在激活目标后留出 100ms；Chrome 等多进程窗口会在顶层 HWND
+    // 已成为前台后继续异步恢复编辑控件焦点，因此发送输入前保留同等稳定期。
+    wait_for_target_activation_settle(activated_at);
+    if !target_identity_is_current(identity)
         || unsafe { GetForegroundWindow() } != target
         || !restore_target_focus(identity)
         || deadline_ms.is_some_and(|deadline| {
@@ -6987,6 +7083,105 @@ mod tests {
             .0;
 
         assert!(window_event_handler.contains("native_window_is_foreground(window)"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn direct_paste_hands_off_foreground_input_before_injecting_ctrl_v() {
+        let source = include_str!("lib.rs");
+        let paste_handler = source
+            .split_once("fn focus_target_and_send_ctrl_v(")
+            .expect("direct paste handler")
+            .1
+            .split_once("fn paste_into_window(")
+            .expect("direct paste handler end")
+            .0;
+
+        let attach = paste_handler
+            .find("attach_to_foreground_thread()")
+            .expect("foreground input handoff");
+        let activate = paste_handler
+            .find("SetForegroundWindow(target)")
+            .expect("target activation");
+        let settle = paste_handler
+            .find("wait_for_target_activation_settle(")
+            .expect("target activation settle");
+        let inject = paste_handler
+            .find("SendInput(&inputs")
+            .expect("Ctrl+V injection");
+
+        assert!(attach < activate);
+        assert!(activate < settle);
+        assert!(settle < inject);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn direct_paste_verifies_the_exact_target_focus_after_activation() {
+        let source = include_str!("lib.rs");
+        let focus_restore = source
+            .split_once("fn restore_target_focus(")
+            .expect("target focus restore")
+            .1
+            .split_once("fn focus_target_and_send_ctrl_v(")
+            .expect("target focus restore end")
+            .0;
+
+        assert!(focus_restore.contains("gui_thread_info_for_window("));
+        assert!(focus_restore.contains("focus_snapshot_matches_target("));
+        assert!(!focus_restore.contains("SetFocus(Some(focus)).is_ok()"));
+    }
+
+    #[test]
+    fn paste_focus_snapshot_must_match_the_exact_child_root_and_process() {
+        let identity = PasteTargetIdentity {
+            window_handle: 101,
+            focus_window_handle: Some(202),
+            process_id: 303,
+            captured_at: Instant::now(),
+        };
+
+        assert!(focus_snapshot_matches_target(
+            &identity,
+            202,
+            Some(101),
+            Some(303)
+        ));
+        assert!(!focus_snapshot_matches_target(
+            &identity,
+            203,
+            Some(101),
+            Some(303)
+        ));
+        assert!(!focus_snapshot_matches_target(
+            &identity,
+            202,
+            Some(102),
+            Some(303)
+        ));
+        assert!(!focus_snapshot_matches_target(
+            &identity,
+            202,
+            Some(101),
+            Some(304)
+        ));
+    }
+
+    #[test]
+    fn paste_focus_snapshot_accepts_the_target_when_no_child_was_captured() {
+        let identity = PasteTargetIdentity {
+            window_handle: 101,
+            focus_window_handle: None,
+            process_id: 303,
+            captured_at: Instant::now(),
+        };
+
+        assert!(focus_snapshot_matches_target(
+            &identity,
+            101,
+            Some(101),
+            Some(303)
+        ));
     }
 
     #[test]
