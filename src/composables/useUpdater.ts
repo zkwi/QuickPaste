@@ -3,6 +3,7 @@ import {
   OFFICIAL_RELEASES_URL,
   classifyUpdateFailure,
   shouldAutoCheckUpdate,
+  updateCheckLocalDateKey,
   type UpdateFailureKind,
 } from '../domain/update'
 import type { MessageKey } from '../i18n'
@@ -31,6 +32,7 @@ interface UseUpdaterOptions {
 }
 
 const UPDATE_CHECK_STORAGE_KEY = 'quickpaste-update-check-v1'
+const UPDATE_CHECK_LOCAL_DATE_STORAGE_KEY = 'quickpaste-update-check-local-date-v1'
 const AUTO_UPDATE_CHECK_DELAY_MS = 15_000
 
 function readLastUpdateCheckAt(): number | null {
@@ -42,11 +44,30 @@ function readLastUpdateCheckAt(): number | null {
   }
 }
 
+function readLastUpdateCheckLocalDate(): string | null {
+  try {
+    return localStorage.getItem(UPDATE_CHECK_LOCAL_DATE_STORAGE_KEY)?.trim() || null
+  } catch {
+    return null
+  }
+}
+
 function writeLastUpdateCheckAt(value: number): void {
   try {
     localStorage.setItem(UPDATE_CHECK_STORAGE_KEY, String(value))
   } catch {
-    // 检查时间只用于本地节流，存储不可用不应阻止更新检查。
+    // 日期键仍可独立完成当天节流。
+  }
+  const localDate = updateCheckLocalDateKey(value)
+  try {
+    if (localDate) localStorage.setItem(UPDATE_CHECK_LOCAL_DATE_STORAGE_KEY, localDate)
+    else localStorage.removeItem(UPDATE_CHECK_LOCAL_DATE_STORAGE_KEY)
+  } catch {
+    try {
+      localStorage.removeItem(UPDATE_CHECK_LOCAL_DATE_STORAGE_KEY)
+    } catch {
+      // 存储不可用时保持 fail-open，不应阻止更新检查。
+    }
   }
 }
 
@@ -203,7 +224,11 @@ export function useUpdater(options: UseUpdaterOptions) {
     autoUpdateCheckTimer = undefined
     if (!options.nativeRuntime
       || !options.autoCheckUpdates.value
-      || !shouldAutoCheckUpdate(readLastUpdateCheckAt())) return
+      || !shouldAutoCheckUpdate(
+        readLastUpdateCheckAt(),
+        Date.now(),
+        readLastUpdateCheckLocalDate(),
+      )) return
     autoUpdateCheckTimer = setTimeout(() => {
       autoUpdateCheckTimer = undefined
       void runUpdateCheck(false)

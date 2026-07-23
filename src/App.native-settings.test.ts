@@ -692,6 +692,100 @@ describe('native setting reliability', () => {
     wrapper.unmount()
   })
 
+  it('checks updates on the first launch of each local day and skips same-day relaunches', async () => {
+    vi.useFakeTimers()
+    const firstLaunchAt = new Date(2026, 6, 23, 0, 1)
+    vi.setSystemTime(firstLaunchAt)
+    localStorage.setItem(
+      'quickpaste-update-check-v1',
+      String(new Date(2026, 6, 22, 23, 59).getTime()),
+    )
+
+    const firstLaunch = mount(App)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    const recordedAt = Number(localStorage.getItem('quickpaste-update-check-v1'))
+    expect(recordedAt).toBeGreaterThanOrEqual(firstLaunchAt.getTime())
+    expect(localStorage.getItem('quickpaste-update-check-local-date-v1')).toBe('2026-07-23')
+    firstLaunch.unmount()
+
+    const sameDayRelaunch = mount(App)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    sameDayRelaunch.unmount()
+  })
+
+  it('counts a manual update attempt as the same-day automatic check', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 6, 23, 10, 0))
+
+    const manualLaunch = mount(App)
+    await flushPromises()
+    await manualLaunch.get('[aria-label="打开设置"]').trigger('click')
+    await manualLaunch.get('[data-testid="check-update"]').trigger('click')
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    manualLaunch.unmount()
+
+    const sameDayRelaunch = mount(App)
+    await flushPromises()
+    await vi.advanceTimersByTimeAsync(15_000)
+    await flushPromises()
+
+    expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+    sameDayRelaunch.unmount()
+  })
+
+  it('falls open when the local-date cache cannot be refreshed', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 6, 23, 10, 0))
+    localStorage.setItem(
+      'quickpaste-update-check-v1',
+      String(new Date(2026, 6, 22, 10, 0).getTime()),
+    )
+    localStorage.setItem('quickpaste-update-check-local-date-v1', '2026-07-22')
+    const nativeSetItem = localStorage.setItem.bind(localStorage)
+    let rejectDateWrites = true
+    const setItem = vi.spyOn(localStorage, 'setItem').mockImplementation(function (
+      key: string,
+      value: string,
+    ) {
+      if (key === 'quickpaste-update-check-local-date-v1' && rejectDateWrites) {
+        throw new Error('simulated localStorage failure')
+      }
+      return nativeSetItem(key, value)
+    })
+
+    try {
+      const firstLaunch = mount(App)
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(15_000)
+      await flushPromises()
+
+      expect(updaterMocks.checkForUpdate).toHaveBeenCalledOnce()
+      rejectDateWrites = false
+      expect(localStorage.getItem('quickpaste-update-check-local-date-v1')).toBeNull()
+      firstLaunch.unmount()
+
+      const sameDayRelaunch = mount(App)
+      await flushPromises()
+      await vi.advanceTimersByTimeAsync(15_000)
+      await flushPromises()
+
+      expect(updaterMocks.checkForUpdate).toHaveBeenCalledTimes(2)
+      sameDayRelaunch.unmount()
+    } finally {
+      setItem.mockRestore()
+    }
+  })
+
   it('shows a compact update status and installs only after a user check', async () => {
     updaterMocks.checkForUpdate.mockResolvedValueOnce({
       currentVersion: '0.1.0',

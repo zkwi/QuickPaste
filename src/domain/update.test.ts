@@ -7,13 +7,23 @@ import {
 } from './update'
 
 describe('update domain rules', () => {
-  it('limits automatic checks to once every 24 hours', () => {
-    const now = Date.parse('2026-07-19T12:00:00Z')
+  it('limits automatic checks to the first launch of each local calendar day', () => {
+    const todayEarly = new Date(2026, 6, 23, 0, 1).getTime()
+    const todayLate = new Date(2026, 6, 23, 23, 59).getTime()
+    const yesterdayLate = new Date(2026, 6, 22, 23, 59).getTime()
+    const tomorrowEarly = new Date(2026, 6, 24, 0, 1).getTime()
 
-    expect(shouldAutoCheckUpdate(null, now)).toBe(true)
-    expect(shouldAutoCheckUpdate(now - 23 * 60 * 60 * 1_000, now)).toBe(false)
-    expect(shouldAutoCheckUpdate(now - 24 * 60 * 60 * 1_000, now)).toBe(true)
-    expect(shouldAutoCheckUpdate(now + 60_000, now)).toBe(true)
+    expect(shouldAutoCheckUpdate(null, todayEarly)).toBe(true)
+    expect(shouldAutoCheckUpdate(Number.NaN, todayEarly)).toBe(true)
+    expect(shouldAutoCheckUpdate(todayEarly, todayLate, '2026-07-23')).toBe(false)
+    expect(shouldAutoCheckUpdate(todayEarly, todayLate)).toBe(true)
+    expect(shouldAutoCheckUpdate(yesterdayLate, todayEarly)).toBe(true)
+    expect(shouldAutoCheckUpdate(tomorrowEarly, todayEarly)).toBe(true)
+    expect(shouldAutoCheckUpdate(
+      new Date(2026, 6, 23, 0, 30).getTime(),
+      new Date(2026, 6, 23, 0, 45).getTime(),
+      '2026-07-22',
+    )).toBe(true)
   })
 
   it('formats installer sizes without implying excessive precision', () => {

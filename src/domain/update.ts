@@ -1,4 +1,3 @@
-export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1_000
 export const OFFICIAL_RELEASES_URL = 'https://github.com/zkwi/QuickPaste/releases'
 
 export type UpdateFailureKind = 'timeout' | 'unreachable' | 'generic'
@@ -23,13 +22,24 @@ export function classifyUpdateFailure(error: unknown): UpdateFailureKind {
 }
 
 export function shouldAutoCheckUpdate(
-  lastCheckedAt: number | null,
+  _lastCheckedAt: number | null,
   now = Date.now(),
-  intervalMs = UPDATE_CHECK_INTERVAL_MS,
+  lastCheckedLocalDate: string | null = null,
 ): boolean {
-  if (lastCheckedAt === null || !Number.isFinite(lastCheckedAt)) return true
-  const elapsed = now - lastCheckedAt
-  return elapsed < 0 || elapsed >= intervalMs
+  const currentLocalDate = updateCheckLocalDateKey(now)
+  if (currentLocalDate === null) return true
+  // 旧版本只有时间戳，无法还原记录当时的时区；安全地多检查一次并写入日期键。
+  return lastCheckedLocalDate === null || lastCheckedLocalDate !== currentLocalDate
+}
+
+export function updateCheckLocalDateKey(value = Date.now()): string | null {
+  if (!Number.isFinite(value)) return null
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return null
+  const year = String(date.getFullYear()).padStart(4, '0')
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 export function formatUpdateSize(bytes: number | undefined): string {
