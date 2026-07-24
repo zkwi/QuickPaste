@@ -238,6 +238,21 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
   })
 
+  it('ignores Enter safely when search has no selected result', async () => {
+    const search = wrapper.get('[data-testid="search-input"]')
+    await search.setValue('不存在的剪贴板结果-7f4c')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.findAll('[data-clip-id]')).toHaveLength(0)
+
+    dispatchKey(search.element, 'Enter')
+    await flushPromises()
+
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteImage).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteFormats).not.toHaveBeenCalled()
+    expect(clipboardMocks.pasteFiles).not.toHaveBeenCalled()
+  })
+
   it('moves a double-clicked record to the top as the latest item', async () => {
     const originalCopiedAt = JSON.parse(localStorage.getItem('mypaste-demo-items-v1') ?? '[]')
       .find((item: { id: string }) => item.id === 'clip-3')?.copiedAt
@@ -572,6 +587,22 @@ describe('quick panel high-frequency interaction', () => {
     dispatchKey(search.element, 'Enter')
     await flushPromises()
     expect(clipboardMocks.pasteText).toHaveBeenCalledTimes(2)
+  })
+
+  it('releases input focus before paste and restores it after copy-only fallback', async () => {
+    const search = wrapper.get('[data-testid="search-input"]')
+    ;(search.element as HTMLElement).focus()
+    let activeElementAtPaste: Element | null = null
+    clipboardMocks.pasteText.mockImplementationOnce(async () => {
+      activeElementAtPaste = document.activeElement
+      return { copied: true, pasted: false, requiresElevation: false }
+    })
+
+    dispatchKey(search.element, 'Enter')
+    await flushPromises()
+
+    expect(activeElementAtPaste).not.toBe(search.element)
+    expect(document.activeElement).toBe(search.element)
   })
 
   it('highlights case-insensitive literal matches in the single content line', async () => {

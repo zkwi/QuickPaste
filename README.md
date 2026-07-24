@@ -4,11 +4,11 @@
 
 QuickPaste 是一款面向 Windows 10/11 x64 的本地优先剪贴板历史工具。按下 `Ctrl + Shift + V`，即可在当前输入位置附近搜索历史并粘贴文本、富文本、图片或文件。
 
-当前版本：[v0.21.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.0) · [更新记录](CHANGELOG.md)
+当前版本：[v0.21.1](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1) · [更新记录](CHANGELOG.md)
 
 ## 快速开始
 
-1. 从 [v0.21.0 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.0) 下载 Windows x64 NSIS 安装包或绿色版 ZIP。
+1. 从 [v0.21.1 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1) 下载 Windows x64 NSIS 安装包或绿色版 ZIP。
 2. 运行安装包，或把绿色版解压到可写目录后启动 `QuickPaste.exe`。
 3. 正常复制文本、富文本、图片或文件。
 4. 在目标输入框中按 `Ctrl + Shift + V`，输入关键词、拼音或来源，选择记录后按 `Enter` 粘贴。
@@ -145,7 +145,7 @@ npm run build:windows
 - [测试策略](docs/testing.md)
 - [质量与缺陷闭环](docs/quality.md)
 - [贡献指南](CONTRIBUTING.md)
-- [v0.21.0 发布说明](docs/releases/v0.21.0.md)
+- [v0.21.1 发布说明](docs/releases/v0.21.1.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ## 许可证

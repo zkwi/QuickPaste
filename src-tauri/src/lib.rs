@@ -84,15 +84,12 @@ const CLIPBOARD_INITIALIZATION_RETRY_DELAY: Duration = Duration::from_millis(250
 const CLIPBOARD_READ_ATTEMPTS: usize = 4;
 const CLIPBOARD_READ_RETRY_DELAY: Duration = Duration::from_millis(40);
 const CLIPBOARD_EXHAUSTED_RETRY_DELAY: Duration = Duration::from_millis(800);
-const CARET_ACCESSIBILITY_TIMEOUT: Duration = Duration::from_millis(60);
 const QUICK_PANEL_SHELL_INSET_DIP: f64 = 16.0;
 const QUICK_PANEL_VISIBLE_GAP_DIP: f64 = 12.0;
 const QUICK_PANEL_COMPACT_SIZE_DIP: ScreenSize = ScreenSize::new(640, 440);
 const LIBRARY_MIN_SIZE_DIP: ScreenSize = ScreenSize::new(640, 440);
 const QUIT_FALLBACK_TIMEOUT: Duration = Duration::from_secs(4);
 static QUIT_REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
-#[cfg(target_os = "windows")]
-static CARET_ACCESSIBILITY_BUSY: AtomicBool = AtomicBool::new(false);
 #[cfg(target_os = "windows")]
 static ELEVATED_HELPER_BUSY: AtomicBool = AtomicBool::new(false);
 
@@ -491,13 +488,11 @@ fn place_quick_panel_window(
 }
 
 fn choose_caret_rect(
-    accessibility: Option<ScreenRect>,
     gui_thread: Option<ScreenRect>,
     attached_thread: Option<ScreenRect>,
 ) -> Option<ScreenRect> {
-    accessibility
+    gui_thread
         .filter(|rect| rect.is_valid_caret())
-        .or_else(|| gui_thread.filter(|rect| rect.is_valid_caret()))
         .or_else(|| attached_thread.filter(|rect| rect.is_valid_caret()))
 }
 
@@ -2000,111 +1995,6 @@ fn caret_rect_from_attached_thread(window_handle: isize) -> Option<ScreenRect> {
 }
 
 #[cfg(target_os = "windows")]
-struct ComInitialization;
-
-#[cfg(target_os = "windows")]
-impl Drop for ComInitialization {
-    fn drop(&mut self) {
-        unsafe { windows::Win32::System::Com::CoUninitialize() };
-    }
-}
-
-#[cfg(target_os = "windows")]
-struct AccessibilityQueryGuard;
-
-#[cfg(target_os = "windows")]
-impl Drop for AccessibilityQueryGuard {
-    fn drop(&mut self) {
-        CARET_ACCESSIBILITY_BUSY.store(false, Ordering::Release);
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn accessibility_caret_rect(
-    left: i32,
-    top: i32,
-    width: i32,
-    height: i32,
-    fallback_height: i32,
-) -> Option<ScreenRect> {
-    if width < 0 || height < 0 {
-        return None;
-    }
-    // Chrome 等 MSAA 提供程序偶尔只返回光标点。沿用 Ditto 的固定行高回退，
-    // 避免把有效光标误判为缺失后退回鼠标位置。
-    let height = if height == 0 {
-        fallback_height.max(1)
-    } else {
-        height
-    };
-    let rect = ScreenRect::new(
-        left,
-        top,
-        left.saturating_add(width),
-        top.saturating_add(height),
-    );
-    rect.is_valid_caret().then_some(rect)
-}
-
-#[cfg(target_os = "windows")]
-fn caret_rect_from_msaa(window_handle: isize) -> Option<ScreenRect> {
-    use std::mem::ManuallyDrop;
-    use windows::{
-        core::Interface,
-        Win32::{
-            Foundation::HWND,
-            System::{
-                Com::{CoInitializeEx, COINIT_MULTITHREADED},
-                Variant::{VARIANT, VARIANT_0, VARIANT_0_0, VARIANT_0_0_0, VT_I4},
-            },
-            UI::{
-                Accessibility::{AccessibleObjectFromWindow, IAccessible},
-                HiDpi::GetDpiForWindow,
-                WindowsAndMessaging::{CHILDID_SELF, OBJID_CARET},
-            },
-        },
-    };
-
-    if unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_err() {
-        return None;
-    }
-    let _com = ComInitialization;
-    let mut object: *mut core::ffi::c_void = core::ptr::null_mut();
-    unsafe {
-        AccessibleObjectFromWindow(
-            HWND(window_handle as *mut core::ffi::c_void),
-            OBJID_CARET.0 as u32,
-            &IAccessible::IID,
-            &mut object,
-        )
-    }
-    .ok()?;
-    if object.is_null() {
-        return None;
-    }
-    let accessible = unsafe { IAccessible::from_raw(object) };
-    let child = VARIANT {
-        Anonymous: VARIANT_0 {
-            Anonymous: ManuallyDrop::new(VARIANT_0_0 {
-                vt: VT_I4,
-                Anonymous: VARIANT_0_0_0 {
-                    lVal: CHILDID_SELF as i32,
-                },
-                ..Default::default()
-            }),
-        },
-    };
-    let mut left = 0;
-    let mut top = 0;
-    let mut width = 0;
-    let mut height = 0;
-    unsafe { accessible.accLocation(&mut left, &mut top, &mut width, &mut height, &child) }.ok()?;
-    let dpi = unsafe { GetDpiForWindow(HWND(window_handle as *mut core::ffi::c_void)) };
-    let fallback_height = ((20.0 * f64::from(dpi.max(96)) / 96.0).round() as i32).max(1);
-    accessibility_caret_rect(left, top, width, height, fallback_height)
-}
-
-#[cfg(target_os = "windows")]
 fn caret_rect_is_near_window(rect: ScreenRect, window_handle: isize) -> bool {
     use windows::Win32::{
         Foundation::{HWND, RECT},
@@ -2143,28 +2033,11 @@ fn text_caret_rect_for_window(
         return None;
     }
 
-    // 某些第三方可访问性提供程序可能卡住。只允许一个在途查询；超时后后续热键立即回退，
-    // 避免高频使用时为同一个故障窗口不断堆积后台线程。
-    let accessibility = if CARET_ACCESSIBILITY_BUSY
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        run_with_timeout(CARET_ACCESSIBILITY_TIMEOUT, move || {
-            let _query = AccessibilityQueryGuard;
-            caret_rect_from_msaa(window_handle)
-        })
-        .flatten()
-        .filter(|rect| caret_rect_is_near_window(*rect, window_handle))
-    } else {
-        None
-    };
-    let gui_thread = if accessibility.is_none() {
-        caret_rect_from_gui_thread(window_handle)
-            .filter(|rect| caret_rect_is_near_window(*rect, window_handle))
-    } else {
-        None
-    };
-    let attached_thread = if accessibility.is_none() && gui_thread.is_none() {
+    // 这里只使用系统 Win32 焦点/插入点信息。不要调用 MSAA/UIA 提供程序：
+    // 第三方可访问性/输入法组件可能参与进程内代理调用，其堆损坏会直接拖垮 QuickPaste。
+    let gui_thread = caret_rect_from_gui_thread(window_handle)
+        .filter(|rect| caret_rect_is_near_window(*rect, window_handle));
+    let attached_thread = if gui_thread.is_none() {
         caret_rect_from_attached_thread(window_handle)
             .filter(|rect| caret_rect_is_near_window(*rect, window_handle))
     } else {
@@ -2176,7 +2049,7 @@ fn text_caret_rect_for_window(
     {
         return None;
     }
-    choose_caret_rect(accessibility, gui_thread, attached_thread)
+    choose_caret_rect(gui_thread, attached_thread)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -6998,32 +6871,36 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn msaa_caret_uses_a_fallback_line_height_when_the_provider_reports_zero_height() {
-        assert_eq!(
-            accessibility_caret_rect(640, 320, 0, 0, 30),
-            Some(ScreenRect::new(640, 320, 640, 350))
+    fn caret_lookup_does_not_invoke_third_party_accessibility_providers_in_process() {
+        let source = include_str!("lib.rs");
+        let forbidden_api = ["Accessible", "ObjectFromWindow("].concat();
+        let forbidden_interface = ["IAccessible", "::from_raw"].concat();
+
+        assert!(
+            !source.contains(&forbidden_api),
+            "插入点查询不得把第三方 MSAA/输入法提供程序加载到 QuickPaste 进程"
+        );
+        assert!(
+            !source.contains(&forbidden_interface),
+            "插入点查询不得接管第三方 COM 接口的生命周期"
         );
     }
 
     #[test]
-    fn caret_resolution_matches_ditto_order_and_skips_invalid_candidates() {
+    fn caret_resolution_prefers_gui_thread_and_skips_invalid_candidates() {
         let invalid = ScreenRect::new(10, 10, 10, 10);
-        let accessibility = ScreenRect::new(100, 100, 102, 124);
         let gui_thread = ScreenRect::new(200, 200, 201, 224);
         let attached = ScreenRect::new(300, 300, 300, 320);
 
         assert_eq!(
-            choose_caret_rect(Some(accessibility), Some(gui_thread), Some(attached)),
-            Some(accessibility)
-        );
-        assert_eq!(
-            choose_caret_rect(Some(invalid), Some(gui_thread), Some(attached)),
+            choose_caret_rect(Some(gui_thread), Some(attached)),
             Some(gui_thread)
         );
         assert_eq!(
-            choose_caret_rect(None, None, Some(attached)),
+            choose_caret_rect(Some(invalid), Some(attached)),
             Some(attached)
         );
+        assert_eq!(choose_caret_rect(None, Some(attached)), Some(attached));
     }
 
     #[test]

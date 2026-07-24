@@ -4,11 +4,11 @@ English | [简体中文](README.md)
 
 QuickPaste is a local-first clipboard history tool for Windows 10/11 x64. Press `Ctrl + Shift + V` to search your history near the active input and paste text, rich text, images, or files.
 
-Current release: [v0.21.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.0) · [Changelog](CHANGELOG.md)
+Current release: [v0.21.1](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1) · [Changelog](CHANGELOG.md)
 
 ## Quick Start
 
-1. Download the Windows x64 NSIS installer or portable ZIP from the [v0.21.0 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.0).
+1. Download the Windows x64 NSIS installer or portable ZIP from the [v0.21.1 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1).
 2. Run the installer, or extract the portable build to a writable folder and launch `QuickPaste.exe`.
 3. Copy text, rich text, an image, or one or more files as usual.
 4. In the target input, press `Ctrl + Shift + V`, search by text, pinyin, or source, select an item, and press `Enter` to paste.
@@ -145,7 +145,7 @@ Further reading:
 - [Testing strategy](docs/testing.md)
 - [Quality and defect lifecycle](docs/quality.md)
 - [Contributing guide](CONTRIBUTING.md)
-- [v0.21.0 release notes](docs/releases/v0.21.0.md)
+- [v0.21.1 release notes](docs/releases/v0.21.1.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## License

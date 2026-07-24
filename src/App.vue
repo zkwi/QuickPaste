@@ -2193,6 +2193,17 @@ function focusCurrentQuickContent() {
   })
 }
 
+async function releaseInputFocusBeforePaste(): Promise<HTMLElement | null> {
+  const activeElement = document.activeElement
+  if (!(activeElement instanceof HTMLElement) || activeElement === document.body) return null
+
+  cancelSearchComposition(currentView.value === 'quick' ? 'quick' : 'manager')
+  activeElement.blur()
+  // 先让 WebView 提交失焦与输入法组合态，再进入会隐藏窗口的原生粘贴调用。
+  await nextTick()
+  return activeElement
+}
+
 async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode(clip)) {
   if (pasteInFlight.value) return
   const sessionGeneration = quickSessionGeneration
@@ -2206,6 +2217,7 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
     }
     const action = getClipActions(payload, 'quick').find((candidate) => candidate.pasteMode === mode)
     if (!action || action.disabled) return
+    const focusBeforePaste = await releaseInputFocusBeforePaste()
     const result = mode === 'files'
       ? await pasteFiles(payload.files ?? [])
       : mode === 'preserve'
@@ -2214,6 +2226,7 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
           ? await pasteImage(payload.imageUrl)
           : await pasteText(payload.content)
     if (sessionGeneration !== quickSessionGeneration) return
+    if (!result.pasted) restoreFocus(focusBeforePaste)
     if (payload.id === ONBOARDING_SAMPLE_ID && result.pasted) {
       onboardingPracticePending.value = false
     }
@@ -2264,8 +2277,10 @@ async function pasteRecognizedText(text: string) {
   const pasteTargetLabel = targetApp.value ?? t('currentApp')
   pasteInFlight.value = true
   try {
+    const focusBeforePaste = await releaseInputFocusBeforePaste()
     const result = await pasteText(text)
     if (sessionGeneration !== quickSessionGeneration) return
+    if (!result.pasted) restoreFocus(focusBeforePaste)
     showToast(result.requiresElevation
       ? t('elevatedPasteApprovalRequired')
       : result.pasted
