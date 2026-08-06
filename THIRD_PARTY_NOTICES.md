@@ -4,8 +4,8 @@ QuickPaste 自身当前为 `UNLICENSED`、保留全部权利；下列许可证�
 
 Windows x64 安装包随附以下完整、锁文件驱动的第三方清单和许可证原文：
 
-- [npm production 依赖](THIRD_PARTY_LICENSES_NPM.md)：28 个包；`package-lock.json` SHA-256 `C36F908A59E5B701D29F9CE39E2996189267D65AC849D0FA29FD7F07891E651D`。
-- [Rust Windows normal/build 依赖](THIRD_PARTY_LICENSES_RUST.md)：316 个第三方 crate；`src-tauri/Cargo.lock` SHA-256 `4919401FBC1236C526291E6B589FC4AF259DC7DA7A44CC0589389CC8CBA9C81C`。
+- [npm production 依赖](THIRD_PARTY_LICENSES_NPM.md)：28 个包；`package-lock.json` SHA-256 `E08C11F1EA8BC7917018BC31D66C8E6CAE5C23FF980B62FED4660704A4FB54C0`。
+- [Rust Windows normal/build 依赖](THIRD_PARTY_LICENSES_RUST.md)：316 个第三方 crate；`src-tauri/Cargo.lock` SHA-256 `2895A7F47E8C336B8C7A9BF00255F2D260C646D0A8FA56DAA8B26F4AFD455E4D`。
 - [原生安装与数据库组件](THIRD_PARTY_LICENSES_NATIVE.md)：NSIS 3.11（含 LZMA special exception）和 bundled SQLite 3.50.2 public-domain blessing。
 
 常规质量门禁会把以上组件表与 npm production dependency closure、Windows Cargo normal/build 图、两个锁文件哈希和 Tauri bundle resources 逐项核对；依赖变化而声明未更新时构建检查会失败。

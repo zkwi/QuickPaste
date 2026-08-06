@@ -4,11 +4,11 @@ English | [简体中文](README.md)
 
 QuickPaste is a local-first clipboard history tool for Windows 10/11 x64. Press `Ctrl + Shift + V` to search your history near the active input and paste text, rich text, images, or files.
 
-Current release: [v0.21.1](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1) · [Changelog](CHANGELOG.md)
+Current release: [v0.22.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.22.0) · [Changelog](CHANGELOG.md)
 
 ## Quick Start
 
-1. Download the Windows x64 NSIS installer or portable ZIP from the [v0.21.1 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.21.1).
+1. Download the Windows x64 NSIS installer or portable ZIP from the [v0.22.0 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.22.0).
 2. Run the installer, or extract the portable build to a writable folder and launch `QuickPaste.exe`.
 3. Copy text, rich text, an image, or one or more files as usual.
 4. In the target input, press `Ctrl + Shift + V`, search by text, pinyin, or source, select an item, and press `Enter` to paste.
@@ -51,7 +51,8 @@ The first launch offers an optional quick-paste exercise. Closing the main windo
 ### Local Data and Management
 
 - Store history, pinned items, permanent text/code snippets, collections, OCR results, and search indexes in local SQLite.
-- Support pin, delete, undo, cross-page bulk actions, retention periods, item limits, and image-storage limits.
+- Ordinary history has no item-count cap and can be retained for 7, 30, or 90 days. New installations default to 30 days; pinned items and permanent snippets do not expire automatically.
+- Images remain protected by a separate logical-byte capacity, defaulting to 256 MiB on new installations. A legacy no-expiry policy stays untouched until the user confirms a finite period, so upgrading does not silently remove history.
 - Provide safe compaction, SQLite backup, atomic restore, and damaged-database quarantine recovery.
 - Keep the history database in a `data` folder beside `QuickPaste.exe` for both installed and portable builds.
 
@@ -145,7 +146,7 @@ Further reading:
 - [Testing strategy](docs/testing.md)
 - [Quality and defect lifecycle](docs/quality.md)
 - [Contributing guide](CONTRIBUTING.md)
-- [v0.21.1 release notes](docs/releases/v0.21.1.md)
+- [v0.22.0 release notes](docs/releases/v0.22.0.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## License
