@@ -8,6 +8,17 @@ import {
 } from './settings'
 
 describe('stored settings normalization', () => {
+  it('defaults ordinary history to the unlimited compatibility value', () => {
+    const defaults = defaultStoredSettings()
+
+    expect(defaults.settingsVersion).toBe(7)
+    expect(defaults.historyPolicy).toEqual({
+      maxRecords: Number.MAX_SAFE_INTEGER,
+      maxImageBytes: 256 * 1024 * 1024,
+      retentionDays: 30,
+    })
+  })
+
   it('defaults OCR on when the setting is missing, malformed, or storage is corrupt', () => {
     expect(defaultStoredSettings().ocrEnabled).toBe(true)
     expect(defaultStoredSettings().onboardingPracticePending).toBe(false)
@@ -22,7 +33,7 @@ describe('stored settings normalization', () => {
     expect(normalizeStoredSettings({ onboardingPracticePending: 'true' }).onboardingPracticePending).toBe(false)
   })
 
-  it.each([0, 1, 2, 4, SETTINGS_SCHEMA_VERSION])(
+  it.each([0, 1, 2, 4, 6, SETTINGS_SCHEMA_VERSION])(
     'preserves an explicit false OCR preference from settings schema %s',
     (settingsVersion) => {
       const normalized = normalizeStoredSettings({ settingsVersion, ocrEnabled: false })
@@ -42,9 +53,9 @@ describe('stored settings normalization', () => {
     expect(second.historyPolicy).toEqual(DEFAULT_HISTORY_POLICY)
   })
 
-  it('normalizes existing settings and rejects unsafe capacity values', () => {
+  it('normalizes legacy record limits while preserving image capacity and retention', () => {
     const normalized = normalizeStoredSettings({
-      settingsVersion: 4,
+      settingsVersion: 6,
       theme: 'dark',
       locale: 'en-US',
       historyPolicy: { maxRecords: 10_000, maxImageBytes: 512, retentionDays: null },
@@ -65,12 +76,29 @@ describe('stored settings normalization', () => {
       theme: 'dark',
       locale: 'en-US',
       retentionDays: 'forever',
-      historyPolicy: { maxRecords: 10_000, maxImageBytes: 512, retentionDays: null },
+      historyPolicy: {
+        maxRecords: Number.MAX_SAFE_INTEGER,
+        maxImageBytes: 512,
+        retentionDays: null,
+      },
       excludedApps: ['Word', 'KeePass'],
       ocrEnabled: false,
     })
     expect(retentionPeriodForPolicy(normalized.historyPolicy)).toBe('forever')
 
+    for (const retentionDays of [7, 30, 90]) {
+      expect(normalizeStoredSettings({
+        settingsVersion: 7,
+        historyPolicy: { maxRecords: 1, maxImageBytes: 1024, retentionDays },
+      }).historyPolicy).toEqual({
+        maxRecords: Number.MAX_SAFE_INTEGER,
+        maxImageBytes: 1024,
+        retentionDays,
+      })
+    }
+  })
+
+  it('rejects unsafe capacity values', () => {
     const unsafe = normalizeStoredSettings({
       historyPolicy: {
         maxRecords: Number.MAX_SAFE_INTEGER + 1,

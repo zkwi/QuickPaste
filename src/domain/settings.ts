@@ -29,9 +29,10 @@ export interface StoredSettings {
   ocrEnabled: boolean
 }
 
-export const SETTINGS_SCHEMA_VERSION = 6
+export const SETTINGS_SCHEMA_VERSION = 7
+export const UNLIMITED_HISTORY_RECORDS = Number.MAX_SAFE_INTEGER
 export const DEFAULT_HISTORY_POLICY: Readonly<CapacityPolicy> = Object.freeze({
-  maxRecords: 500,
+  maxRecords: UNLIMITED_HISTORY_RECORDS,
   maxImageBytes: 256 * 1024 * 1024,
   retentionDays: 30,
 })
@@ -62,7 +63,7 @@ function parseStoredHistoryPolicy(value: unknown): CapacityPolicy | null {
     return null
   }
   return {
-    maxRecords: value.maxRecords as number,
+    maxRecords: UNLIMITED_HISTORY_RECORDS,
     maxImageBytes: value.maxImageBytes as number,
     retentionDays: value.retentionDays as number | null,
   }

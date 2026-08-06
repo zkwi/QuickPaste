@@ -20,6 +20,7 @@ import {
   type LoadedClipboardItem,
   type ClipboardFile,
 } from './clipboard'
+import { DEFAULT_HISTORY_POLICY } from './settings'
 
 const clips: LoadedClipboardItem[] = [
   {
@@ -707,6 +708,16 @@ describe('clipboard model', () => {
 
     expect(limitHistory([clips[0], permanent, { ...clips[0], id: 'ordinary' }], 1)
       .map((clip) => clip.id)).toEqual(['a', 'permanent'])
+  })
+
+  it('keeps more than 500 ordinary records under the default history policy', () => {
+    const ordinaryHistory = Array.from({ length: 501 }, (_, index): LoadedClipboardItem => ({
+      ...clips[0],
+      id: `ordinary-${index}`,
+      pinned: false,
+    }))
+
+    expect(limitHistory(ordinaryHistory, DEFAULT_HISTORY_POLICY.maxRecords)).toHaveLength(501)
   })
 
   it('clears ordinary history while preserving every pinned clip', () => {
