@@ -18,7 +18,7 @@ use serde::{ser::SerializeMap, Deserialize, Serialize, Serializer};
 use unicode_normalization::UnicodeNormalization;
 
 const APPLICATION_ID: i64 = 0x5150_5354;
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 const SHORT_SEARCH_MAX_SCALARS: usize = 512;
 const SHORT_SEARCH_MAX_UNIQUE_TERMS: usize = 768;
 const SOURCE_APP_ICON_DATA_URL_PREFIX: &str = "data:image/png;base64,";
@@ -29,6 +29,7 @@ const HISTORY_TIMESTAMP_MIN_MILLIS: i64 = -62_167_219_200_000;
 const HISTORY_TIMESTAMP_MAX_MILLIS: i64 = 253_402_300_799_999;
 const JS_MAX_SAFE_INTEGER_I64: i64 = 9_007_199_254_740_991;
 const JS_MAX_SAFE_INTEGER_U64: u64 = JS_MAX_SAFE_INTEGER_I64 as u64;
+const UNLIMITED_HISTORY_RECORDS: u64 = JS_MAX_SAFE_INTEGER_U64;
 const MAX_RETENTION_DAYS: i64 = 730_000;
 const MAX_COLLECTION_NAME_UTF16: usize = 512;
 const HISTORY_ENTITY_ID_ATTEMPTS: usize = 16;
@@ -217,7 +218,7 @@ where
 }
 
 const fn default_max_records() -> u64 {
-    10_000
+    UNLIMITED_HISTORY_RECORDS
 }
 
 const fn default_payload_loaded() -> bool {
@@ -783,6 +784,7 @@ fn initialize_history_schema(
             9 => migrate_to_v10(transaction)?,
             10 => migrate_to_v11(transaction)?,
             11 => migrate_to_v12(transaction)?,
+            12 => migrate_to_v13(transaction)?,
             _ => {
                 return Err(contract_failure(format!(
                     "不支持的历史数据库版本 {version}"
@@ -1231,6 +1233,14 @@ fn migrate_to_v12(transaction: &Transaction<'_>) -> Result<(), HistoryInitializa
             insert_terms.execute(params![encoded, &clip_id])?;
         }
     }
+    Ok(())
+}
+
+fn migrate_to_v13(transaction: &Transaction<'_>) -> Result<(), HistoryInitializationFailure> {
+    transaction.execute(
+        "UPDATE history_settings SET max_records = ?1 WHERE singleton = 1",
+        [UNLIMITED_HISTORY_RECORDS as i64],
+    )?;
     Ok(())
 }
 
@@ -1842,8 +1852,7 @@ fn write_history_settings(
     {
         return Err("历史存储策略超出前端安全整数范围".to_owned());
     }
-    let max_records = i64::try_from(policy.max_records)
-        .map_err(|_| "记录数量上限超出 SQLite 整数范围".to_owned())?;
+    let max_records = UNLIMITED_HISTORY_RECORDS as i64;
     let max_image_bytes = i64::try_from(policy.max_image_bytes)
         .map_err(|_| "图片容量上限超出 SQLite 整数范围".to_owned())?;
     if policy
@@ -2931,21 +2940,6 @@ fn prune_capacity(
         delete_capacity_candidates(transaction, ids, &mut pruned_ids)?;
     }
 
-    let ordinary_count: u64 = transaction
-        .query_row(
-            "SELECT COUNT(*) FROM clips WHERE pinned = 0 AND permanent = 0",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(|error| error.to_string())?;
-    if ordinary_count > policy.max_records {
-        let ids = oldest_unprotected_ids(
-            transaction,
-            ordinary_count.saturating_sub(policy.max_records),
-        )?;
-        delete_capacity_candidates(transaction, ids, &mut pruned_ids)?;
-    }
-
     let mut image_bytes: u64 = transaction
         .query_row(
             "SELECT COALESCE(SUM(length(data)), 0) FROM clip_formats WHERE format = 'image'",
@@ -2987,30 +2981,6 @@ fn prune_capacity(
     Ok(HistoryMutationResult {
         pruned_ids: pruned_ids.into_iter().collect(),
     })
-}
-
-fn oldest_unprotected_ids(
-    transaction: &Transaction<'_>,
-    count: u64,
-) -> Result<Vec<String>, String> {
-    if count == 0 {
-        return Ok(Vec::new());
-    }
-    let mut statement = transaction
-        .prepare(
-            "SELECT id FROM clips WHERE pinned = 0 AND permanent = 0
-             ORDER BY copied_at ASC, id ASC LIMIT ?1",
-        )
-        .map_err(|error| error.to_string())?;
-    let ids = statement
-        .query_map([i64::try_from(count).unwrap_or(i64::MAX)], |row| {
-            row.get::<_, String>(0)
-        })
-        .map_err(|error| error.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|error| error.to_string())?;
-    drop(statement);
-    Ok(ids)
 }
 
 fn delete_capacity_candidates(
@@ -4404,6 +4374,7 @@ pub(crate) fn get_storage_stats(connection: &Connection) -> Result<StorageStats,
     {
         return Err("历史存储策略超出前端安全整数范围".to_owned());
     }
+    stats.max_records = UNLIMITED_HISTORY_RECORDS;
     Ok(stats)
 }
 
@@ -6050,7 +6021,7 @@ fn history_policy(connection: &Connection) -> Result<CapacityPolicy, String> {
         return Err("历史存储策略超出前端安全整数范围".to_owned());
     }
     Ok(CapacityPolicy {
-        max_records: max_records as u64,
+        max_records: UNLIMITED_HISTORY_RECORDS,
         max_image_bytes: max_image_bytes as u64,
         retention_days,
     })
@@ -6664,8 +6635,7 @@ where
         if u64::try_from(imported_count).ok() != Some(prepared.incoming_count) {
             return Err("恢复后的历史记录数量不一致".to_owned());
         }
-        let max_records =
-            i64::try_from(policy.max_records).map_err(|_| "恢复文件的记录上限无效".to_owned())?;
+        let max_records = UNLIMITED_HISTORY_RECORDS as i64;
         let max_image_bytes = i64::try_from(policy.max_image_bytes)
             .map_err(|_| "恢复文件的图片上限无效".to_owned())?;
         transaction
@@ -7143,6 +7113,16 @@ mod tests {
         transaction.commit().expect("commit v11 fixture");
     }
 
+    fn create_v12_schema(database: &mut Connection) {
+        create_v11_schema(database);
+        let transaction = database.transaction().expect("begin v12 fixture");
+        migrate_to_v12(&transaction).expect("create v12 schema");
+        transaction
+            .execute_batch("PRAGMA user_version = 12")
+            .expect("set v12 schema version");
+        transaction.commit().expect("commit v12 fixture");
+    }
+
     fn column_exists(connection: &Connection, table: &str, column: &str) -> bool {
         let mut statement = connection
             .prepare(&format!("PRAGMA table_info({table})"))
@@ -7157,13 +7137,13 @@ mod tests {
     }
 
     #[test]
-    fn fresh_schema_uses_version_twelve_with_short_search_index() {
+    fn fresh_schema_uses_version_thirteen_with_unlimited_record_compatibility() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
 
         initialize_history_database(&mut database).expect("initialize fresh database");
 
         assert_eq!(pragma_i64(&database, "application_id"), 0x5150_5354);
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), 13);
         assert_eq!(pragma_i64(&database, "foreign_keys"), 1);
         assert!(column_exists(&database, "clips", "omitted_formats"));
         for table in [
@@ -7194,10 +7174,13 @@ mod tests {
                 },
             )
             .expect("read singleton history settings");
-        assert_eq!(settings, (1, 500, 256 * 1024 * 1024, Some(30), 0));
+        assert_eq!(
+            settings,
+            (1, JS_MAX_SAFE_INTEGER_I64, 256 * 1024 * 1024, Some(30), 0)
+        );
         let stats = get_storage_stats(&database).expect("read stats before first mutation");
         assert_eq!(stats.record_count, 0);
-        assert_eq!(stats.max_records, 500);
+        assert_eq!(stats.max_records, JS_MAX_SAFE_INTEGER_U64);
         assert_eq!(stats.max_image_bytes, 256 * 1024 * 1024);
         assert_eq!(stats.retention_days, Some(30));
         assert!(database
@@ -7214,6 +7197,37 @@ mod tests {
                 [vec![0_u8; 32 * 1024 + 1]],
             )
             .is_err());
+    }
+
+    #[test]
+    fn v12_migration_canonicalizes_only_the_legacy_record_limit() {
+        let mut database = Connection::open_in_memory().expect("in-memory v12 database");
+        create_v12_schema(&mut database);
+        database
+            .execute(
+                "UPDATE history_settings
+                 SET max_records = 500, max_image_bytes = 123456, retention_days = NULL",
+                [],
+            )
+            .expect("seed legacy v12 policy");
+
+        initialize_history_database(&mut database).expect("migrate v12 policy");
+
+        assert_eq!(pragma_i64(&database, "user_version"), 13);
+        assert_eq!(
+            database
+                .query_row(
+                    "SELECT max_records, max_image_bytes, retention_days FROM history_settings",
+                    [],
+                    |row| Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?
+                    )),
+                )
+                .expect("read migrated policy"),
+            (JS_MAX_SAFE_INTEGER_I64, 123456, None)
+        );
     }
 
     #[test]
@@ -7253,7 +7267,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v11 short index");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), SCHEMA_VERSION);
         assert_eq!(
             database
                 .query_row(
@@ -7346,7 +7360,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v10 thumbnail schema");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), SCHEMA_VERSION);
         assert!(table_exists(&database, "clip_thumbnails"));
         assert_eq!(
             database
@@ -7405,7 +7419,7 @@ mod tests {
             .expect("insert valid v7 collection");
 
         initialize_history_database(&mut database).expect("migrate valid v7 collection");
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), SCHEMA_VERSION);
         assert_eq!(
             list_history_collections(&database)
                 .expect("list migrated collections")
@@ -7463,7 +7477,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v8 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), SCHEMA_VERSION);
         let migrated = get_clip_payload(&database, "legacy-image")
             .expect("load migrated image")
             .expect("legacy image remains");
@@ -7531,7 +7545,7 @@ mod tests {
 
         initialize_history_database(&mut database).expect("migrate v9 OCR fixture");
 
-        assert_eq!(pragma_i64(&database, "user_version"), 12);
+        assert_eq!(pragma_i64(&database, "user_version"), SCHEMA_VERSION);
         let migrated = get_clip_payload(&database, "current-image")
             .expect("load migrated image")
             .expect("current image remains");
@@ -8177,7 +8191,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_mid_update_failure_rolls_back_every_row_revision_and_capacity_prune() {
+    fn batch_unpin_rollback_preserves_rows_and_never_applies_a_count_limit() {
         let mut database = Connection::open_in_memory().expect("open rollback batch database");
         initialize_history_database(&mut database).expect("initialize rollback batch database");
         let mut first = text_item("first", "2026-07-01T00:00:00.000Z");
@@ -8233,14 +8247,14 @@ mod tests {
             },
             BatchAction::SetPinned { pinned: false },
         )
-        .expect("commit unpin and capacity bookkeeping");
+        .expect("commit unpin without count pruning");
         assert_eq!(committed.matched_count, 2);
         assert_eq!(committed.changed_count, 2);
         assert_eq!(committed.deleted_count, 0);
-        assert_eq!(committed.pruned_ids, vec!["first"]);
+        assert!(committed.pruned_ids.is_empty());
         assert!(get_clip_payload(&database, "first")
-            .expect("load pruned first row")
-            .is_none());
+            .expect("load retained first row")
+            .is_some());
         assert!(get_clip_payload(&database, "second")
             .expect("load kept second row")
             .is_some());
@@ -8390,13 +8404,17 @@ mod tests {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         let first_policy = CapacityPolicy {
             max_records: 25,
-            max_image_bytes: 1_024,
-            retention_days: Some(30),
+            max_image_bytes: 4,
+            retention_days: None,
         };
         apply_history_mutation(
             &mut database,
             mutation(
-                vec![text_item("policy-row", "2026-07-01T00:00:00.000Z")],
+                vec![image_item(
+                    "policy-row",
+                    "2026-07-01T00:00:00.000Z",
+                    b"1234",
+                )],
                 first_policy.clone(),
             ),
         )
@@ -8419,7 +8437,10 @@ mod tests {
                 )
                 .expect("read history settings")
         };
-        assert_eq!(read_settings(&database), (25, 1_024, Some(30), 1));
+        assert_eq!(
+            read_settings(&database),
+            (JS_MAX_SAFE_INTEGER_U64, 4, None, 1)
+        );
 
         database
             .execute_batch(
@@ -8430,7 +8451,7 @@ mod tests {
             .expect("inject prune failure");
         let replacement_policy = CapacityPolicy {
             max_records: 0,
-            max_image_bytes: 512,
+            max_image_bytes: 0,
             retention_days: None,
         };
         assert!(apply_history_mutation(
@@ -8438,7 +8459,10 @@ mod tests {
             mutation(Vec::new(), replacement_policy.clone()),
         )
         .is_err());
-        assert_eq!(read_settings(&database), (25, 1_024, Some(30), 1));
+        assert_eq!(
+            read_settings(&database),
+            (JS_MAX_SAFE_INTEGER_U64, 4, None, 1)
+        );
         assert!(get_clip_payload(&database, "policy-row")
             .expect("read row after rollback")
             .is_some());
@@ -8448,7 +8472,10 @@ mod tests {
             .expect("remove prune failure");
         apply_history_mutation(&mut database, mutation(Vec::new(), replacement_policy))
             .expect("commit replacement policy");
-        assert_eq!(read_settings(&database), (0, 512, None, 2));
+        assert_eq!(
+            read_settings(&database),
+            (JS_MAX_SAFE_INTEGER_U64, 0, None, 2)
+        );
         assert!(get_clip_payload(&database, "policy-row")
             .expect("read pruned row")
             .is_none());
@@ -8486,11 +8513,11 @@ mod tests {
     }
 
     #[test]
-    fn current_schema_is_v12_and_rejects_noncanonical_image_hashes() {
+    fn current_schema_is_v13_and_rejects_noncanonical_image_hashes() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         initialize_history_database(&mut database).expect("initialize current schema");
 
-        assert_eq!(SCHEMA_VERSION, 12);
+        assert_eq!(SCHEMA_VERSION, 13);
         let image_hash_column = database
             .query_row(
                 "SELECT COUNT(*) FROM pragma_table_info('clips') WHERE name = 'image_hash'",
@@ -9215,23 +9242,15 @@ mod tests {
     }
 
     #[test]
-    fn capacity_prunes_oldest_unprotected_rows_with_a_stable_id_tiebreaker() {
+    fn capacity_keeps_501_unexpired_ordinary_rows_despite_a_legacy_limit() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
-        let timestamp = "2026-07-01T00:00:00.000Z";
-        let mut pinned = text_item("pinned", timestamp);
-        pinned.pinned = true;
-        let mut permanent = text_item("permanent", timestamp);
-        permanent.permanent = true;
+        let items = (0..501)
+            .map(|index| text_item(&format!("clip-{index:03}"), "2999-01-01T00:00:00.000Z"))
+            .collect();
         let result = apply_history_mutation(
             &mut database,
             mutation(
-                vec![
-                    text_item("clip-a", timestamp),
-                    text_item("clip-b", timestamp),
-                    text_item("clip-c", timestamp),
-                    pinned,
-                    permanent,
-                ],
+                items,
                 CapacityPolicy {
                     max_records: 1,
                     max_image_bytes: JS_MAX_SAFE_INTEGER_U64,
@@ -9239,20 +9258,16 @@ mod tests {
                 },
             ),
         )
-        .expect("apply deterministic count pruning");
+        .expect("apply legacy record-limit policy");
 
-        assert_eq!(result.pruned_ids, vec!["clip-a", "clip-b"]);
-
-        let ids = load_history(&database)
-            .expect("load retained rows")
-            .into_iter()
-            .map(|item| item.id)
-            .collect::<Vec<_>>();
-        assert!(!ids.contains(&"clip-a".into()));
-        assert!(!ids.contains(&"clip-b".into()));
-        assert!(ids.contains(&"clip-c".into()));
-        assert!(ids.contains(&"pinned".into()));
-        assert!(ids.contains(&"permanent".into()));
+        assert!(result.pruned_ids.is_empty());
+        assert_eq!(history_count(&database).expect("count retained rows"), 501);
+        assert_eq!(
+            get_storage_stats(&database)
+                .expect("read canonical policy")
+                .max_records,
+            JS_MAX_SAFE_INTEGER_U64
+        );
     }
 
     #[test]
@@ -9339,7 +9354,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_result_is_deduplicated_and_sorted_across_pruning_stages() {
+    fn capacity_result_is_sorted_across_retention_and_image_pruning() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         let mut pinned = image_item("protected-pinned", "2000-01-01T00:00:00.000Z", b"1234");
         pinned.pinned = true;
@@ -9351,7 +9366,7 @@ mod tests {
             mutation(
                 vec![
                     text_item("z-retention", "2000-01-01T00:00:00.000Z"),
-                    text_item("a-count", "2999-01-01T00:00:00.000Z"),
+                    text_item("a-kept", "2999-01-01T00:00:00.000Z"),
                     image_item("m-image", "2999-01-02T00:00:00.000Z", b"1234"),
                     text_item("keep", "2999-01-03T00:00:00.000Z"),
                     pinned,
@@ -9364,9 +9379,12 @@ mod tests {
                 },
             ),
         )
-        .expect("apply all pruning stages");
+        .expect("apply retained pruning stages");
 
-        assert_eq!(result.pruned_ids, vec!["a-count", "m-image", "z-retention"]);
+        assert_eq!(result.pruned_ids, vec!["m-image", "z-retention"]);
+        assert!(get_clip_payload(&database, "a-kept")
+            .expect("read count-exempt row")
+            .is_some());
         assert!(!result
             .pruned_ids
             .iter()
@@ -9380,8 +9398,8 @@ mod tests {
             &mut database,
             mutation(
                 vec![
-                    text_item("explicit", "2026-07-01T00:00:00.000Z"),
-                    text_item("capacity", "2026-07-02T00:00:00.000Z"),
+                    image_item("explicit", "2026-07-01T00:00:00.000Z", b"123"),
+                    image_item("capacity", "2026-07-02T00:00:00.000Z", b"456"),
                 ],
                 CapacityPolicy::default(),
             ),
@@ -9394,8 +9412,8 @@ mod tests {
                 upserts: Vec::new(),
                 delete_ids: vec!["explicit".into()],
                 policy: CapacityPolicy {
-                    max_records: 0,
-                    max_image_bytes: JS_MAX_SAFE_INTEGER_U64,
+                    max_records: JS_MAX_SAFE_INTEGER_U64,
+                    max_image_bytes: 0,
                     retention_days: None,
                 },
             },
@@ -9412,8 +9430,8 @@ mod tests {
             &mut database,
             mutation(
                 vec![
-                    text_item("prune-a", "2026-07-01T00:00:00.000Z"),
-                    text_item("prune-b", "2026-07-02T00:00:00.000Z"),
+                    image_item("prune-a", "2026-07-01T00:00:00.000Z", b"123"),
+                    image_item("prune-b", "2026-07-02T00:00:00.000Z", b"456"),
                 ],
                 CapacityPolicy::default(),
             ),
@@ -9433,8 +9451,8 @@ mod tests {
                 upserts: Vec::new(),
                 delete_ids: Vec::new(),
                 policy: CapacityPolicy {
-                    max_records: 0,
-                    max_image_bytes: JS_MAX_SAFE_INTEGER_U64,
+                    max_records: JS_MAX_SAFE_INTEGER_U64,
+                    max_image_bytes: 0,
                     retention_days: None,
                 },
             },
@@ -10169,7 +10187,7 @@ mod tests {
             .into_iter()
             .map(|item| item.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["new", "same-b"]);
+        assert_eq!(ids, vec!["new", "same-b", "same-a"]);
 
         let invalid = text_item("invalid", "not-a-timestamp");
         assert!(apply_history_mutation(
@@ -10252,7 +10270,7 @@ mod tests {
             stats.newest_copied_at.as_deref(),
             Some("2026-07-04T00:00:00.000Z")
         );
-        assert_eq!(stats.max_records, policy.max_records);
+        assert_eq!(stats.max_records, JS_MAX_SAFE_INTEGER_U64);
         assert_eq!(stats.max_image_bytes, policy.max_image_bytes);
         assert_eq!(stats.retention_days, policy.retention_days);
     }
@@ -10728,7 +10746,7 @@ mod tests {
         }
         let backup_stats = get_storage_stats(&backup).expect("read backup settings and stats");
         assert_eq!(backup_stats.record_count, 4);
-        assert_eq!(backup_stats.max_records, policy.max_records);
+        assert_eq!(backup_stats.max_records, JS_MAX_SAFE_INTEGER_U64);
         assert_eq!(backup_stats.max_image_bytes, policy.max_image_bytes);
         assert_eq!(backup_stats.retention_days, policy.retention_days);
         assert_eq!(
@@ -11299,6 +11317,9 @@ mod tests {
             ),
         )
         .expect("create source image thumbnail");
+        source
+            .execute("UPDATE history_settings SET max_records = 777", [])
+            .expect("simulate a legacy restored record limit");
         drop(source);
         let prepared =
             prepare_history_restore_at(&source_path, &staging_directory, &live, &"c".repeat(64))
@@ -11333,7 +11354,15 @@ mod tests {
         assert_eq!(result.imported_count, 3);
         assert_eq!(result.schema_version, SCHEMA_VERSION);
         assert_eq!(result.stats.record_count, 3);
-        assert_eq!(result.policy.max_records, 777);
+        assert_eq!(result.policy.max_records, JS_MAX_SAFE_INTEGER_U64);
+        assert_eq!(result.stats.max_records, JS_MAX_SAFE_INTEGER_U64);
+        assert_eq!(
+            live.query_row("SELECT max_records FROM history_settings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .expect("read canonical restored record policy"),
+            JS_MAX_SAFE_INTEGER_I64
+        );
         assert_eq!(
             query_ids(&live, history_query("canonical-incoming")),
             vec!["canonical-incoming"]
