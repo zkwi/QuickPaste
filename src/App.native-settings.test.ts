@@ -132,7 +132,7 @@ const defaultStorageStats = {
   logicalBytes: 0,
   oldestCopiedAt: null,
   newestCopiedAt: null,
-  maxRecords: 500,
+  maxRecords: Number.MAX_SAFE_INTEGER,
   maxImageBytes: 268_435_456,
   retentionDays: 30,
 }
@@ -1169,7 +1169,7 @@ describe('native setting reliability', () => {
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith({
       upserts: [],
       deleteIds: [],
-      policy: { maxRecords: 500, maxImageBytes: 268_435_456, retentionDays: 30 },
+      policy: { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 268_435_456, retentionDays: 30 },
     })
     expect(wrapper.get('[data-testid="empty-history"]').text()).toContain('复制任意内容')
     expect(wrapper.find('[data-testid="no-results"]').exists()).toBe(false)
@@ -1224,7 +1224,7 @@ describe('native setting reliability', () => {
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith({
       upserts: [],
       deleteIds: ['expired'],
-      policy: expect.objectContaining({ maxRecords: 500, retentionDays: 7 }),
+      policy: expect.objectContaining({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 7 }),
     })
     wrapper.unmount()
   })
@@ -1283,7 +1283,7 @@ describe('native setting reliability', () => {
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith({
       upserts: [expect.objectContaining({ content: '冷启动期间复制的内容' })],
       deleteIds: [],
-      policy: expect.objectContaining({ maxRecords: 500, retentionDays: 30 }),
+      policy: expect.objectContaining({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 30 }),
     })
   })
 
@@ -1367,6 +1367,57 @@ describe('native setting reliability', () => {
 
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').retentionDays).toBe('forever')
     expect(wrapper.find('[data-testid="retention-change-dialog"]').exists()).toBe(false)
+  })
+
+  it('keeps a legacy policy and its data when the native retention mutation fails, then commits on retry', async () => {
+    localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
+      settingsVersion: 6,
+      onboardingCompleted: true,
+      historyPolicy: { maxRecords: 500, maxImageBytes: 268_435_456, retentionDays: null },
+    }))
+    historyMocks.loadNativeHistory.mockResolvedValueOnce([{
+      id: 'legacy-expired', kind: 'text', title: '旧版保留记录', content: 'keep until commit', sourceApp: 'Notepad',
+      copiedAt: '2020-01-01T00:00:00.000Z', pinned: false, searchTerms: [],
+    }])
+
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[aria-label="打开设置"]').trigger('click')
+    const retention = wrapper.get('[data-testid="retention-select"]')
+    await retention.setValue('7')
+    expect(wrapper.find('[data-testid="retention-change-dialog"]').exists()).toBe(true)
+
+    historyMocks.applyNativeHistoryMutation.mockReset().mockResolvedValueOnce(null)
+    await wrapper.get('[data-testid="confirm-retention-change"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.get('[data-testid="retention-change-error"]').text()).toContain('当前历史未更改')
+    expect((retention.element as HTMLSelectElement).value).toBe('forever')
+    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy)
+      .toMatchObject({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: null })
+    expect(legacyHistory?.some((item) => item.id === 'legacy-expired')).toBe(true)
+
+    historyMocks.applyNativeHistoryMutation.mockImplementationOnce(async () => {
+      legacyHistory = legacyHistory?.filter((item) => item.id !== 'legacy-expired') ?? []
+      return { prunedIds: ['legacy-expired'] }
+    })
+    await wrapper.get('[data-testid="confirm-retention-change"]').trigger('click')
+    await flushPromises()
+
+    expect(historyMocks.applyNativeHistoryMutation).toHaveBeenLastCalledWith({
+      upserts: [],
+      deleteIds: [],
+      policy: {
+        maxRecords: Number.MAX_SAFE_INTEGER,
+        maxImageBytes: 268_435_456,
+        retentionDays: 7,
+      },
+    })
+    expect(wrapper.find('[data-testid="retention-change-dialog"]').exists()).toBe(false)
+    expect(retention.findAll('option').map((option) => option.attributes('value')))
+      .toEqual(['7', '30', '90'])
+    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy)
+      .toMatchObject({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 7 })
   })
 
   it('times out a hung history load and lets the user recover in place', async () => {
@@ -1929,7 +1980,7 @@ describe('native setting reliability', () => {
     expect(historyMocks.applyNativeHistoryMutation.mock.calls[1]?.[0]).toEqual({
       upserts: [expect.objectContaining({ id: 'immediate-pin', pinned: true })],
       deleteIds: [],
-      policy: expect.objectContaining({ maxRecords: 500, retentionDays: 30 }),
+      policy: expect.objectContaining({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 30 }),
     })
     expect(wrapper.find('[data-clip-id="capacity-pruned"]').exists()).toBe(false)
     expect(wrapper.get('[data-testid="manager-pin-immediate-pin"]').attributes('aria-pressed')).toBe('true')
@@ -1997,7 +2048,7 @@ describe('native setting reliability', () => {
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith({
       upserts: [expect.objectContaining({ id: 'clip-1', pinned: true })],
       deleteIds: [],
-      policy: expect.objectContaining({ maxRecords: 500, retentionDays: 30 }),
+      policy: expect.objectContaining({ maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 30 }),
     })
     expect(desktopMocks.exitNativeApp).toHaveBeenCalledOnce()
     expect(desktopMocks.cancelNativeQuit).not.toHaveBeenCalled()
@@ -2697,22 +2748,22 @@ describe('native setting reliability', () => {
     [
       'uses a strictly parsed stored native policy before the first query',
       { maxRecords: 750, maxImageBytes: 134_217_728, retentionDays: 90 },
-      { maxRecords: 750, maxImageBytes: 134_217_728, retentionDays: 90 },
+      { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 134_217_728, retentionDays: 90 },
     ],
     [
       'falls back atomically when the stored native policy has unknown keys',
       { maxRecords: 750, maxImageBytes: 134_217_728, retentionDays: 90, unexpected: true },
-      { maxRecords: 500, maxImageBytes: 268_435_456, retentionDays: 30 },
+      { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 268_435_456, retentionDays: 30 },
     ],
     [
       'round-trips a non-preset native retention policy without coercing it',
       { maxRecords: 640, maxImageBytes: 201_326_592, retentionDays: 45 },
-      { maxRecords: 640, maxImageBytes: 201_326_592, retentionDays: 45 },
+      { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 201_326_592, retentionDays: 45 },
     ],
     [
       'round-trips zero-valued native capacity policy fields',
       { maxRecords: 0, maxImageBytes: 0, retentionDays: 0 },
-      { maxRecords: 0, maxImageBytes: 0, retentionDays: 0 },
+      { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 0, retentionDays: 0 },
     ],
   ])('%s', async (_label, storedPolicy, expectedPolicy) => {
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
@@ -2747,8 +2798,12 @@ describe('native setting reliability', () => {
       await wrapper.get('[data-testid="open-library"]').trigger('click')
       await flushPromises()
       await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
-      expect((wrapper.get('[data-testid="retention-select"]').element as HTMLSelectElement).value).toBe('45')
-      expect(wrapper.get('[data-testid="retention-select"]').text()).toContain('当前自定义 45 天')
+      const retention = wrapper.get('[data-testid="retention-select"]')
+      expect((retention.element as HTMLSelectElement).value).toBe('45')
+      expect(retention.text()).toContain('当前自定义 45 天')
+      expect(retention.find('option[value="45"]').attributes()).toHaveProperty('disabled')
+      expect(retention.findAll('option').map((option) => option.attributes('value')))
+        .toEqual(['45', '7', '30', '90'])
     }
 
     wrapper.unmount()
@@ -2799,7 +2854,7 @@ describe('native setting reliability', () => {
       .toContain('The data folder could not be opened')
   })
 
-  it('lets a custom native retention policy change to forever without keeping the hidden custom value', async () => {
+  it('keeps a custom native period current-only and changes it to a finite preset', async () => {
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
       settingsVersion: 4,
       onboardingCompleted: true,
@@ -2811,12 +2866,21 @@ describe('native setting reliability', () => {
     await flushPromises()
     await wrapper.get('[data-testid="library-section-settings"]').trigger('click')
 
-    await wrapper.get('[data-testid="retention-select"]').setValue('forever')
+    const retention = wrapper.get('[data-testid="retention-select"]')
+    expect(retention.find('option[value="45"]').attributes()).toHaveProperty('disabled')
+    expect(retention.findAll('option').map((option) => option.attributes('value')))
+      .toEqual(['45', '7', '30', '90'])
+
+    await retention.setValue('90')
     await flushPromises()
 
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
-      retentionDays: 'forever',
-      historyPolicy: { maxRecords: 640, maxImageBytes: 201_326_592, retentionDays: null },
+      retentionDays: '90',
+      historyPolicy: {
+        maxRecords: Number.MAX_SAFE_INTEGER,
+        maxImageBytes: 201_326_592,
+        retentionDays: 90,
+      },
     })
   })
 
@@ -2959,10 +3023,18 @@ describe('native setting reliability', () => {
         expect.objectContaining({ content: '恢复期间捕获一' }),
         expect.objectContaining({ content: '恢复期间捕获二' }),
       ]),
-      policy: { maxRecords: 900, maxImageBytes: 536_870_912, retentionDays: 90 },
+      policy: {
+        maxRecords: Number.MAX_SAFE_INTEGER,
+        maxImageBytes: 536_870_912,
+        retentionDays: 90,
+      },
     }))
     const stored = JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')
-    expect(stored.historyPolicy).toEqual({ maxRecords: 900, maxImageBytes: 536_870_912, retentionDays: 90 })
+    expect(stored.historyPolicy).toEqual({
+      maxRecords: Number.MAX_SAFE_INTEGER,
+      maxImageBytes: 536_870_912,
+      retentionDays: 90,
+    })
     expect(wrapper.text()).not.toContain('过期查询结果')
     expect(historyMocks.getNativeHistoryHealth).toHaveBeenCalled()
     expect(historyMocks.getNativeStorageStats).toHaveBeenCalled()
@@ -3032,10 +3104,10 @@ describe('native setting reliability', () => {
     await flushPromises()
     expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith(expect.objectContaining({
       upserts: [expect.objectContaining({ content: '失败期间捕获' })],
-      policy: { maxRecords: 500, maxImageBytes: 268_435_456, retentionDays: 30 },
+      policy: { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 268_435_456, retentionDays: 30 },
     }))
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}').historyPolicy).toEqual({
-      maxRecords: 500, maxImageBytes: 268_435_456, retentionDays: 30,
+      maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 268_435_456, retentionDays: 30,
     })
     expect(wrapper.find('[data-testid="storage-restore-confirmation"]').exists()).toBe(false)
 
@@ -3400,7 +3472,7 @@ describe('native setting reliability', () => {
     await flushPromises()
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await flushPromises()
-    await vi.waitFor(() => expect(historyMocks.queryNativeHistory).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(historyMocks.queryNativeHistory).toHaveBeenCalled())
     await flushPromises()
 
     const order: string[] = []

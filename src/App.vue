@@ -34,6 +34,7 @@ import {
   type ClipboardItem,
   type ClipKind,
   type ClipKindFilter,
+  type FiniteRetentionPeriod,
   type LoadedClipboardItem,
   type RemovedClip,
   type RetentionPeriod,
@@ -48,6 +49,7 @@ import { inferCodeLanguage } from './domain/codeLanguage'
 import {
   DEFAULT_HISTORY_POLICY,
   SETTINGS_SCHEMA_VERSION,
+  UNLIMITED_HISTORY_RECORDS,
   defaultStoredSettings,
   parseStoredSettingsJson,
   retentionPeriodForPolicy,
@@ -164,8 +166,13 @@ interface ClipContextMenuState {
 }
 
 interface PendingRetentionChange {
-  value: RetentionPeriod
+  value: FiniteRetentionPeriod
   removedCount: number
+}
+
+interface SerializedManagerOperationOptions {
+  policy?: CapacityPolicy
+  retention?: RetentionPeriod
 }
 
 interface CollectionEditorState {
@@ -297,6 +304,8 @@ const excludedApps = ref([...storedSettings.excludedApps])
 const sensitiveAppsOpen = ref(false)
 const clearHistoryOpen = ref(false)
 const pendingRetentionChange = ref<PendingRetentionChange | null>(null)
+const retentionChangeInFlight = ref(false)
+const retentionChangeError = ref('')
 const sensitiveAppDraft = ref('')
 const globalShortcut = ref(storedSettings.globalShortcut)
 const globalShortcutAvailable = ref(!nativeRuntime)
@@ -1110,6 +1119,7 @@ async function replayDeferredManagerCaptures(): Promise<void> {
 async function runSerializedManagerOperation<T>(
   mutate: () => Promise<T | null>,
   oldVisualIndex = Math.max(0, libraryItems.value.findIndex((clip) => clip.id === managerSelectedId.value)),
+  options: SerializedManagerOperationOptions = {},
 ) {
   if (!nativeRuntime || managerOperationBusy.value || historyState.value !== 'ready') {
     return { status: 'failed' as const }
@@ -1132,12 +1142,12 @@ async function runSerializedManagerOperation<T>(
         if (!refreshedPage) return null
         const latest = currentNativeQueryDescriptor()
         if (!latest || historyQueryKey(latest.query) !== refreshedQueryKey) return null
-        return { items: refreshedPage.items, policy: currentHistoryPolicy() }
+        return { items: refreshedPage.items, policy: options.policy ?? currentHistoryPolicy() }
       },
       commit: (snapshot) => {
         if (!refreshedPage) return
         pendingNativeUpserts.clear()
-        const nextItems = pruneExpiredClips(snapshot.items, retentionDays.value)
+        const nextItems = pruneExpiredClips(snapshot.items, options.retention ?? retentionDays.value)
         suppressedNativeHistoryItems = nextItems
         items.value = nextItems
         commitNativeHistoryPageState(refreshedPage, refreshedQueryKey)
@@ -1487,7 +1497,7 @@ async function reloadHistoryAfterRestore(): Promise<boolean> {
 
 async function adoptRestoredHistoryPolicy(policy: CapacityPolicy): Promise<void> {
   suppressRetentionPolicySync = true
-  historyMaxRecords.value = policy.maxRecords
+  historyMaxRecords.value = UNLIMITED_HISTORY_RECORDS
   historyMaxImageBytes.value = policy.maxImageBytes
   historyRetentionDays.value = policy.retentionDays
   retentionDays.value = retentionPeriodForPolicy(policy)
@@ -1871,56 +1881,108 @@ function closeClearHistory() {
   restoreFocus(clearHistoryTrigger.value)
 }
 
-function retentionPeriodLabel(value: RetentionPeriod): string {
-  return value === 'forever' ? t('forever') : t('daysOption', { count: value })
+function isFiniteRetentionPeriod(value: string): value is FiniteRetentionPeriod {
+  return value === '7' || value === '30' || value === '90'
 }
 
-function applyRetentionPeriod(value: RetentionPeriod) {
+function retentionPeriodLabel(value: FiniteRetentionPeriod): string {
+  return t('daysOption', { count: value })
+}
+
+function applyRetentionPeriod(value: FiniteRetentionPeriod) {
   const controlChanged = retentionDays.value !== value
-  historyRetentionDays.value = value === 'forever' ? null : Number(value)
+  historyRetentionDays.value = Number(value)
   retentionDays.value = value
   if (!controlChanged && nativeRuntime && historyState.value === 'ready') {
     historyPersistence.schedule(items.value, nativePersistenceTarget(items.value), currentHistoryPolicy())
   }
 }
 
-function requestRetentionChange(event: Event) {
+async function commitRetentionPeriod(value: FiniteRetentionPeriod): Promise<boolean> {
+  if (!nativeRuntime) {
+    applyRetentionPeriod(value)
+    items.value = pruneExpiredClips(items.value, value)
+    return true
+  }
+
+  const nextPolicy: CapacityPolicy = {
+    ...currentHistoryPolicy(),
+    maxRecords: UNLIMITED_HISTORY_RECORDS,
+    retentionDays: Number(value),
+  }
+  const result = await runSerializedManagerOperation(
+    () => applyNativeHistoryMutation({ upserts: [], deleteIds: [], policy: nextPolicy }),
+    Math.max(0, libraryItems.value.findIndex((clip) => clip.id === managerSelectedId.value)),
+    { policy: nextPolicy, retention: value },
+  )
+  if (result.status === 'failed') return false
+
+  applyRetentionPeriod(value)
+  handleCapacityPruned(result.value.prunedIds)
+  items.value = pruneExpiredClips(items.value, value)
+  return true
+}
+
+async function requestRetentionChange(event: Event) {
   const select = event.target as HTMLSelectElement
   retentionSelect.value = select
-  if (historyState.value !== 'ready') {
+  if (historyState.value !== 'ready' || retentionChangeInFlight.value) {
     select.value = retentionSelectValue.value
     return
   }
-  const value = select.value as RetentionPeriod
-  if (!['7', '30', '90', 'forever'].includes(value)) return
-  const numericValue = value === 'forever' ? null : Number(value)
+  const value = select.value
+  if (!isFiniteRetentionPeriod(value)) {
+    select.value = retentionSelectValue.value
+    return
+  }
+  const numericValue = Number(value)
   if (numericValue === historyRetentionDays.value) return
 
   const nextItems = pruneExpiredClips(items.value, value)
   const removedCount = items.value.length - nextItems.length
   if (removedCount === 0) {
-    applyRetentionPeriod(value)
-    items.value = nextItems
-    showToast(t('retentionUpdated', { period: retentionPeriodLabel(value) }))
+    retentionChangeInFlight.value = true
+    const committed = await commitRetentionPeriod(value)
+    retentionChangeInFlight.value = false
+    if (committed) {
+      showToast(t('retentionUpdated', { period: retentionPeriodLabel(value) }))
+    } else {
+      select.value = retentionSelectValue.value
+      showToast(t('retentionChangeFailed'), true)
+      restoreFocus(select)
+    }
     return
   }
 
+  retentionChangeError.value = ''
   pendingRetentionChange.value = { value, removedCount }
   nextTick(() => document.querySelector<HTMLElement>('[data-testid="cancel-retention-change"]')?.focus())
 }
 
 function closeRetentionChange() {
+  if (retentionChangeInFlight.value) return
   pendingRetentionChange.value = null
+  retentionChangeError.value = ''
   if (retentionSelect.value) retentionSelect.value.value = retentionSelectValue.value
   restoreFocus(retentionSelect.value)
 }
 
-function confirmRetentionChange() {
+async function confirmRetentionChange() {
   const pending = pendingRetentionChange.value
-  if (!pending) return
-  applyRetentionPeriod(pending.value)
-  items.value = pruneExpiredClips(items.value, pending.value)
+  if (!pending || retentionChangeInFlight.value) return
+  retentionChangeInFlight.value = true
+  retentionChangeError.value = ''
+  const committed = await commitRetentionPeriod(pending.value)
+  retentionChangeInFlight.value = false
+  if (!committed) {
+    retentionChangeError.value = t('retentionChangeFailed')
+    if (retentionSelect.value) retentionSelect.value.value = retentionSelectValue.value
+    nextTick(() => document.querySelector<HTMLElement>('[data-testid="confirm-retention-change"]')?.focus())
+    return
+  }
+
   pendingRetentionChange.value = null
+  retentionChangeError.value = ''
   if (!items.value.some((clip) => clip.id === selectedId.value)) {
     selectedId.value = items.value[0]?.id ?? ''
   }
@@ -3354,6 +3416,7 @@ onBeforeUnmount(() => {
             :history-state="historyState"
             :retention-select-value="retentionSelectValue"
             :custom-retention-days="customRetentionDays"
+            :retention-change-in-flight="retentionChangeInFlight"
             :excluded-apps-count="excludedApps.length"
             :storage-stats="storageStats"
             :history-health="historyHealth"
@@ -3518,6 +3581,9 @@ onBeforeUnmount(() => {
         :confirm-label="t('confirmRetentionChange')"
         cancel-test-id="cancel-retention-change"
         confirm-test-id="confirm-retention-change"
+        :busy="retentionChangeInFlight"
+        :error-message="retentionChangeError"
+        error-test-id="retention-change-error"
         @cancel="closeRetentionChange"
         @confirm="confirmRetentionChange"
         @keydown="trapModalFocus"

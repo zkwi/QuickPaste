@@ -232,7 +232,7 @@ describe('QuickPaste quick panel', () => {
 
     expect((wrapper.get('[data-testid="capture-protection-toggle"]').element as HTMLInputElement).checked).toBe(false)
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
-      settingsVersion: 6,
+      settingsVersion: 7,
       hideDuringSharing: false,
       retentionDays: '90',
     })
@@ -512,11 +512,16 @@ describe('QuickPaste quick panel', () => {
     wrapper.unmount()
   })
 
-  it('describes unlimited retention and source-app exclusions without overpromising', async () => {
+  it('offers only finite retention choices and explains protected history', async () => {
     const wrapper = mount(App)
 
     await wrapper.get('[aria-label="打开设置"]').trigger('click')
-    expect(wrapper.get('[data-testid="library-view"]').text()).toContain('不过期（仍保留最近 500 条未固定记录）')
+    const retention = wrapper.get('[data-testid="retention-select"]')
+    expect(retention.findAll('option').map((option) => option.attributes('value')))
+      .toEqual(['7', '30', '90'])
+    expect(wrapper.get('#retention-description').text())
+      .toBe('普通历史按所选期限清理；固定内容和永久片段不会自动删除。')
+    expect(wrapper.get('[data-testid="library-view"]').text()).not.toContain('500')
     await wrapper.get('[data-testid="open-sensitive-apps"]').trigger('click')
     expect(wrapper.get('[data-testid="sensitive-apps-dialog"]').text()).toContain('尽量忽略指定前台应用')
     expect(wrapper.get('[data-testid="sensitive-apps-dialog"]').text()).toContain('可能存在短暂误判')
@@ -631,32 +636,52 @@ describe('QuickPaste quick panel', () => {
     localStorage.setItem('mypaste-demo-items-v1', JSON.stringify([
       {
         id: 'old-unpinned', kind: 'text', title: '旧的普通记录', content: 'remove after confirmation', sourceApp: 'QA',
-        copiedAt: '2020-01-01T00:00:00.000Z', pinned: false, searchTerms: [], color: '#337C74',
+        copiedAt: '2020-01-01T00:00:00.000Z', pinned: false, searchTerms: [], color: '#337C74', formats: ['text'],
       },
       {
         id: 'old-pinned', kind: 'text', title: '旧的固定记录', content: 'must remain', sourceApp: 'QA',
-        copiedAt: '2020-01-01T00:00:00.000Z', pinned: true, searchTerms: [], color: '#337C74',
+        copiedAt: '2020-01-01T00:00:00.000Z', pinned: true, searchTerms: [], color: '#337C74', formats: ['text'],
+      },
+      {
+        id: 'old-permanent', kind: 'text', title: '旧的永久片段', content: 'must remain', sourceApp: 'QA',
+        copiedAt: '2020-01-01T00:00:00.000Z', pinned: false, permanent: true, searchTerms: [], formats: ['text'],
       },
       {
         id: 'recent', kind: 'text', title: '最近记录', content: 'keep', sourceApp: 'QA',
-        copiedAt: new Date().toISOString(), pinned: false, searchTerms: [], color: '#337C74',
+        copiedAt: new Date().toISOString(), pinned: false, searchTerms: [], color: '#337C74', formats: ['text'],
       },
     ]))
-    const wrapper = mount(App)
+    const wrapper = mount(App, { attachTo: document.body })
 
     await wrapper.get('[aria-label="打开设置"]').trigger('click')
-    await wrapper.get('[data-testid="retention-select"]').setValue('7')
+    const retention = wrapper.get('[data-testid="retention-select"]')
+    expect(retention.findAll('option').map((option) => option.attributes('value')))
+      .toEqual(['forever', '7', '30', '90'])
+    expect(retention.find('option[value="forever"]').attributes()).toHaveProperty('disabled')
+    expect(retention.text()).toContain('旧版永不过期，请选择保留期限')
+    ;(retention.element as HTMLElement).focus()
+    await retention.setValue('7')
     expect(wrapper.get('[data-testid="retention-change-dialog"]').text()).toContain('1')
 
     await wrapper.get('[data-testid="cancel-retention-change"]').trigger('click')
-    expect((wrapper.get('[data-testid="retention-select"]').element as HTMLSelectElement).value).toBe('forever')
+    expect((retention.element as HTMLSelectElement).value).toBe('forever')
+    expect(document.activeElement).toBe(retention.element)
 
-    await wrapper.get('[data-testid="retention-select"]').setValue('7')
+    await retention.setValue('7')
     await wrapper.get('[data-testid="confirm-retention-change"]').trigger('click')
+    expect(document.activeElement).toBe(retention.element)
+    expect(retention.findAll('option').map((option) => option.attributes('value')))
+      .toEqual(['7', '30', '90'])
+    expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
+      retentionDays: '7',
+      historyPolicy: { maxRecords: Number.MAX_SAFE_INTEGER, retentionDays: 7 },
+    })
     await wrapper.get('[data-testid="library-section-all"]').trigger('click')
     expect(wrapper.text()).not.toContain('旧的普通记录')
     expect(wrapper.text()).toContain('旧的固定记录')
+    expect(wrapper.text()).toContain('旧的永久片段')
     expect(wrapper.text()).toContain('最近记录')
+    wrapper.unmount()
   })
 
   it('clears unpinned history only after an explicit confirmation', async () => {

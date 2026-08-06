@@ -29,6 +29,7 @@ import {
   type Collection,
   type SnippetDraft,
 } from '../domain/collections'
+import { UNLIMITED_HISTORY_RECORDS } from '../domain/settings'
 import { isTauriRuntime } from './desktop'
 
 export type HistoryInvoke = (command: string, args: Record<string, unknown>) => Promise<unknown>
@@ -191,7 +192,7 @@ function isSafeUnsignedInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) >= 0
 }
 
-const CURRENT_HISTORY_SCHEMA_VERSION = 12
+const CURRENT_HISTORY_SCHEMA_VERSION = 13
 
 function parseCapacityPolicy(value: unknown): CapacityPolicy | null {
   if (!isRecord(value)
@@ -200,7 +201,7 @@ function parseCapacityPolicy(value: unknown): CapacityPolicy | null {
     || !isSafeUnsignedInteger(value.maxImageBytes)
     || value.retentionDays !== null && !isSafeUnsignedInteger(value.retentionDays)) return null
   return {
-    maxRecords: value.maxRecords,
+    maxRecords: UNLIMITED_HISTORY_RECORDS,
     maxImageBytes: value.maxImageBytes,
     retentionDays: value.retentionDays as number | null,
   }
@@ -245,7 +246,10 @@ function parseStorageStats(value: unknown): StorageStats | null {
   } else if (value.oldestCopiedAt !== null || value.newestCopiedAt !== null) {
     return null
   }
-  return { ...(value as unknown as StorageStats) }
+  return {
+    ...(value as unknown as StorageStats),
+    maxRecords: UNLIMITED_HISTORY_RECORDS,
+  }
 }
 
 function isOpaqueRestoreToken(value: unknown): value is string {
@@ -596,9 +600,14 @@ export async function applyNativeHistoryMutation(
   invokeAdapter?: HistoryInvoke,
 ): Promise<HistoryMutationResult | null> {
   if (!invokeAdapter && !isTauriRuntime()) return null
+  const policy = parseCapacityPolicy(mutation.policy)
+  if (!policy) return null
 
   try {
-    const result = await (invokeAdapter ?? invokeThroughTauri)('apply_history_mutation', { ...mutation })
+    const result = await (invokeAdapter ?? invokeThroughTauri)('apply_history_mutation', {
+      ...mutation,
+      policy,
+    })
     if (!isRecord(result) || !hasExactKeys(result, ['prunedIds'])) return null
     const prunedIds = result.prunedIds
     if (!Array.isArray(prunedIds)) return null
@@ -877,7 +886,11 @@ export function createIncrementalHistoryPersistence(
 ): IncrementalHistoryPersistence {
   const delayMs = options.delayMs ?? 180
   let confirmedItems: ClipboardItem[] = []
-  let confirmedPolicy: CapacityPolicy = { maxRecords: 500, maxImageBytes: 256 * 1024 * 1024, retentionDays: 30 }
+  let confirmedPolicy: CapacityPolicy = {
+    maxRecords: UNLIMITED_HISTORY_RECORDS,
+    maxImageBytes: 256 * 1024 * 1024,
+    retentionDays: 30,
+  }
   let targetItems: ClipboardItem[] = []
   let targetPolicy = clonePolicy(confirmedPolicy)
   let dirty = false

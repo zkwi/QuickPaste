@@ -17,6 +17,7 @@ export interface ClipboardFile {
 }
 export type ClipKindFilter = 'all' | 'pinned' | ClipKind
 export type RetentionPeriod = '7' | '30' | '90' | 'forever'
+export type FiniteRetentionPeriod = Exclude<RetentionPeriod, 'forever'>
 
 export interface ClipboardItemBase {
   id: string
