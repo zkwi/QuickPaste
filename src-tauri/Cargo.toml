@@ -37,7 +37,7 @@ rqrr = "0.10.1"
 semver = "1.0"
 sha2 = "0.10"
 url = "2.5"
-unicode-normalization = "=0.1.24"
+unicode-normalization = "=0.1.25"
 
 [dev-dependencies]
 qrcode = "0.14.1"
