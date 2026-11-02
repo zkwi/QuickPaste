@@ -2,9 +2,13 @@ import { enableAutoUnmount, mount } from '@vue/test-utils'
 import App from './App.vue'
 
 enableAutoUnmount(afterEach)
+afterEach(() => vi.useRealTimers())
 
 describe('QuickPaste quick panel', () => {
   beforeEach(() => {
+    // 固定样本日期，避免历史样本随真实日历过期而使交互测试失效。
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-07-24T04:00:00.000Z'))
     localStorage.clear()
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
   })

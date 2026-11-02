@@ -162,6 +162,8 @@ describe('native setting reliability', () => {
   })
 
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-07-24T04:00:00.000Z'))
     localStorage.clear()
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
     vi.clearAllMocks()

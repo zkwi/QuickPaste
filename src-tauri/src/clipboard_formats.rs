@@ -438,6 +438,7 @@ fn ignored_package_after_guard<G>(
             sequence: after,
         }
     } else {
+        crate::diagnostics::clipboard_failure("sequence-changed");
         PackageReadOutcome::Retryable
     }
 }
@@ -530,6 +531,7 @@ pub(crate) fn classify_package_read(
     result: Result<FormatPackage, String>,
 ) -> PackageReadOutcome {
     if before != after {
+        crate::diagnostics::clipboard_failure("sequence-changed");
         return PackageReadOutcome::Retryable;
     }
     match result {
@@ -541,7 +543,10 @@ pub(crate) fn classify_package_read(
             package,
             sequence: after,
         },
-        Err(_) => PackageReadOutcome::Retryable,
+        Err(_) => {
+            crate::diagnostics::clipboard_failure("required-format-read");
+            PackageReadOutcome::Retryable
+        }
     }
 }
 
@@ -947,7 +952,10 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
     let before = clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()));
     let guard = match clipboard_win::Clipboard::new() {
         Ok(guard) => guard,
-        Err(_) => return PackageReadOutcome::Retryable,
+        Err(_) => {
+            crate::diagnostics::clipboard_failure("clipboard-open");
+            return PackageReadOutcome::Retryable;
+        }
     };
     let quickpaste_internal_write = history_controls.is_quickpaste_internal_write();
     if !quickpaste_internal_write && history_controls.excludes_history() {

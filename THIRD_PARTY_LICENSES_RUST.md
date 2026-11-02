@@ -181,9 +181,9 @@ npm run licenses:rust
 | [rusqlite](https://github.com/rusqlite/rusqlite) | 0.37.0 | `MIT` |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.3 | `Apache-2.0 OR MIT` |
 | [rustc_version](https://github.com/djc/rustc-version-rs) | 0.4.1 | `MIT OR Apache-2.0` |
-| [rustls](https://github.com/rustls/rustls) | 0.23.42 | `Apache-2.0 OR ISC OR MIT` |
+| [rustls](https://github.com/rustls/rustls) | 0.23.46 | `Apache-2.0 OR ISC OR MIT` |
 | [rustls-pki-types](https://github.com/rustls/pki-types) | 1.15.0 | `MIT OR Apache-2.0` |
-| [rustls-webpki](https://github.com/rustls/webpki) | 0.103.13 | `ISC` |
+| [rustls-webpki](https://github.com/rustls/webpki) | 0.103.16 | `ISC` |
 | [ryu](https://github.com/dtolnay/ryu) | 1.0.23 | `Apache-2.0 OR BSL-1.0` |
 | [same-file](https://github.com/BurntSushi/same-file) | 1.0.6 | `Unlicense OR MIT` |
 | [schemars](https://github.com/GREsau/schemars) | 0.8.22 | `MIT` |
@@ -286,7 +286,7 @@ npm run licenses:rust
 | [walkdir](https://github.com/BurntSushi/walkdir) | 2.5.0 | `Unlicense OR MIT` |
 | [want](https://github.com/seanmonstar/want) | 0.3.1 | `MIT` |
 | [web_atoms](https://github.com/servo/html5ever) | 0.2.5 | `MIT OR Apache-2.0` |
-| [webpki-roots](https://github.com/rustls/webpki-roots) | 1.0.9 | `CDLA-Permissive-2.0` |
+| [webpki-roots](https://github.com/rustls/webpki-roots) | 1.0.10 | `CDLA-Permissive-2.0` |
 | [webview2-com](https://github.com/wravery/webview2-rs) | 0.38.2 | `MIT` |
 | [webview2-com-macros](https://github.com/wravery/webview2-rs) | 0.8.1 | `MIT` |
 | [webview2-com-sys](https://github.com/wravery/webview2-rs) | 0.38.2 | `MIT` |
@@ -328,6 +328,8 @@ npm run licenses:rust
 | [zerovec](https://github.com/unicode-org/icu4x) | 0.11.6 | `Unicode-3.0` |
 | [zerovec-derive](https://github.com/unicode-org/icu4x) | 0.11.3 | `Unicode-3.0` |
 | [zmij](https://github.com/dtolnay/zmij) | 1.0.23 | `MIT` |
+| [zune-core](https://github.com/etemesi254/zune-image) | 0.5.1 | `MIT OR Apache-2.0 OR Zlib` |
+| [zune-jpeg](https://github.com/etemesi254/zune-image/tree/dev/crates/zune-jpeg) | 0.5.15 | `MIT OR Apache-2.0 OR Zlib` |
 
 ## 许可证原文
 
@@ -1617,7 +1619,7 @@ OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 </details>
 
 <details>
-<summary>Apache License 2.0（serialize-to-javascript-impl 0.1.2、serialize-to-javascript 0.1.2）</summary>
+<summary>Apache License 2.0（serialize-to-javascript-impl 0.1.2、serialize-to-javascript 0.1.2、zune-core 0.5.1、zune-jpeg 0.5.15）</summary>
 
 <pre>
                                  Apache License
@@ -4558,7 +4560,7 @@ limitations under the License.
 </details>
 
 <details>
-<summary>Apache License 2.0（atomic-waker 1.1.2、autocfg 1.5.1、base64 0.22.1、bitflags 1.3.2、bitflags 2.13.1、camino 1.2.4、cc 1.2.67、cfg-if 1.0.4、crossbeam-channel 0.5.16、crossbeam-utils 0.8.22、displaydoc 0.2.6、equivalent 1.0.2、fastrand 2.4.1、find-msvc-tools 0.1.9、flate2 1.1.9、fnv 1.0.7、form_urlencoded 1.2.2、glob 0.3.3、global-hotkey 0.8.0、hashbrown 0.12.3、hashbrown 0.15.5、hashbrown 0.16.1、hashbrown 0.17.1、heck 0.5.0、html5ever 0.38.0、httparse 1.10.1、hyper-rustls 0.27.9、idna 1.1.0、idna_adapter 1.2.2、indexmap 1.9.3、indexmap 2.14.0、lock_api 0.4.14、log 0.4.33、markup5ever 0.38.0、mime 0.3.17、muda 0.19.3、num-traits 0.2.19、once_cell 1.21.4、parking_lot 0.12.5、parking_lot_core 0.9.12、percent-encoding 2.3.2、pkg-config 0.3.33、png 0.17.16、png 0.18.1、regex-automata 0.4.16、regex-syntax 0.8.11、regex 1.13.1、ring 0.17.14、rustc_version 0.4.1、rustls 0.23.42、scopeguard 1.2.0、serde_with 3.21.0、serde_with_macros 3.21.0、servo_arc 0.4.3、smallvec 1.15.2、socket2 0.6.5、stable_deref_trait 1.2.1、string_cache 0.9.0、string_cache_codegen 0.6.1、tendril 0.5.1、tray-icon 0.24.1、unicode-normalization 0.1.24、unicode-segmentation 1.13.3、url 2.5.8、uuid 1.24.0、version_check 0.9.5、web_atoms 0.2.5、window-vibrancy 0.6.0、wry 0.55.1）</summary>
+<summary>Apache License 2.0（atomic-waker 1.1.2、autocfg 1.5.1、base64 0.22.1、bitflags 1.3.2、bitflags 2.13.1、camino 1.2.4、cc 1.2.67、cfg-if 1.0.4、crossbeam-channel 0.5.16、crossbeam-utils 0.8.22、displaydoc 0.2.6、equivalent 1.0.2、fastrand 2.4.1、find-msvc-tools 0.1.9、flate2 1.1.9、fnv 1.0.7、form_urlencoded 1.2.2、glob 0.3.3、global-hotkey 0.8.0、hashbrown 0.12.3、hashbrown 0.15.5、hashbrown 0.16.1、hashbrown 0.17.1、heck 0.5.0、html5ever 0.38.0、httparse 1.10.1、hyper-rustls 0.27.9、idna 1.1.0、idna_adapter 1.2.2、indexmap 1.9.3、indexmap 2.14.0、lock_api 0.4.14、log 0.4.33、markup5ever 0.38.0、mime 0.3.17、muda 0.19.3、num-traits 0.2.19、once_cell 1.21.4、parking_lot 0.12.5、parking_lot_core 0.9.12、percent-encoding 2.3.2、pkg-config 0.3.33、png 0.17.16、png 0.18.1、regex-automata 0.4.16、regex-syntax 0.8.11、regex 1.13.1、ring 0.17.14、rustc_version 0.4.1、rustls 0.23.46、scopeguard 1.2.0、serde_with 3.21.0、serde_with_macros 3.21.0、servo_arc 0.4.3、smallvec 1.15.2、socket2 0.6.5、stable_deref_trait 1.2.1、string_cache 0.9.0、string_cache_codegen 0.6.1、tendril 0.5.1、tray-icon 0.24.1、unicode-normalization 0.1.24、unicode-segmentation 1.13.3、url 2.5.8、uuid 1.24.0、version_check 0.9.5、web_atoms 0.2.5、window-vibrancy 0.6.0、wry 0.55.1）</summary>
 
 <pre>
                               Apache License
@@ -7402,7 +7404,7 @@ THE SOFTWARE IS PROVIDED &quot;AS IS&quot;, WITHOUT WARRANTY OF ANY KIND, EXPRES
 </details>
 
 <details>
-<summary>Community Data License Agreement Permissive 2.0（webpki-roots 1.0.9）</summary>
+<summary>Community Data License Agreement Permissive 2.0（webpki-roots 1.0.10）</summary>
 
 <pre>
 # Community Data License Agreement - Permissive - Version 2.0
@@ -7516,7 +7518,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 </details>
 
 <details>
-<summary>ISC License（rustls-webpki 0.103.13）</summary>
+<summary>ISC License（rustls-webpki 0.103.16）</summary>
 
 <pre>
 Except as otherwise noted, this project is licensed under the following

@@ -75,6 +75,9 @@ describe('quick panel high-frequency interaction', () => {
   let wrapper: VueWrapper
 
   beforeEach(() => {
+    // 样本固定在 7 月；只模拟 Date，保留真实事件与定时器行为。
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-07-24T04:00:00.000Z'))
     localStorage.clear()
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
     vi.clearAllMocks()

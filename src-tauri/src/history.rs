@@ -6933,7 +6933,11 @@ mod tests {
         apply_history_mutation(
             &mut database,
             mutation(
-                vec![text_item(id, "2026-07-01T00:00:00.000Z")],
+                // 恢复测试关注完整性，样本应保持在其 45 天保留期限内。
+                vec![text_item(
+                    id,
+                    &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                )],
                 CapacityPolicy {
                     max_records: 777,
                     max_image_bytes: 98_765,
@@ -10633,6 +10637,7 @@ mod tests {
 
     #[test]
     fn backup_round_trip_preserves_every_history_payload_and_search_projection() {
+        let recent = Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         let directory = temporary_history_directory("backup-round-trip");
         let live_path = directory.join("history.sqlite3");
         let backup_path = directory.join("round-trip.sqlite3");
@@ -10647,7 +10652,7 @@ mod tests {
         )
         .expect("seed backed-up collection");
 
-        let mut rich = text_item("rich-backup", "2026-07-03T00:00:00.000Z");
+        let mut rich = text_item("rich-backup", &recent);
         rich.title = "火箭计划".into();
         rich.content = "Rich plain text".into();
         rich.source_app = "Word".into();
@@ -10658,13 +10663,13 @@ mod tests {
         rich.omitted_formats = vec![ClipboardFormat::Image, ClipboardFormat::Files];
         rich.search_terms = vec!["huojian".into(), "hj".into()];
         rich.collection_id = Some("work".into());
-        let mut snippet = text_item("snippet-backup", "2026-07-04T00:00:00.000Z");
+        let mut snippet = text_item("snippet-backup", &recent);
         snippet.title = "永久片段".into();
         snippet.content = "Reusable plain text".into();
         snippet.collection_id = Some("work".into());
         snippet.permanent = true;
 
-        let mut file = text_item("file-backup", "2026-07-02T00:00:00.000Z");
+        let mut file = text_item("file-backup", &recent);
         file.kind = "file".into();
         file.title = "季度文件".into();
         file.formats = vec!["files".into()];
@@ -10680,7 +10685,7 @@ mod tests {
         }];
 
         let image_png = rgba_png_bytes([45, 90, 135, 255]);
-        let mut image = image_item("image-backup", "2026-07-01T00:00:00.000Z", &image_png);
+        let mut image = image_item("image-backup", &recent, &image_png);
         image.image_hash = Some("b".repeat(64));
         image.ocr_text = Some("OCR searchable receipt".into());
         image.ocr_status = Some("completed".into());
@@ -11306,7 +11311,7 @@ mod tests {
             mutation(
                 vec![image_item(
                     "restored-thumbnail",
-                    "2026-07-02T00:00:00.000Z",
+                    &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                     &image_png,
                 )],
                 CapacityPolicy {

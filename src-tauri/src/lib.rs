@@ -1,5 +1,7 @@
 mod clipboard_formats;
+mod diagnostics;
 mod history;
+mod image_capture;
 mod metrics;
 mod ocr;
 mod qr;
@@ -1445,6 +1447,7 @@ fn complete_windows_image_fallback(
     after_image: Option<u64>,
 ) -> ClipboardReadAttempt<ClipboardSnapshot> {
     if after_image != image_before {
+        diagnostics::clipboard_failure("sequence-changed");
         return ClipboardReadAttempt::Retryable;
     }
     match image {
@@ -1545,7 +1548,10 @@ fn read_clipboard_snapshot(clipboard: &mut Clipboard) -> ClipboardReadAttempt<Cl
             package: clipboard_formats::FormatPackage::default(),
             sequence: None,
         },
-        Err(error) if clipboard_error_is_retryable(&error) => ClipboardReadAttempt::Retryable,
+        Err(error) if clipboard_error_is_retryable(&error) => {
+            diagnostics::clipboard_failure("image-read");
+            ClipboardReadAttempt::Retryable
+        }
         Err(_) => ClipboardReadAttempt::Ignored {
             package: clipboard_formats::FormatPackage::default(),
             sequence: None,
@@ -3620,6 +3626,7 @@ fn start_clipboard_monitor(
         let mut exhausted_sequence = None;
         let mut exhausted_retry_at = None;
         let mut last_signature = None;
+        let mut warning_throttle = diagnostics::WarningThrottle::default();
 
         loop {
             let sequence = clipboard_sequence();
@@ -3705,6 +3712,12 @@ fn start_clipboard_monitor(
                                 let _ = metrics.record_capture_terminal(outcome);
                             } else {
                                 capture_enabled = true;
+                                let snapshot = image_capture::promote_file_image(
+                                    snapshot,
+                                    source_app
+                                        .as_ref()
+                                        .map_or("", |source| source.name.as_str()),
+                                );
                                 if let Some(payload) = snapshot_payload(snapshot, source_app) {
                                     match app.emit(CLIPBOARD_EVENT, payload) {
                                         Ok(()) => event_delivered = true,
@@ -3745,7 +3758,9 @@ fn start_clipboard_monitor(
                     exhausted_sequence = exhausted_clipboard_sequence(sequence);
                     exhausted_retry_at = exhausted_sequence
                         .map(|_| Instant::now() + CLIPBOARD_EXHAUSTED_RETRY_DELAY);
-                    log::warn!("系统剪贴板持续被占用，将在短暂退避后重试当前变更");
+                    if warning_throttle.should_log(Instant::now()) {
+                        log::warn!("剪贴板读取重试耗尽: reason={}; 将短暂退避后重试（重复日志每分钟最多一次）", diagnostics::last_clipboard_failure());
+                    }
                 }
             }
 
@@ -4037,6 +4052,7 @@ pub(crate) fn request_app_quit(app: &AppHandle) {
     thread::spawn(move || {
         thread::sleep(QUIT_FALLBACK_TIMEOUT);
         if take_pending_quit(&fallback_requested, request_id) {
+            log::info!("QuickPaste exit: reason=quit-timeout; code=0");
             flush_acceptance_metrics(&fallback_app);
             fallback_app.exit(0);
         }
@@ -4045,6 +4061,7 @@ pub(crate) fn request_app_quit(app: &AppHandle) {
 
 #[tauri::command]
 fn exit_app(app: AppHandle) {
+    log::info!("QuickPaste exit: reason=user; code=0");
     flush_acceptance_metrics(&app);
     app.exit(0);
 }
@@ -5164,6 +5181,7 @@ pub fn run() {
                         .max_file_size(256_000)
                         .build(),
                 )?;
+                diagnostics::install();
             }
             let executable_path = std::env::current_exe()?;
             let history_data_directory =
@@ -5259,6 +5277,7 @@ pub fn run() {
             if !start_hidden {
                 show_quick_panel(app.handle(), None, None, false, None);
             }
+            log::info!("QuickPaste ready");
             Ok(())
         })
         .on_window_event(|window, event| {

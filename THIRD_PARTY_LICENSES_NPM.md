@@ -2,45 +2,45 @@
 
 本文件由 `node scripts/generate-npm-notices.mjs` 根据 `package-lock.json` 和已安装的 production dependency closure 生成。开发依赖不会进入 Vite/Tauri 运行时包，因此不在表内。
 
-锁文件 SHA-256：`E79317974F96B405A35BBBF66B79125C6652122C830DAD041B3A69183693FC72`。
+锁文件 SHA-256：`B8C8792B97B6DD39B42ACA9DC9D3CC5DB12B0F48BA3F04898FD0EEE61FF3423B`。
 
 ## 组件清单
 
 | 组件 | 版本 | SPDX 表达式 |
 | --- | --- | --- |
-| [@babel/helper-string-parser](https://github.com/babel/babel) | 7.29.7 | `MIT` |
+| [@babel/helper-string-parser](https://github.com/babel/babel) | 7.29.11 | `MIT` |
 | [@babel/helper-validator-identifier](https://github.com/babel/babel) | 7.29.7 | `MIT` |
-| [@babel/parser](https://github.com/babel/babel) | 7.29.7 | `MIT` |
-| [@babel/types](https://github.com/babel/babel) | 7.29.7 | `MIT` |
+| [@babel/parser](https://github.com/babel/babel) | 7.29.12 | `MIT` |
+| [@babel/types](https://github.com/babel/babel) | 7.29.11 | `MIT` |
 | [@jridgewell/sourcemap-codec](https://github.com/jridgewell/sourcemaps) | 1.5.5 | `MIT` |
 | [@tauri-apps/api](https://github.com/tauri-apps/tauri) | 2.11.1 | `Apache-2.0 OR MIT` |
-| [@vue/compiler-core](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/compiler-dom](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/compiler-sfc](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/compiler-ssr](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/reactivity](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/runtime-core](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/runtime-dom](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/server-renderer](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
-| [@vue/shared](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
+| [@vue/compiler-core](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/compiler-dom](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/compiler-sfc](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/compiler-ssr](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/reactivity](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/runtime-core](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/runtime-dom](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/server-renderer](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
+| [@vue/shared](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
 | [csstype](https://github.com/frenic/csstype) | 3.2.3 | `MIT` |
 | [entities](https://github.com/fb55/entities) | 7.0.1 | `BSD-2-Clause` |
 | [estree-walker](https://github.com/Rich-Harris/estree-walker) | 2.0.2 | `MIT` |
 | [highlight.js](https://github.com/highlightjs/highlight.js) | 11.11.1 | `BSD-3-Clause` |
 | [lucide-vue-next](https://github.com/lucide-icons/lucide) | 0.577.0 | `ISC` |
 | [magic-string](https://github.com/Rich-Harris/magic-string) | 0.30.21 | `MIT` |
-| [nanoid](https://github.com/ai/nanoid) | 3.3.16 | `MIT` |
+| [nanoid](https://github.com/ai/nanoid) | 3.3.20 | `MIT` |
 | [picocolors](https://github.com/alexeyraspopov/picocolors) | 1.1.1 | `ISC` |
 | [pinyin-pro](https://github.com/zh-lx/pinyin-pro) | 3.28.1 | `MIT` |
-| [postcss](https://github.com/postcss/postcss) | 8.5.19 | `MIT` |
-| [source-map-js](https://github.com/7rulnik/source-map-js) | 1.2.1 | `BSD-3-Clause` |
+| [postcss](https://github.com/postcss/postcss) | 8.5.32 | `MIT` |
+| [source-map-js](https://github.com/7rulnik/source-map-js) | 1.2.2 | `BSD-3-Clause` |
 | [typescript](https://github.com/microsoft/TypeScript) | 6.0.3 | `Apache-2.0` |
-| [vue](https://github.com/vuejs/core) | 3.5.40 | `MIT` |
+| [vue](https://github.com/vuejs/core) | 3.5.44 | `MIT` |
 
 ## 包内许可证原文
 
 <details>
-<summary>@babel/helper-string-parser 7.29.7 — LICENSE</summary>
+<summary>@babel/helper-string-parser 7.29.11 — LICENSE</summary>
 
 <pre>
 MIT License
@@ -100,7 +100,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 </details>
 
 <details>
-<summary>@babel/parser 7.29.7 — LICENSE</summary>
+<summary>@babel/parser 7.29.12 — LICENSE</summary>
 
 <pre>
 Copyright (C) 2012-2014 by various contributors (see AUTHORS)
@@ -127,7 +127,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@babel/types 7.29.7 — LICENSE</summary>
+<summary>@babel/types 7.29.11 — LICENSE</summary>
 
 <pre>
 MIT License
@@ -188,7 +188,7 @@ SOFTWARE.
 该 npm 包声明为 `Apache-2.0 OR MIT`，但发布的 npm tarball 没有单独携带许可证文件。上游仓库：https://github.com/tauri-apps/tauri。对应标准许可证全文同时包含在随包分发的 `THIRD_PARTY_LICENSES_RUST.md` 中。
 
 <details>
-<summary>@vue/compiler-core 3.5.40 — LICENSE</summary>
+<summary>@vue/compiler-core 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -217,7 +217,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/compiler-dom 3.5.40 — LICENSE</summary>
+<summary>@vue/compiler-dom 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -246,7 +246,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/compiler-sfc 3.5.40 — LICENSE</summary>
+<summary>@vue/compiler-sfc 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -275,7 +275,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/compiler-ssr 3.5.40 — LICENSE</summary>
+<summary>@vue/compiler-ssr 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -304,7 +304,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/reactivity 3.5.40 — LICENSE</summary>
+<summary>@vue/reactivity 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -333,7 +333,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/runtime-core 3.5.40 — LICENSE</summary>
+<summary>@vue/runtime-core 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -362,7 +362,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/runtime-dom 3.5.40 — LICENSE</summary>
+<summary>@vue/runtime-dom 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -391,7 +391,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/server-renderer 3.5.40 — LICENSE</summary>
+<summary>@vue/server-renderer 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -420,7 +420,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>@vue/shared 3.5.40 — LICENSE</summary>
+<summary>@vue/shared 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -609,7 +609,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 </details>
 
 <details>
-<summary>nanoid 3.3.16 — LICENSE</summary>
+<summary>nanoid 3.3.20 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -689,7 +689,7 @@ SOFTWARE.
 </details>
 
 <details>
-<summary>postcss 8.5.19 — LICENSE</summary>
+<summary>postcss 8.5.32 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
@@ -717,7 +717,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 </details>
 
 <details>
-<summary>source-map-js 1.2.1 — LICENSE</summary>
+<summary>source-map-js 1.2.2 — LICENSE</summary>
 
 <pre>
 
@@ -816,7 +816,7 @@ END OF TERMS AND CONDITIONS
 </details>
 
 <details>
-<summary>vue 3.5.40 — LICENSE</summary>
+<summary>vue 3.5.44 — LICENSE</summary>
 
 <pre>
 The MIT License (MIT)
