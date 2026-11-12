@@ -2,7 +2,7 @@
 
 本文件由 `node scripts/generate-npm-notices.mjs` 根据 `package-lock.json` 和已安装的 production dependency closure 生成。开发依赖不会进入 Vite/Tauri 运行时包，因此不在表内。
 
-锁文件 SHA-256：`E0DD7CF1FDD01B6C28F0B6A6FC8B2D719B8617297290BB61CAF3E103A9DA5107`。
+锁文件 SHA-256：`4A86E537989B4CEEE9F819B1EDFC93122033257333A5FD736F21627ACEC21732`。
 
 ## 组件清单
 
@@ -31,7 +31,7 @@
 | [magic-string](https://github.com/Rich-Harris/magic-string) | 0.30.21 | `MIT` |
 | [nanoid](https://github.com/ai/nanoid) | 3.3.20 | `MIT` |
 | [picocolors](https://github.com/alexeyraspopov/picocolors) | 1.1.1 | `ISC` |
-| [pinyin-pro](https://github.com/zh-lx/pinyin-pro) | 3.28.1 | `MIT` |
+| [pinyin-pro](https://github.com/zh-lx/pinyin-pro) | 3.28.2 | `MIT` |
 | [postcss](https://github.com/postcss/postcss) | 8.5.32 | `MIT` |
 | [source-map-js](https://github.com/7rulnik/source-map-js) | 1.2.2 | `BSD-3-Clause` |
 | [typescript](https://github.com/microsoft/TypeScript) | 6.0.3 | `Apache-2.0` |
@@ -660,7 +660,7 @@ OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 </details>
 
 <details>
-<summary>pinyin-pro 3.28.1 — LICENSE</summary>
+<summary>pinyin-pro 3.28.2 — LICENSE</summary>
 
 <pre>
 MIT License

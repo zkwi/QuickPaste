@@ -28,6 +28,7 @@ npm run licenses:rust
 | [bitflags](https://github.com/bitflags/bitflags) | 1.3.2 | `MIT OR Apache-2.0` |
 | [bitflags](https://github.com/bitflags/bitflags) | 2.13.1 | `MIT OR Apache-2.0` |
 | [block-buffer](https://github.com/RustCrypto/utils) | 0.10.4 | `MIT OR Apache-2.0` |
+| [block-buffer](https://github.com/RustCrypto/utils) | 0.12.1 | `MIT OR Apache-2.0` |
 | [brotli](https://github.com/dropbox/rust-brotli) | 8.0.4 | `BSD-3-Clause AND MIT` |
 | [brotli-decompressor](https://github.com/dropbox/rust-brotli-decompressor) | 5.0.3 | `BSD-3-Clause OR MIT` |
 | [bytemuck](https://github.com/Lokathor/bytemuck) | 1.25.1 | `Zlib OR Apache-2.0 OR MIT` |
@@ -43,12 +44,15 @@ npm run licenses:rust
 | [cfg-if](https://github.com/rust-lang/cfg-if) | 1.0.4 | `MIT OR Apache-2.0` |
 | [chrono](https://github.com/chronotope/chrono) | 0.4.45 | `MIT OR Apache-2.0` |
 | [clipboard-win](https://github.com/DoumanAsh/clipboard-win) | 5.4.1 | `BSL-1.0` |
+| [const-oid](https://github.com/RustCrypto/formats) | 0.10.2 | `Apache-2.0 OR MIT` |
 | [cookie](https://github.com/SergioBenitez/cookie-rs) | 0.18.1 | `MIT OR Apache-2.0` |
 | [cpufeatures](https://github.com/RustCrypto/utils) | 0.2.17 | `MIT OR Apache-2.0` |
+| [cpufeatures](https://github.com/RustCrypto/utils) | 0.3.0 | `MIT OR Apache-2.0` |
 | [crc32fast](https://github.com/srijs/rust-crc32fast) | 1.5.0 | `MIT OR Apache-2.0` |
 | [crossbeam-channel](https://github.com/crossbeam-rs/crossbeam) | 0.5.16 | `MIT OR Apache-2.0` |
 | [crossbeam-utils](https://github.com/crossbeam-rs/crossbeam) | 0.8.22 | `MIT OR Apache-2.0` |
 | [crypto-common](https://github.com/RustCrypto/traits) | 0.1.7 | `MIT OR Apache-2.0` |
+| [crypto-common](https://github.com/RustCrypto/traits) | 0.2.2 | `MIT OR Apache-2.0` |
 | [cssparser](https://github.com/servo/rust-cssparser) | 0.36.0 | `MPL-2.0` |
 | [cssparser-macros](https://github.com/servo/rust-cssparser) | 0.6.1 | `MPL-2.0` |
 | [ctor](https://github.com/mmastrac/rust-ctor) | 0.8.0 | `Apache-2.0 OR MIT` |
@@ -60,6 +64,7 @@ npm run licenses:rust
 | [derive_more](https://github.com/JelteF/derive_more) | 2.1.1 | `MIT` |
 | [derive_more-impl](https://github.com/JelteF/derive_more) | 2.1.1 | `MIT` |
 | [digest](https://github.com/RustCrypto/traits) | 0.10.7 | `MIT OR Apache-2.0` |
+| [digest](https://github.com/RustCrypto/traits) | 0.11.3 | `MIT OR Apache-2.0` |
 | [dirs](https://github.com/soc/dirs-rs) | 6.0.0 | `MIT OR Apache-2.0` |
 | [dirs-sys](https://github.com/dirs-dev/dirs-sys-rs) | 0.5.0 | `MIT OR Apache-2.0` |
 | [displaydoc](https://github.com/yaahc/displaydoc) | 0.2.6 | `MIT OR Apache-2.0` |
@@ -84,11 +89,11 @@ npm run licenses:rust
 | [foldhash](https://github.com/orlp/foldhash) | 0.2.0 | `Zlib` |
 | [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | `MIT OR Apache-2.0` |
 | [futures-channel](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
-| [futures-core](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
-| [futures-macro](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
-| [futures-sink](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
-| [futures-task](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
-| [futures-util](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
+| [futures-core](https://github.com/rust-lang/futures-rs) | 0.3.33 | `MIT OR Apache-2.0` |
+| [futures-macro](https://github.com/rust-lang/futures-rs) | 0.3.33 | `MIT OR Apache-2.0` |
+| [futures-sink](https://github.com/rust-lang/futures-rs) | 0.3.33 | `MIT OR Apache-2.0` |
+| [futures-task](https://github.com/rust-lang/futures-rs) | 0.3.33 | `MIT OR Apache-2.0` |
+| [futures-util](https://github.com/rust-lang/futures-rs) | 0.3.33 | `MIT OR Apache-2.0` |
 | [g2gen](https://github.com/WanzenBug/g2p) | 1.2.2 | `MIT OR Apache-2.0` |
 | [g2p](https://github.com/WanzenBug/g2p) | 1.2.2 | `MIT OR Apache-2.0` |
 | [g2poly](https://github.com/WanzenBug/g2p) | 1.2.2 | `MIT OR Apache-2.0` |
@@ -108,6 +113,7 @@ npm run licenses:rust
 | [http-body](https://github.com/hyperium/http-body) | 1.1.0 | `MIT` |
 | [http-body-util](https://github.com/hyperium/http-body) | 0.1.4 | `MIT` |
 | [httparse](https://github.com/seanmonstar/httparse) | 1.10.1 | `MIT OR Apache-2.0` |
+| [hybrid-array](https://github.com/RustCrypto/hybrid-array) | 0.4.13 | `MIT OR Apache-2.0` |
 | [hyper](https://github.com/hyperium/hyper) | 1.10.1 | `MIT` |
 | [hyper-rustls](https://github.com/rustls/hyper-rustls) | 0.27.9 | `Apache-2.0 OR ISC OR MIT` |
 | [hyper-util](https://github.com/hyperium/hyper-util) | 0.1.20 | `MIT` |
@@ -204,6 +210,7 @@ npm run licenses:rust
 | [serialize-to-javascript-impl](https://github.com/chippers/serialize-to-javascript) | 0.1.2 | `MIT OR Apache-2.0` |
 | [servo_arc](https://github.com/servo/stylo) | 0.4.3 | `MIT OR Apache-2.0` |
 | [sha2](https://github.com/RustCrypto/hashes) | 0.10.9 | `MIT OR Apache-2.0` |
+| [sha2](https://github.com/RustCrypto/hashes) | 0.11.0 | `MIT OR Apache-2.0` |
 | [shlex](https://github.com/comex/rust-shlex) | 2.0.1 | `MIT OR Apache-2.0` |
 | [simd-adler32](https://github.com/mcountryman/simd-adler32) | 0.3.10 | `MIT` |
 | [siphasher](https://github.com/jedisct1/rust-siphash) | 1.0.3 | `MIT OR Apache-2.0` |
@@ -2669,7 +2676,7 @@ limitations under the License.
 </details>
 
 <details>
-<summary>Apache License 2.0（futures-channel 0.3.32、futures-core 0.3.32、futures-macro 0.3.32、futures-sink 0.3.32、futures-task 0.3.32、futures-util 0.3.32）</summary>
+<summary>Apache License 2.0（futures-channel 0.3.32、futures-core 0.3.33、futures-macro 0.3.33、futures-sink 0.3.33、futures-task 0.3.33、futures-util 0.3.33）</summary>
 
 <pre>
                               Apache License
@@ -5188,7 +5195,7 @@ limitations under the License.
 </details>
 
 <details>
-<summary>Apache License 2.0（block-buffer 0.10.4、cpufeatures 0.2.17、crypto-common 0.1.7、digest 0.10.7、sha2 0.10.9）</summary>
+<summary>Apache License 2.0（block-buffer 0.10.4、block-buffer 0.12.1、const-oid 0.10.2、cpufeatures 0.2.17、cpufeatures 0.3.0、crypto-common 0.1.7、crypto-common 0.2.2、digest 0.10.7、digest 0.11.3、hybrid-array 0.4.13、sha2 0.10.9、sha2 0.11.0）</summary>
 
 <pre>
                               Apache License
