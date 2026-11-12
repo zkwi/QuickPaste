@@ -1680,6 +1680,8 @@ fn image_data_url(width: usize, height: usize, bytes: Vec<u8>) -> Option<String>
 /// little-endian u64 dimensions make this independent of Rust's process hasher
 /// and of the machine word size.
 fn image_capture_hash(width: usize, height: usize, bytes: &[u8]) -> Option<String> {
+    use std::fmt::Write as _;
+
     let width_u32 = u32::try_from(width).ok()?;
     let height_u32 = u32::try_from(height).ok()?;
     if width_u32 == 0
@@ -1693,7 +1695,12 @@ fn image_capture_hash(width: usize, height: usize, bytes: &[u8]) -> Option<Strin
     digest.update((width as u64).to_le_bytes());
     digest.update((height as u64).to_le_bytes());
     digest.update(bytes);
-    Some(format!("{:x}", digest.finalize()))
+    let digest = digest.finalize();
+    let mut hash = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        write!(&mut hash, "{byte:02x}").ok()?;
+    }
+    Some(hash)
 }
 
 fn app_icon_png_data_url(width: u32, height: u32, bytes: Vec<u8>) -> Option<String> {

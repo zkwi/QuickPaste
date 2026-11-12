@@ -3,10 +3,10 @@ import { test } from 'node:test'
 
 import { validateProjectMetadata } from './check-versions.mjs'
 
-const CHECKOUT_ACTION = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
-const SETUP_NODE_ACTION = 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38'
+const CHECKOUT_ACTION = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+const SETUP_NODE_ACTION = 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
 const RUST_TOOLCHAIN_ACTION = 'dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66'
-const RUST_CACHE_ACTION = 'Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae'
+const RUST_CACHE_ACTION = 'Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32'
 const RUST_AUDIT_ACTION = 'rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998'
 
 function validMetadata() {
@@ -68,8 +68,8 @@ function validMetadata() {
       'components = ["clippy", "rustfmt"]',
     ].join('\n'),
     ciWorkflow: [
-      `uses: ${CHECKOUT_ACTION} # v6`,
-      `uses: ${SETUP_NODE_ACTION} # v6`,
+      `uses: ${CHECKOUT_ACTION} # v7.0.1`,
+      `uses: ${SETUP_NODE_ACTION} # v7.1.0`,
       `uses: ${RUST_TOOLCHAIN_ACTION} # 1.89.0`,
       `uses: ${RUST_CACHE_ACTION} # v2`,
       `uses: ${RUST_AUDIT_ACTION} # v2.0.0`,
@@ -167,8 +167,8 @@ test('validateProjectMetadata rejects movable GitHub Action tags', () => {
     .replace(SETUP_NODE_ACTION, 'actions/setup-node@v7')
 
   assert.deepEqual(validateProjectMetadata(metadata), [
-    'CI 必须固定 actions/checkout 到批准的 v6 提交',
-    'CI 必须固定 actions/setup-node 到批准的 v6 提交',
+    'CI 必须固定 actions/checkout 到批准的 v7.0.1 提交',
+    'CI 必须固定 actions/setup-node 到批准的 v7.1.0 提交',
     'CI 使用未批准的 GitHub Action：actions/checkout@v7',
     'CI 使用未批准的 GitHub Action：actions/setup-node@v7',
   ])
@@ -207,7 +207,7 @@ test('validateProjectMetadata protects setup-node npm cache bootstrap from the p
   const metadata = validMetadata()
   metadata.ciWorkflow += `\n${[
     '      - name: Set up Node.js',
-    `        uses: ${SETUP_NODE_ACTION} # v6`,
+    `        uses: ${SETUP_NODE_ACTION} # v7.1.0`,
     '        with:',
     '          node-version-file: .nvmrc',
     '          cache: npm',
@@ -223,7 +223,7 @@ test('validateProjectMetadata rejects npm_config_force nested under setup-node w
   const metadata = validMetadata()
   metadata.ciWorkflow += `\n${[
     '      - name: Set up Node.js',
-    `        uses: ${SETUP_NODE_ACTION} # v6`,
+    `        uses: ${SETUP_NODE_ACTION} # v7.1.0`,
     '        with:',
     '          node-version-file: .nvmrc',
     '          cache: npm',
