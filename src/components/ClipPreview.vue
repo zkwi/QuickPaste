@@ -37,7 +37,7 @@ function kindLabel(kind: ClipKind): string {
     code: props.t('code'),
     link: props.t('link'),
     image: props.t('image'),
-    file: '文件',
+    file: props.t('file'),
   }[kind]
 }
 
@@ -109,7 +109,7 @@ defineExpose({ focusPrimary, primaryButton: () => pasteButton.value })
         <button ref="pasteButton" data-testid="preview-paste-preserve" class="primary-button" type="button" :disabled="pasteInFlight" @click="emit('paste', 'preserve')">{{ t('pastePreserve') }}</button>
         <button data-testid="preview-paste-plain" class="secondary-button" type="button" :disabled="pasteInFlight" @click="emit('paste', 'plain')">{{ t('pastePlain') }}</button>
       </template>
-      <button v-else ref="pasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight || getClipActions(clip, 'quick')[0]?.disabled" @click="emit('paste')">{{ t('paste') }}</button>
+      <button v-else ref="pasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight || getClipActions(clip, 'preview')[0]?.disabled" @click="emit('paste')">{{ t('paste') }}</button>
     </div>
   </section>
 </template>

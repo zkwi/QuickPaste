@@ -1,9 +1,9 @@
 import type { ClipboardItem, ClipboardFormat } from './clipboard'
 import { isSafeExternalUrl } from './externalLink'
 
-export type ClipSurface = 'quick' | 'manager'
+export type ClipSurface = 'quick' | 'manager' | 'preview'
 export type PasteMode = 'preserve' | 'plain' | 'files' | 'image'
-export type ClipActionId = 'paste' | 'paste-preserve' | 'paste-plain' | 'copy' | 'open-link' | 'open-file' | 'reveal-file' | 'save-image'
+export type ClipActionId = 'paste' | 'paste-preserve' | 'paste-plain' | 'copy' | 'open-link' | 'open-file' | 'reveal-file' | 'save-image' | 'pin' | 'unpin' | 'delete' | 'exclude-source'
 
 export interface ClipAction {
   id: ClipActionId
@@ -44,7 +44,7 @@ export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipA
           : {}),
       }]
 
-  if (surface === 'quick') return actions
+  if (surface === 'preview') return actions
 
   actions.push({ id: 'copy' })
   if (clip.kind === 'link') actions.push({
@@ -59,5 +59,9 @@ export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipA
     id: 'save-image',
     disabled: clip.payloadLoaded !== false && !clip.imageUrl,
   })
+  if (surface === 'quick') {
+    actions.push({ id: clip.pinned ? 'unpin' : 'pin' }, { id: 'delete' })
+    if (clip.sourceApp.trim()) actions.push({ id: 'exclude-source' })
+  }
   return actions
 }

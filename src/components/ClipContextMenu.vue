@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { ClipboardPaste, Copy, ExternalLink, Eye, FolderOpen, Save } from 'lucide-vue-next'
+import { ClipboardPaste, Copy, ExternalLink, Eye, FolderOpen, Pin, PinOff, Save, ShieldOff, Trash2 } from 'lucide-vue-next'
 import type { ClipboardItem } from '../domain/clipboard'
 import { getClipActions, type ClipAction, type ClipActionId } from '../domain/clipActions'
 import { translate, type Locale } from '../i18n'
@@ -29,9 +29,10 @@ const FALLBACK_ITEM_HEIGHT = 38
 const menuElement = ref<HTMLElement | null>(null)
 const left = ref(props.x)
 const top = ref(props.y)
+const menuHeight = ref<string>()
 
 const showPreview = computed(() => props.surface === 'quick')
-const actions = computed(() => getClipActions(props.clip, props.surface === 'manager' ? 'manager' : 'quick'))
+const actions = computed(() => getClipActions(props.clip, props.surface))
 const menuLabel = computed(() => translate(props.locale, 'clipActions', { title: props.clip.title }))
 
 const actionLabels: Record<ClipActionId, Parameters<typeof translate>[1]> = {
@@ -43,6 +44,10 @@ const actionLabels: Record<ClipActionId, Parameters<typeof translate>[1]> = {
   'open-file': 'openFile',
   'reveal-file': 'revealFile',
   'save-image': 'saveImage',
+  pin: 'pinClip',
+  unpin: 'unpin',
+  delete: 'deleteClip',
+  'exclude-source': 'excludeSourceApp',
 }
 
 function actionIcon(action: ClipAction) {
@@ -50,6 +55,10 @@ function actionIcon(action: ClipAction) {
   if (action.id === 'open-link') return ExternalLink
   if (action.id === 'open-file' || action.id === 'reveal-file') return FolderOpen
   if (action.id === 'save-image') return Save
+  if (action.id === 'pin') return Pin
+  if (action.id === 'unpin') return PinOff
+  if (action.id === 'delete') return Trash2
+  if (action.id === 'exclude-source') return ShieldOff
   return ClipboardPaste
 }
 
@@ -68,8 +77,10 @@ function placeMenu() {
   const menu = menuElement.value
   if (!menu) return
   const bounds = menuBounds()
+  menuHeight.value = `${Math.max(0, bounds.height - 2 * MENU_MARGIN)}px`
   const width = menu.offsetWidth || FALLBACK_WIDTH
-  const height = menu.offsetHeight || ((actions.value.length + Number(showPreview.value)) * FALLBACK_ITEM_HEIGHT + 12)
+  const height = Math.min(bounds.height - 2 * MENU_MARGIN,
+    menu.offsetHeight || ((actions.value.length + Number(showPreview.value)) * FALLBACK_ITEM_HEIGHT + 12))
   const minLeft = bounds.left + MENU_MARGIN
   const minTop = bounds.top + MENU_MARGIN
   const maxLeft = Math.max(minLeft, bounds.right - width - MENU_MARGIN)
@@ -134,7 +145,7 @@ function handleKeydown(event: KeyboardEvent) {
       : event.key === 'ArrowDown'
         ? (currentIndex + 1 + items.length) % items.length
         : (currentIndex - 1 + items.length) % items.length
-  items[nextIndex]?.focus({ preventScroll: true })
+  items[nextIndex]?.focus()
 }
 
 onMounted(() => {
@@ -155,7 +166,7 @@ watch(() => [props.clip.id, props.surface, props.x, props.y], () => {
     class="clip-context-menu"
     role="menu"
     :aria-label="menuLabel"
-    :style="{ left: `${left}px`, top: `${top}px` }"
+    :style="{ maxHeight: menuHeight, left: `${left}px`, top: `${top}px` }"
     @keydown="handleKeydown"
   >
     <button
@@ -163,6 +174,7 @@ watch(() => [props.clip.id, props.surface, props.x, props.y], () => {
       :key="action.id"
       :data-testid="`context-${action.id}`"
       role="menuitem"
+      :class="{ danger: action.id === 'delete' }"
       type="button"
       :disabled="action.disabled || (Boolean(action.pasteMode) && pasteDisabled)"
       @click="emit('action', action)"

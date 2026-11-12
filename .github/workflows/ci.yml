@@ -95,7 +95,7 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0 # 1.88.0
+        uses: dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66 # 1.89.0
         with:
           components: clippy, rustfmt
 

@@ -1,10 +1,13 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import App from './App.vue'
+import { normalizeStoredSettings } from './domain/settings'
 
 enableAutoUnmount(afterEach)
 
 const settingsMocks = vi.hoisted(() => ({
   getLaunchAtStartup: vi.fn(),
+  loadPortableSettings: vi.fn(),
+  savePortableSettings: vi.fn(),
   setCaptureExclusions: vi.fn(),
   setElevatedPasteEnabled: vi.fn(),
   setGlobalShortcut: vi.fn(),
@@ -35,6 +38,7 @@ const windowMocks = vi.hoisted(() => ({
 const historyMocks = vi.hoisted(() => ({
   applyNativeHistoryBatch: vi.fn(),
   applyNativeHistoryMutation: vi.fn(),
+  clearNativeOrdinaryHistory: vi.fn(),
   compactNativeHistoryDatabase: vi.fn(),
   commitNativeHistoryRestore: vi.fn(),
   createNativeHistoryCollection: vi.fn(),
@@ -67,6 +71,8 @@ const metricsMocks = vi.hoisted(() => ({
 }))
 
 const clipboardMocks = vi.hoisted(() => ({
+  copyFiles: vi.fn().mockResolvedValue(true),
+  copyFormats: vi.fn().mockResolvedValue(true),
   copyImage: vi.fn().mockResolvedValue(true),
   copyText: vi.fn().mockResolvedValue(true),
   pasteFiles: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
@@ -168,6 +174,9 @@ describe('native setting reliability', () => {
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({ onboardingCompleted: true }))
     vi.clearAllMocks()
     settingsMocks.getLaunchAtStartup.mockResolvedValue(false)
+    settingsMocks.loadPortableSettings.mockReset().mockResolvedValue(undefined)
+    settingsMocks.savePortableSettings.mockReset().mockResolvedValue(true)
+    historyMocks.clearNativeOrdinaryHistory.mockReset().mockResolvedValue(0)
     settingsMocks.setCaptureExclusions.mockResolvedValue(true)
     settingsMocks.setElevatedPasteEnabled.mockResolvedValue(true)
     settingsMocks.setGlobalShortcut.mockResolvedValue(true)
@@ -1122,7 +1131,7 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[role="alert"]').text()).toContain('窗口布局')
   })
 
-  it('rolls failed initialization settings back to known native defaults', async () => {
+  it('keeps recording paused and preserves exclusions when native startup synchronization fails', async () => {
     localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
       onboardingCompleted: true,
       capturePaused: true,
@@ -1142,12 +1151,13 @@ describe('native setting reliability', () => {
     expect((wrapper.get('[data-testid="capture-protection-toggle"]').element as HTMLInputElement).checked).toBe(false)
     expect((wrapper.get('[data-testid="elevated-paste-toggle"]').element as HTMLInputElement).checked).toBe(true)
     await wrapper.get('[data-testid="open-sensitive-apps"]').trigger('click')
-    expect(wrapper.findAll('.sensitive-app-row')).toHaveLength(0)
+    expect(wrapper.findAll('.sensitive-app-row')).toHaveLength(1)
+    expect(desktopMocks.setNativeCapturePaused).toHaveBeenCalledWith(true)
     expect(JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')).toMatchObject({
-      capturePaused: false,
+      capturePaused: true,
       hideDuringSharing: false,
       elevatedPasteEnabled: true,
-      excludedApps: [],
+      excludedApps: ['KeePassXC'],
     })
   })
 
@@ -2528,6 +2538,82 @@ describe('native setting reliability', () => {
     expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
   })
 
+  it('migrates existing WebView settings when the portable file is absent', async () => {
+    settingsMocks.loadPortableSettings.mockResolvedValue(null)
+    localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
+      onboardingCompleted: true, singleClickPaste: true, theme: 'dark',
+    }))
+    mount(App)
+    await flushPromises()
+    expect(settingsMocks.savePortableSettings).toHaveBeenCalledWith(expect.objectContaining({
+      onboardingCompleted: true, singleClickPaste: true, theme: 'dark',
+    }))
+  })
+
+  it('uses the portable settings before configuring native behavior', async () => {
+    settingsMocks.loadPortableSettings.mockResolvedValue(normalizeStoredSettings({
+      onboardingCompleted: true, locale: 'en-US', singleClickPaste: true, excludedApps: ['SampleEditor'],
+      historyPolicy: { maxRecords: Number.MAX_SAFE_INTEGER, maxImageBytes: 123456, retentionDays: 45 },
+    }))
+    const wrapper = mount(App)
+    await flushPromises()
+    expect(settingsMocks.setCaptureExclusions).toHaveBeenCalledWith(['SampleEditor'])
+    expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith(expect.objectContaining({
+      policy: expect.objectContaining({ maxImageBytes: 123456, retentionDays: 45 }),
+    }))
+    await wrapper.get('[data-testid="open-settings"]').trigger('click')
+    await flushPromises()
+    const toggle = wrapper.get<HTMLInputElement>('[data-testid="settings-single-click-paste"]')
+    expect(toggle.element.checked).toBe(true)
+    await toggle.setValue(false)
+    await flushPromises()
+    expect(settingsMocks.savePortableSettings).toHaveBeenLastCalledWith(expect.objectContaining({
+      singleClickPaste: false, locale: 'en-US',
+    }))
+  })
+
+  it('keeps local pending settings and the committed database policy after a failed portable save', async () => {
+    settingsMocks.loadPortableSettings.mockResolvedValue(normalizeStoredSettings({
+      onboardingCompleted: true, excludedApps: ['OlderEditor'], retentionDays: '7',
+    }))
+    settingsMocks.savePortableSettings.mockResolvedValue(false)
+    historyMocks.getNativeStorageStats.mockResolvedValue({
+      ...defaultStorageStats, recordCount: 5, retentionDays: 90,
+    })
+    localStorage.setItem('quickpaste-portable-settings-pending', 'true')
+    localStorage.setItem('mypaste-ui-settings-v1', JSON.stringify({
+      onboardingCompleted: true, excludedApps: ['CurrentEditor'], retentionDays: '30',
+    }))
+    mount(App)
+    await flushPromises()
+    expect(settingsMocks.setCaptureExclusions).toHaveBeenCalledWith(['CurrentEditor'])
+    expect(historyMocks.applyNativeHistoryMutation).toHaveBeenCalledWith(expect.objectContaining({
+      policy: expect.objectContaining({ retentionDays: 90 }),
+    }))
+    expect(localStorage.getItem('quickpaste-portable-settings-pending')).toBe('true')
+    expect(settingsMocks.savePortableSettings).toHaveBeenCalledWith(expect.objectContaining({
+      excludedApps: ['CurrentEditor'], retentionDays: '90',
+    }))
+  })
+
+  it('clears ordinary history through the database after explicit confirmation and refreshes storage', async () => {
+    const wrapper = mount(App)
+    await flushPromises()
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    await flushPromises()
+    historyMocks.getNativeStorageStats.mockClear()
+    await wrapper.get('[data-testid="clear-history"]').trigger('click')
+    expect(wrapper.get('[data-testid="clear-history-dialog"]').text()).toContain('永久片段')
+    expect(historyMocks.clearNativeOrdinaryHistory).not.toHaveBeenCalled()
+    historyMocks.clearNativeOrdinaryHistory.mockResolvedValue(82)
+    await wrapper.get('[data-testid="confirm-clear-history"]').trigger('click')
+    await flushPromises()
+    expect(historyMocks.clearNativeOrdinaryHistory).toHaveBeenCalledOnce()
+    expect(historyMocks.getNativeStorageStats).toHaveBeenCalledOnce()
+    expect(wrapper.text()).toContain('82')
+    expect(wrapper.find('[data-testid="clear-history-dialog"]').exists()).toBe(false)
+  })
+
   it('waits for a dirty mutation to flush before issuing a new native query', async () => {
     vi.useFakeTimers()
     const summary = { id: 'dirty-order', kind: 'text', title: '待固定', content: 'dirty', sourceApp: 'Editor', copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, searchTerms: [], payloadLoaded: false }
@@ -2536,7 +2622,7 @@ describe('native setting reliability', () => {
     await flushPromises()
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="clear-history"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="clear-history"]').exists()).toBe(true)
     historyMocks.queryNativeHistory.mockClear()
 
     let finishMutation: ((result: { prunedIds: string[] } | null) => void) | undefined

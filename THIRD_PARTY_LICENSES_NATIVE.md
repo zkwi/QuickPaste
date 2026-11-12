@@ -155,9 +155,9 @@ SPECIAL EXCEPTION FOR LZMA COMPRESSION MODULE
 Igor Pavlov and Amir Szekely, the authors of the LZMA compression module for NSIS, expressly permit you to statically or dynamically link your code (or bind by name) to the files from the LZMA compression module for NSIS without subjecting your linked code to the terms of the Common Public license version 1.0. Any modifications or additions to files from the LZMA compression module for NSIS, however, are subject to the terms of the Common Public License version 1.0.
 </pre>
 
-## SQLite 3.50.2
+## SQLite 3.54.1
 
-`rusqlite` 的 `bundled` feature 将 SQLite 3.50.2 编译进 QuickPaste。SQLite 上游将其源码置于 public domain；详情见 <https://www.sqlite.org/copyright.html>。
+`rusqlite` 的 `bundled` feature 将 SQLite 3.54.1 编译进 QuickPaste。SQLite 上游将其源码置于 public domain；详情见 <https://www.sqlite.org/copyright.html>。
 
 <pre>
 /*

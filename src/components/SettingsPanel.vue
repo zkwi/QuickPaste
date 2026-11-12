@@ -40,6 +40,7 @@ defineProps<{
   t: Translator
 }>()
 
+const singleClickPaste = defineModel<boolean>('singleClickPaste', { required: true })
 const launchAtStartup = defineModel<boolean>('launchAtStartup', { required: true })
 const theme = defineModel<Theme>('theme', { required: true })
 const locale = defineModel<Locale>('locale', { required: true })
@@ -93,6 +94,7 @@ function openSensitiveApps(event: MouseEvent) {
     <article class="setting-group">
       <div class="setting-heading"><Monitor :size="18" /><div><h2>{{ t('startupAppearance') }}</h2><p>{{ t('startupAppearanceDescription') }}</p></div></div>
       <label class="setting-row"><span><strong>{{ t('launchAtStartup') }}</strong><small>{{ t('launchAtStartupDescription') }}</small></span><input v-model="launchAtStartup" data-testid="launch-at-startup-toggle" class="switch" type="checkbox" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
+      <label class="setting-row"><span><strong>{{ t('singleClickPaste') }}</strong><small>{{ t('singleClickPasteDescription') }}</small></span><input v-model="singleClickPaste" data-testid="settings-single-click-paste" type="checkbox" class="switch" :disabled="nativeRuntime && !nativeSettingsReady" /></label>
       <div class="setting-row"><span><strong>{{ t('interfaceTheme') }}</strong><small>{{ t('themeDescription', { theme: theme === 'light' ? t('light') : t('dark') }) }}</small></span><button data-testid="settings-theme-button" class="select-button" type="button" :aria-label="t('interfaceThemeControl', { theme: theme === 'light' ? t('light') : t('dark') })" @click="emit('toggleTheme')">{{ theme === 'light' ? t('light') : t('dark') }}</button></div>
       <label class="setting-row"><span><strong>{{ t('language') }}</strong><small>{{ t('languageDescription') }}</small></span><select v-model="locale" data-testid="locale-select"><option value="zh-CN">简体中文</option><option value="en-US">English</option></select></label>
     </article>

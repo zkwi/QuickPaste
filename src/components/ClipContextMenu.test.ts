@@ -49,16 +49,17 @@ function mountMenu(clip: ClipboardItem, surface: 'quick' | 'manager' | 'preview'
 }
 
 describe('ClipContextMenu', () => {
-  it('keeps the quick menu to paste and preview only', () => {
+  it('offers quick paste, copy, history management, and preview', () => {
     const wrapper = mountMenu(textClip)
 
     expect(wrapper.findAll('[role="menuitem"]').map((item) => item.attributes('data-testid'))).toEqual([
       'context-paste',
+      'context-copy',
+      'context-pin',
+      'context-delete',
+      'context-exclude-source',
       'context-preview',
     ])
-    expect(wrapper.find('[data-testid="context-copy"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="context-pin"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="context-delete"]').exists()).toBe(false)
 
     wrapper.unmount()
   })
@@ -69,6 +70,10 @@ describe('ClipContextMenu', () => {
     expect(wrapper.findAll('[role="menuitem"]').map((item) => item.attributes('data-testid'))).toEqual([
       'context-paste-preserve',
       'context-paste-plain',
+      'context-copy',
+      'context-pin',
+      'context-delete',
+      'context-exclude-source',
       'context-preview',
     ])
 

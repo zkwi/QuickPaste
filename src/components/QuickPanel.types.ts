@@ -13,6 +13,7 @@ export interface QuickPanelState {
   targetAppIcon: string | null
   targetElevated: boolean
   quickPanelPinned: boolean
+  singleClickPaste: boolean
   quickPanelPinInFlight: boolean
   nativeSettingsReady: boolean
   theme: 'light' | 'dark'

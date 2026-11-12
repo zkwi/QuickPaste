@@ -571,6 +571,7 @@ pub(crate) fn package_matches_requested(expected: &FormatPackage, actual: &Forma
             .is_none_or(|rtf| actual.rtf.as_ref() == Some(rtf))
 }
 
+#[cfg(test)]
 pub(crate) fn verified_package_sequence(
     before: Option<u64>,
     expected: &FormatPackage,
@@ -1015,32 +1016,40 @@ pub(crate) fn write_format_package(package: &FormatPackage) -> Result<Option<u64
         clipboard_win::raw::register_format(QUICKPASTE_INTERNAL_WRITE_FORMAT)
             .map(|format| format.get())
             .ok_or("无法注册 QuickPaste 剪贴板写入标记")?;
-    let guard = clipboard_win::Clipboard::new().map_err(|error| error.to_string())?;
-    clipboard_win::raw::empty().map_err(|error| error.to_string())?;
-    clipboard_win::raw::set_without_clear(internal_write_format, &[1])
-        .map_err(|error| error.to_string())?;
+    crate::retry_clipboard_write(
+        || {
+            let guard = clipboard_win::Clipboard::new().map_err(|error| error.to_string())?;
+            clipboard_win::raw::empty().map_err(|error| error.to_string())?;
+            clipboard_win::raw::set_without_clear(internal_write_format, &[1])
+                .map_err(|error| error.to_string())?;
 
-    if !package.files.is_empty() {
-        let paths = package
-            .files
-            .iter()
-            .map(|file| file.path.as_str())
-            .collect::<Vec<_>>();
-        clipboard_win::raw::set_file_list(&paths).map_err(|error| error.to_string())?;
-        drop(guard);
-        return Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())));
-    }
+            if !package.files.is_empty() {
+                let paths = package
+                    .files
+                    .iter()
+                    .map(|file| file.path.as_str())
+                    .collect::<Vec<_>>();
+                clipboard_win::raw::set_file_list(&paths).map_err(|error| error.to_string())?;
+                drop(guard);
+                return Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())));
+            }
 
-    let plain_text = package.plain_text.as_deref().ok_or("格式包缺少纯文本")?;
-    clipboard_win::raw::set_string_with(plain_text, NoClear).map_err(|error| error.to_string())?;
-    if let (Some(format), Some(html)) = (html_format, package.html.as_deref()) {
-        clipboard_win::raw::set_html(format.code(), html).map_err(|error| error.to_string())?;
-    }
-    if let (Some(format), Some(rtf)) = (rtf_format, package.rtf.as_deref()) {
-        clipboard_win::raw::set_without_clear(format, rtf).map_err(|error| error.to_string())?;
-    }
-    drop(guard);
-    Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())))
+            let plain_text = package.plain_text.as_deref().ok_or("格式包缺少纯文本")?;
+            clipboard_win::raw::set_string_with(plain_text, NoClear)
+                .map_err(|error| error.to_string())?;
+            if let (Some(format), Some(html)) = (html_format, package.html.as_deref()) {
+                clipboard_win::raw::set_html(format.code(), html)
+                    .map_err(|error| error.to_string())?;
+            }
+            if let (Some(format), Some(rtf)) = (rtf_format, package.rtf.as_deref()) {
+                clipboard_win::raw::set_without_clear(format, rtf)
+                    .map_err(|error| error.to_string())?;
+            }
+            drop(guard);
+            Ok(clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())))
+        },
+        |_: &String| true,
+    )
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -1164,26 +1173,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
+    #[ignore = "writes the Windows clipboard; run in an isolated session with an empty clipboard"]
     fn windows_writer_round_trips_chrome_style_multiblock_html_before_paste() {
-        fn read_with_retry() -> Option<FormatPackage> {
-            for _ in 0..100 {
-                match read_format_package() {
-                    PackageReadOutcome::Captured { package, .. }
-                    | PackageReadOutcome::Ignored { package, .. } => return Some(package),
-                    PackageReadOutcome::Retryable => {}
-                }
-                if let Ok(guard) = clipboard_win::Clipboard::new_attempts(50) {
-                    let empty = clipboard_win::raw::count_formats() == Some(0);
-                    drop(guard);
-                    if empty {
-                        return None;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            }
-            panic!("测试前无法备份非空系统剪贴板")
-        }
-
         fn read_matching_internal_write_with_retry(expected: &FormatPackage) -> FormatPackage {
             for _ in 0..100 {
                 if let PackageReadOutcome::Ignored { package, .. } = read_format_package() {
@@ -1196,20 +1187,25 @@ mod tests {
             panic!("QuickPaste 写入没有携带完整格式包与可验证的自写抑制标记")
         }
 
-        struct ClipboardRestore(Option<FormatPackage>);
+        struct ClipboardRestore;
 
         impl Drop for ClipboardRestore {
             fn drop(&mut self) {
-                if let Some(package) = &self.0 {
-                    let _ = write_format_package(package);
-                } else if let Ok(guard) = clipboard_win::Clipboard::new_attempts(1_000) {
+                if let Ok(guard) = clipboard_win::Clipboard::new_attempts(1_000) {
                     let _ = clipboard_win::raw::empty();
                     drop(guard);
                 }
             }
         }
 
-        let _restore = ClipboardRestore(read_with_retry());
+        let guard = clipboard_win::Clipboard::new_attempts(50).expect("打开隔离剪贴板");
+        assert_eq!(
+            clipboard_win::raw::count_formats(),
+            Some(0),
+            "隔离剪贴板必须为空"
+        );
+        drop(guard);
+        let _restore = ClipboardRestore;
         let expected = prepare_format_package(
             "第一段：参考链接\r\n\r\n第二段：浏览器输入框\r\n\r\n第三段：记事本",
             Some(concat!(
@@ -1232,40 +1228,6 @@ mod tests {
 
         assert_eq!(actual.plain_text, expected.plain_text);
         assert_eq!(actual.html, expected.html);
-        assert!(
-            crate::verified_format_package_sequence(&expected).is_some(),
-            "内部忽略标记不能阻止粘贴前确认格式包"
-        );
-
-        let writes = crate::InternalClipboardWrites::default();
-        let mut clipboard_holder = None;
-        let sequence = crate::write_and_verify_package(
-            &writes,
-            &expected,
-            |package| {
-                let written_sequence = write_format_package(package)?;
-                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
-                clipboard_holder = Some(std::thread::spawn(move || {
-                    let guard = clipboard_win::Clipboard::new_attempts(1_000)
-                        .expect("竞争读取器打开剪贴板");
-                    ready_tx.send(()).expect("通知剪贴板已被占用");
-                    std::thread::sleep(std::time::Duration::from_millis(300));
-                    drop(guard);
-                }));
-                ready_rx
-                    .recv_timeout(std::time::Duration::from_secs(2))
-                    .map_err(|_| "竞争读取器没有按时打开剪贴板".to_owned())?;
-                Ok(written_sequence)
-            },
-            crate::verified_format_package_sequence,
-        )
-        .expect("格式包已经成功写入");
-        clipboard_holder
-            .take()
-            .expect("竞争读取器已启动")
-            .join()
-            .expect("竞争读取器正常退出");
-        assert!(sequence.is_some(), "短暂占用不能把成功写入降级为仅复制");
     }
 
     #[test]

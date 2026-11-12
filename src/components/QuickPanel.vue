@@ -106,6 +106,10 @@ function closeSearchHelp() {
 function toggleSearchHelp() {
   searchHelpOpen.value = !searchHelpOpen.value
 }
+function activateClip(event: MouseEvent, clip: ClipboardItem) {
+  emit('selectClip', clip.id)
+  if (props.state.singleClickPaste && event.detail === 1) emit('useClip', clip)
+}
 </script>
 
 <template>
@@ -175,7 +179,7 @@ function toggleSearchHelp() {
           <template v-else-if="state.visibleItems.length">
             <div id="clipboard-results" class="clip-list" role="list" :aria-label="helpers.t('clipboardResults')" @scroll.passive="clearHoverPreview" @keydown="clearHoverPreview" @pointerdown="clearHoverPreview">
               <article v-for="(clip, index) in state.visibleItems" :id="helpers.clipResultId(clip.id)" :key="clip.id" :data-clip-id="clip.id" class="clip-row" :class="{ 'is-selected': state.selectedId === clip.id }" role="listitem" :aria-current="state.selectedId === clip.id ? 'true' : undefined" @mouseenter="scheduleHoverPreview(clip, $event)" @mouseleave="clearHoverPreview">
-                <button class="clip-primary" type="button" :tabindex="state.selectedId === clip.id ? 0 : -1" :aria-keyshortcuts="helpers.directPasteAriaShortcuts(index)" @mousedown.left.prevent @click="emit('selectClip', clip.id)" @dblclick="emit('useClip', clip)">
+                <button class="clip-primary" type="button" :tabindex="state.selectedId === clip.id ? 0 : -1" :aria-keyshortcuts="helpers.directPasteAriaShortcuts(index)" @mousedown.left.prevent @click="activateClip($event, clip)" @dblclick="!state.singleClickPaste && emit('useClip', clip)">
                   <span v-if="index < 10" class="quick-number" aria-hidden="true">{{ helpers.directPasteLabel(index) }}</span>
                   <span class="kind-icon" :style="{ '--source-color': clip.color }"><ClipImageThumbnail v-if="clip.kind === 'image'" :clip-id="clip.id" :image-url="clip.imageUrl" :image-hash="clip.imageHash" /><component v-else :is="helpers.kindIcon(clip.kind)" :size="18" /></span>
                   <span class="clip-copy"><span class="clip-content"><span class="clip-content-text"><template v-for="(segment, segmentIndex) in helpers.highlightSegments(helpers.quickClipText(clip))" :key="`content-${segmentIndex}`"><mark v-if="segment.matched" class="search-highlight">{{ segment.text }}</mark><template v-else>{{ segment.text }}</template></template></span><span v-if="helpers.isOcrOnlyMatch(clip)" class="ocr-match">{{ helpers.t('ocrMatch') }}</span><span v-else-if="helpers.isPhoneticOnlyMatch(clip)" class="phonetic-match">{{ helpers.t(state.nativeRuntime ? 'indexMatch' : 'pinyinMatch') }}</span><span v-else-if="clip.kind === 'image' && clip.ocrStatus" class="ocr-status compact">{{ helpers.ocrStatusLabel(clip) }}</span><span v-if="helpers.hasMissingFiles(clip)" :data-testid="`quick-file-availability-${clip.id}`" class="file-availability">{{ helpers.fileAvailabilityLabel(clip) }}</span></span></span>

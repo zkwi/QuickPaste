@@ -25,6 +25,7 @@ export interface StoredSettings {
   onboardingCompleted: boolean
   onboardingPracticePending: boolean
   quickPanelPinned: boolean
+  singleClickPaste: boolean
   autoCheckUpdates: boolean
   ocrEnabled: boolean
 }
@@ -98,6 +99,7 @@ export function defaultStoredSettings(): StoredSettings {
     onboardingCompleted: false,
     onboardingPracticePending: false,
     quickPanelPinned: false,
+    singleClickPaste: false,
     autoCheckUpdates: true,
     ocrEnabled: true,
   }
@@ -151,6 +153,7 @@ export function normalizeStoredSettings(value: unknown): StoredSettings {
       defaults.onboardingPracticePending,
     ),
     quickPanelPinned: storedBoolean(value.quickPanelPinned, defaults.quickPanelPinned),
+    singleClickPaste: storedBoolean(value.singleClickPaste, defaults.singleClickPaste),
     autoCheckUpdates: storedBoolean(value.autoCheckUpdates, defaults.autoCheckUpdates),
     // OCR 是本地能力且默认开启；只有真正的布尔 false 才代表用户关闭。
     ocrEnabled: storedBoolean(value.ocrEnabled, defaults.ocrEnabled),

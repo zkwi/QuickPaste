@@ -1784,7 +1784,7 @@ kbd {
   z-index: 60;
   width: 204px;
   padding: 5px;
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid color-mix(in srgb, var(--border-strong) 88%, transparent);
   border-radius: 12px;
   color: var(--text);
@@ -3430,6 +3430,13 @@ kbd {
   gap: 9px;
   padding: 7px 9px;
   border-bottom: 1px solid var(--border);
+}
+
+.sensitive-app-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
 }
 
 .sensitive-app-row:last-child {

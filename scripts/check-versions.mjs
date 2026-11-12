@@ -45,7 +45,7 @@ const requiredMainWindowPermissions = [
 const requiredCiActions = [
   { name: 'actions/checkout', version: 'v6', action: 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803' },
   { name: 'actions/setup-node', version: 'v6', action: 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38' },
-  { name: 'dtolnay/rust-toolchain', version: '1.88.0', action: 'dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0' },
+  { name: 'dtolnay/rust-toolchain', version: '1.89.0', action: 'dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66' },
   { name: 'Swatinem/rust-cache', version: 'v2', action: 'Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae' },
   { name: 'rustsec/audit-check', version: 'v2.0.0', action: 'rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998' },
 ]

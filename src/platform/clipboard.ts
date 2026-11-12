@@ -104,10 +104,7 @@ export async function pasteFormats(
   }
 }
 
-export async function pasteFiles(
-  filesOrPaths: readonly (ClipboardFile | string)[],
-  invoker?: PasteInvoker,
-): Promise<PasteResult> {
+function clipboardFilePaths(filesOrPaths: readonly (ClipboardFile | string)[]): string[] | null {
   const paths: string[] = []
   for (const file of filesOrPaths) {
     if (typeof file === 'string') {
@@ -115,7 +112,7 @@ export async function pasteFiles(
     } else if (file && typeof file.path === 'string') {
       paths.push(file.path)
     } else {
-      return FAILED_PASTE_RESULT
+      return null
     }
   }
   if (paths.length === 0
@@ -124,15 +121,45 @@ export async function pasteFiles(
       || path.includes('\0')
       || path.length > MAX_FILE_PATH_UTF16_UNITS
       || !isFullyQualifiedWindowsPath(path))) {
-    return FAILED_PASTE_RESULT
+    return null
   }
   const fileListBytes = paths.reduce(
     (total, path) => total + ((path.length + 1) * 2),
     DROPFILES_HEADER_BYTES + 2,
   )
   if (!Number.isSafeInteger(fileListBytes) || fileListBytes > MAX_FILE_LIST_BYTES) {
-    return FAILED_PASTE_RESULT
+    return null
   }
+  return paths
+}
+
+export async function copyFiles(files: readonly ClipboardFile[]): Promise<boolean> {
+  const paths = clipboardFilePaths(files)
+  if (!paths || !files.every((file) => file.exists) || !('__TAURI_INTERNALS__' in window)) return false
+  try {
+    await invokePaste('write_clipboard_files', { paths })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function copyFormats(plainText: string, html?: string, rtfBase64?: string): Promise<boolean> {
+  if (!('__TAURI_INTERNALS__' in window)) return copyText(plainText)
+  try {
+    await invokePaste('write_clipboard_formats', { plainText, html, rtfBase64 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function pasteFiles(
+  filesOrPaths: readonly (ClipboardFile | string)[],
+  invoker?: PasteInvoker,
+): Promise<PasteResult> {
+  const paths = clipboardFilePaths(filesOrPaths)
+  if (!paths) return FAILED_PASTE_RESULT
   // 浏览器没有可移植的 CF_HDROP 写入能力，必须明确失败，不能伪造已复制。
   if (!invoker && !('__TAURI_INTERNALS__' in window)) return FAILED_PASTE_RESULT
 

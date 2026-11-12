@@ -81,7 +81,6 @@ npm run licenses:rust
 | [find-msvc-tools](https://github.com/rust-lang/cc-rs) | 0.1.9 | `MIT OR Apache-2.0` |
 | [flate2](https://github.com/rust-lang/flate2-rs) | 1.1.9 | `MIT OR Apache-2.0` |
 | [fnv](https://github.com/servo/rust-fnv) | 1.0.7 | `Apache-2.0  OR  MIT` |
-| [foldhash](https://github.com/orlp/foldhash) | 0.1.5 | `Zlib` |
 | [foldhash](https://github.com/orlp/foldhash) | 0.2.0 | `Zlib` |
 | [form_urlencoded](https://github.com/servo/rust-url) | 1.2.2 | `MIT OR Apache-2.0` |
 | [futures-channel](https://github.com/rust-lang/futures-rs) | 0.3.32 | `MIT OR Apache-2.0` |
@@ -100,10 +99,9 @@ npm run licenses:rust
 | [glob](https://github.com/rust-lang/glob) | 0.3.3 | `MIT OR Apache-2.0` |
 | [global-hotkey](https://github.com/tauri-apps/global-hotkey) | 0.8.0 | `Apache-2.0 OR MIT` |
 | [hashbrown](https://github.com/rust-lang/hashbrown) | 0.12.3 | `MIT OR Apache-2.0` |
-| [hashbrown](https://github.com/rust-lang/hashbrown) | 0.15.5 | `MIT OR Apache-2.0` |
 | [hashbrown](https://github.com/rust-lang/hashbrown) | 0.16.1 | `MIT OR Apache-2.0` |
 | [hashbrown](https://github.com/rust-lang/hashbrown) | 0.17.1 | `MIT OR Apache-2.0` |
-| [hashlink](https://github.com/kyren/hashlink) | 0.10.0 | `MIT OR Apache-2.0` |
+| [hashlink](https://github.com/djc/hashlink) | 0.12.2 | `MIT OR Apache-2.0` |
 | [heck](https://github.com/withoutboats/heck) | 0.5.0 | `MIT OR Apache-2.0` |
 | [html5ever](https://github.com/servo/html5ever) | 0.38.0 | `MIT OR Apache-2.0` |
 | [http](https://github.com/hyperium/http) | 1.4.2 | `MIT OR Apache-2.0` |
@@ -134,7 +132,7 @@ npm run licenses:rust
 | [jsonptr](https://github.com/chanced/jsonptr) | 0.6.3 | `MIT OR Apache-2.0` |
 | [keyboard-types](https://github.com/pyfisch/keyboard-types) | 0.7.0 | `MIT OR Apache-2.0` |
 | [libc](https://github.com/rust-lang/libc) | 0.2.186 | `MIT OR Apache-2.0` |
-| [libsqlite3-sys](https://github.com/rusqlite/rusqlite) | 0.35.0 | `MIT` |
+| [libsqlite3-sys](https://github.com/rusqlite/rusqlite) | 0.39.1 | `MIT` |
 | [litemap](https://github.com/unicode-org/icu4x) | 0.8.2 | `Unicode-3.0` |
 | [lock_api](https://github.com/Amanieu/parking_lot) | 0.4.14 | `MIT OR Apache-2.0` |
 | [log](https://github.com/rust-lang/log) | 0.4.33 | `MIT OR Apache-2.0` |
@@ -178,7 +176,7 @@ npm run licenses:rust
 | [reqwest](https://github.com/seanmonstar/reqwest) | 0.12.28 | `MIT OR Apache-2.0` |
 | [ring](https://github.com/briansmith/ring) | 0.17.14 | `Apache-2.0 AND ISC` |
 | [rqrr](https://github.com/WanzenBug/rqrr) | 0.10.1 | `(MIT OR Apache-2.0) AND ISC` |
-| [rusqlite](https://github.com/rusqlite/rusqlite) | 0.37.0 | `MIT` |
+| [rusqlite](https://github.com/rusqlite/rusqlite) | 0.41.1 | `MIT` |
 | [rustc-hash](https://github.com/rust-lang/rustc-hash) | 2.1.3 | `Apache-2.0 OR MIT` |
 | [rustc_version](https://github.com/djc/rustc-version-rs) | 0.4.1 | `MIT OR Apache-2.0` |
 | [rustls](https://github.com/rustls/rustls) | 0.23.46 | `Apache-2.0 OR ISC OR MIT` |
@@ -219,6 +217,7 @@ npm run licenses:rust
 | [strsim](https://github.com/rapidfuzz/strsim-rs) | 0.11.1 | `MIT` |
 | [subtle](https://github.com/dalek-cryptography/subtle) | 2.6.1 | `BSD-3-Clause` |
 | [syn](https://github.com/dtolnay/syn) | 2.0.119 | `MIT OR Apache-2.0` |
+| [syn](https://github.com/dtolnay/syn) | 3.0.10 | `MIT OR Apache-2.0` |
 | [sync_wrapper](https://github.com/Actyx/sync_wrapper) | 1.0.2 | `Apache-2.0` |
 | [synstructure](https://github.com/mystor/synstructure) | 0.13.2 | `MIT` |
 | [tao](https://github.com/tauri-apps/tao) | 0.35.3 | `Apache-2.0` |
@@ -237,9 +236,9 @@ npm run licenses:rust
 | [tauri-winres](https://github.com/tauri-apps/winres) | 0.3.6 | `MIT` |
 | [tendril](https://github.com/servo/html5ever) | 0.5.1 | `MIT OR Apache-2.0` |
 | [thiserror](https://github.com/dtolnay/thiserror) | 1.0.69 | `MIT OR Apache-2.0` |
-| [thiserror](https://github.com/dtolnay/thiserror) | 2.0.18 | `MIT OR Apache-2.0` |
+| [thiserror](https://github.com/dtolnay/thiserror) | 2.0.21 | `MIT OR Apache-2.0` |
 | [thiserror-impl](https://github.com/dtolnay/thiserror) | 1.0.69 | `MIT OR Apache-2.0` |
-| [thiserror-impl](https://github.com/dtolnay/thiserror) | 2.0.18 | `MIT OR Apache-2.0` |
+| [thiserror-impl](https://github.com/dtolnay/thiserror) | 2.0.21 | `MIT OR Apache-2.0` |
 | [time](https://github.com/time-rs/time) | 0.3.53 | `MIT OR Apache-2.0` |
 | [time-core](https://github.com/time-rs/time) | 0.1.9 | `MIT OR Apache-2.0` |
 | [time-macros](https://github.com/time-rs/time) | 0.2.31 | `MIT OR Apache-2.0` |
@@ -4560,7 +4559,7 @@ limitations under the License.
 </details>
 
 <details>
-<summary>Apache License 2.0（atomic-waker 1.1.2、autocfg 1.5.1、base64 0.22.1、bitflags 1.3.2、bitflags 2.13.1、camino 1.2.4、cc 1.2.67、cfg-if 1.0.4、crossbeam-channel 0.5.16、crossbeam-utils 0.8.22、displaydoc 0.2.6、equivalent 1.0.2、fastrand 2.4.1、find-msvc-tools 0.1.9、flate2 1.1.9、fnv 1.0.7、form_urlencoded 1.2.2、glob 0.3.3、global-hotkey 0.8.0、hashbrown 0.12.3、hashbrown 0.15.5、hashbrown 0.16.1、hashbrown 0.17.1、heck 0.5.0、html5ever 0.38.0、httparse 1.10.1、hyper-rustls 0.27.9、idna 1.1.0、idna_adapter 1.2.2、indexmap 1.9.3、indexmap 2.14.0、lock_api 0.4.14、log 0.4.33、markup5ever 0.38.0、mime 0.3.17、muda 0.19.3、num-traits 0.2.19、once_cell 1.21.4、parking_lot 0.12.5、parking_lot_core 0.9.12、percent-encoding 2.3.2、pkg-config 0.3.33、png 0.17.16、png 0.18.1、regex-automata 0.4.16、regex-syntax 0.8.11、regex 1.13.1、ring 0.17.14、rustc_version 0.4.1、rustls 0.23.46、scopeguard 1.2.0、serde_with 3.21.0、serde_with_macros 3.21.0、servo_arc 0.4.3、smallvec 1.15.2、socket2 0.6.5、stable_deref_trait 1.2.1、string_cache 0.9.0、string_cache_codegen 0.6.1、tendril 0.5.1、tray-icon 0.24.1、unicode-normalization 0.1.24、unicode-segmentation 1.13.3、url 2.5.8、uuid 1.24.0、version_check 0.9.5、web_atoms 0.2.5、window-vibrancy 0.6.0、wry 0.55.1）</summary>
+<summary>Apache License 2.0（atomic-waker 1.1.2、autocfg 1.5.1、base64 0.22.1、bitflags 1.3.2、bitflags 2.13.1、camino 1.2.4、cc 1.2.67、cfg-if 1.0.4、crossbeam-channel 0.5.16、crossbeam-utils 0.8.22、displaydoc 0.2.6、equivalent 1.0.2、fastrand 2.4.1、find-msvc-tools 0.1.9、flate2 1.1.9、fnv 1.0.7、form_urlencoded 1.2.2、glob 0.3.3、global-hotkey 0.8.0、hashbrown 0.12.3、hashbrown 0.16.1、hashbrown 0.17.1、heck 0.5.0、html5ever 0.38.0、httparse 1.10.1、hyper-rustls 0.27.9、idna 1.1.0、idna_adapter 1.2.2、indexmap 1.9.3、indexmap 2.14.0、lock_api 0.4.14、log 0.4.33、markup5ever 0.38.0、mime 0.3.17、muda 0.19.3、num-traits 0.2.19、once_cell 1.21.4、parking_lot 0.12.5、parking_lot_core 0.9.12、percent-encoding 2.3.2、pkg-config 0.3.33、png 0.17.16、png 0.18.1、regex-automata 0.4.16、regex-syntax 0.8.11、regex 1.13.1、ring 0.17.14、rustc_version 0.4.1、rustls 0.23.46、scopeguard 1.2.0、serde_with 3.21.0、serde_with_macros 3.21.0、servo_arc 0.4.3、smallvec 1.15.2、socket2 0.6.5、stable_deref_trait 1.2.1、string_cache 0.9.0、string_cache_codegen 0.6.1、tendril 0.5.1、tray-icon 0.24.1、unicode-normalization 0.1.24、unicode-segmentation 1.13.3、url 2.5.8、uuid 1.24.0、version_check 0.9.5、web_atoms 0.2.5、window-vibrancy 0.6.0、wry 0.55.1）</summary>
 
 <pre>
                               Apache License
@@ -4770,7 +4769,7 @@ limitations under the License.
 </details>
 
 <details>
-<summary>Apache License 2.0（hashlink 0.10.0）</summary>
+<summary>Apache License 2.0（hashlink 0.12.2）</summary>
 
 <pre>
                               Apache License
@@ -6946,7 +6945,7 @@ APPENDIX: How to apply the Apache License to your work
 </details>
 
 <details>
-<summary>Apache License 2.0（allocator-api2 0.2.21、anyhow 1.0.103、arboard 3.6.1、cargo_toml 0.22.3、dirs-sys 0.5.0、dirs 6.0.0、dtoa 1.0.11、dunce 1.0.5、dyn-clone 1.0.20、erased-serde 0.4.10、fdeflate 0.3.7、ident_case 1.0.1、image 0.25.10、itoa 1.0.18、libc 0.2.186、miniz_oxide 0.8.9、num-conv 0.2.2、pin-project-lite 0.2.17、proc-macro2 1.0.106、quote 1.0.46、raw-window-handle 0.6.2、rustc-hash 2.1.3、ryu 1.0.23、semver 1.0.28、serde-untagged 0.1.9、serde 1.0.228、serde_core 1.0.228、serde_derive 1.0.228、serde_derive_internals 0.29.1、serde_json 1.0.150、serde_repr 0.1.20、serde_urlencoded 0.7.1、shlex 2.0.1、siphasher 1.0.3、syn 2.0.119、sync_wrapper 1.0.2、tauri-build 2.6.3、tauri-codegen 2.6.3、tauri-macros 2.6.3、tauri-plugin-autostart 2.5.1、tauri-plugin-global-shortcut 2.3.2、tauri-plugin-log 2.9.0、tauri-plugin-single-instance 2.4.3、tauri-plugin 2.6.3、tauri-runtime-wry 2.11.4、tauri-runtime 2.11.3、tauri-utils 2.9.3、tauri 2.11.5、thiserror-impl 1.0.69、thiserror-impl 2.0.18、thiserror 1.0.69、thiserror 2.0.18、time-core 0.1.9、time-macros 0.2.31、time 0.3.53、typeid 1.0.3、unic-char-property 0.9.0、unic-char-range 0.9.0、unic-common 0.9.0、unic-ucd-ident 0.9.0、unic-ucd-version 0.9.0、unicode-ident 1.0.24）</summary>
+<summary>Apache License 2.0（allocator-api2 0.2.21、anyhow 1.0.103、arboard 3.6.1、cargo_toml 0.22.3、dirs-sys 0.5.0、dirs 6.0.0、dtoa 1.0.11、dunce 1.0.5、dyn-clone 1.0.20、erased-serde 0.4.10、fdeflate 0.3.7、ident_case 1.0.1、image 0.25.10、itoa 1.0.18、libc 0.2.186、miniz_oxide 0.8.9、num-conv 0.2.2、pin-project-lite 0.2.17、proc-macro2 1.0.106、quote 1.0.46、raw-window-handle 0.6.2、rustc-hash 2.1.3、ryu 1.0.23、semver 1.0.28、serde-untagged 0.1.9、serde 1.0.228、serde_core 1.0.228、serde_derive 1.0.228、serde_derive_internals 0.29.1、serde_json 1.0.150、serde_repr 0.1.20、serde_urlencoded 0.7.1、shlex 2.0.1、siphasher 1.0.3、syn 2.0.119、syn 3.0.10、sync_wrapper 1.0.2、tauri-build 2.6.3、tauri-codegen 2.6.3、tauri-macros 2.6.3、tauri-plugin-autostart 2.5.1、tauri-plugin-global-shortcut 2.3.2、tauri-plugin-log 2.9.0、tauri-plugin-single-instance 2.4.3、tauri-plugin 2.6.3、tauri-runtime-wry 2.11.4、tauri-runtime 2.11.3、tauri-utils 2.9.3、tauri 2.11.5、thiserror-impl 1.0.69、thiserror-impl 2.0.21、thiserror 1.0.69、thiserror 2.0.21、time-core 0.1.9、time-macros 0.2.31、time 0.3.53、typeid 1.0.3、unic-char-property 0.9.0、unic-char-range 0.9.0、unic-common 0.9.0、unic-ucd-ident 0.9.0、unic-ucd-version 0.9.0、unicode-ident 1.0.24）</summary>
 
 <pre>
 Apache License
@@ -7630,7 +7629,7 @@ THE SOFTWARE.
 </details>
 
 <details>
-<summary>MIT License（libsqlite3-sys 0.35.0、rusqlite 0.37.0）</summary>
+<summary>MIT License（libsqlite3-sys 0.39.1、rusqlite 0.41.1）</summary>
 
 <pre>
 Copyright (c) 2014 The rusqlite developers
@@ -10107,7 +10106,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 </details>
 
 <details>
-<summary>zlib License（foldhash 0.1.5、foldhash 0.2.0）</summary>
+<summary>zlib License（foldhash 0.2.0）</summary>
 
 <pre>
 Copyright (c) 2024 Orson Peters

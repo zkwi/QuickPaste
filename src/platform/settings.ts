@@ -1,3 +1,4 @@
+import { normalizeStoredSettings, type StoredSettings } from '../domain/settings'
 import { isTauriRuntime } from './desktop'
 
 export type SettingsInvoke = (command: string, args: Record<string, unknown>) => Promise<unknown>
@@ -78,6 +79,25 @@ export async function setElevatedPasteEnabled(
 ): Promise<boolean> {
   try {
     await invokeSetting('set_elevated_paste_enabled', { enabled }, invokeAdapter)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function loadPortableSettings(invokeAdapter?: SettingsInvoke): Promise<StoredSettings | null | undefined> {
+  try {
+    const value = await invokeSetting('load_user_settings', {}, invokeAdapter)
+    if (value === null) return null
+    if (value && typeof value === 'object' && !Array.isArray(value)) return normalizeStoredSettings(value)
+  } catch {
+    // WebView storage remains available if the portable settings file cannot be read.
+  }
+}
+
+export async function savePortableSettings(settings: StoredSettings, invokeAdapter?: SettingsInvoke): Promise<boolean> {
+  try {
+    await invokeSetting('save_user_settings', { settings }, invokeAdapter)
     return true
   } catch {
     return false

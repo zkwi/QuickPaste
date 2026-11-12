@@ -90,7 +90,7 @@ for (const filename of ['THIRD_PARTY_LICENSES_NPM.md', 'THIRD_PARTY_LICENSES_RUS
 
 const nativeNotices = await readFile(path.join(root, 'THIRD_PARTY_LICENSES_NATIVE.md'), 'utf8')
 assertCanonicalText('THIRD_PARTY_LICENSES_NATIVE.md', nativeNotices)
-if (!nativeNotices.includes('NSIS 3.11') || !nativeNotices.includes('SQLite 3.50.2')) fail('NSIS/SQLite 版本声明不完整')
+if (!nativeNotices.includes('NSIS 3.11') || !nativeNotices.includes('SQLite 3.54.1')) fail('NSIS/SQLite 版本声明不完整')
 
 const tauriConfig = JSON.parse(await readFile(path.join(root, 'src-tauri', 'tauri.conf.json'), 'utf8'))
 const resources = Object.keys(tauriConfig.bundle?.resources || {})

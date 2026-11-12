@@ -4,11 +4,11 @@
 
 QuickPaste 是一款面向 Windows 10/11 x64 的本地优先剪贴板历史工具。按下 `Ctrl + Shift + V`，即可在当前输入位置附近搜索历史并粘贴文本、富文本、图片或文件。
 
-当前版本：[v0.23.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.23.0) · [更新记录](CHANGELOG.md)
+当前版本：[v0.24.0](https://github.com/zkwi/QuickPaste/releases/tag/v0.24.0) · [更新记录](CHANGELOG.md)
 
 ## 快速开始
 
-1. 从 [v0.23.0 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.23.0) 下载 Windows x64 NSIS 安装包或绿色版 ZIP。
+1. 从 [v0.24.0 Release](https://github.com/zkwi/QuickPaste/releases/tag/v0.24.0) 下载 Windows x64 NSIS 安装包或绿色版 ZIP。
 2. 运行安装包，或把绿色版解压到可写目录后启动 `QuickPaste.exe`。
 3. 正常复制文本、富文本、图片或文件。
 4. 在目标输入框中按 `Ctrl + Shift + V`，输入关键词、拼音或来源，选择记录后按 `Enter` 粘贴。
@@ -78,7 +78,9 @@ QuickPaste 是一款面向 Windows 10/11 x64 的本地优先剪贴板历史工�
 | 移动选择 | `↑` / `↓`，`Page Up` / `Page Down` |
 | 粘贴当前记录 | `Enter` 或双击 |
 | 直接粘贴第 1–10 条 | `Alt + 1…0` 或 `Ctrl + 1…0` |
-| 预览当前记录 | `Space` |
+| 预览或关闭预览 | `Space` |
+| 仅复制当前记录 | `Ctrl + C`（搜索框没有选中文字时） |
+| 快速面板删除当前记录 | 空搜索框或列表中按 `Delete`，搜索时可用 `Shift + Delete` |
 | 聚焦快速搜索 | `Ctrl + K` |
 | 打开管理页 | `Ctrl + L` |
 | 暂停或恢复记录 | `Ctrl + P` |
@@ -94,7 +96,7 @@ QuickPaste 是一款面向 Windows 10/11 x64 的本地优先剪贴板历史工�
 - **安装版：** NSIS 只安装到当前用户范围，不请求把主程序永久提升为管理员。
 - **绿色版：** 解压到当前用户可写目录后运行，首次启动会创建同级 `data` 目录。
 - **历史文件：** `data\history.sqlite3`，运行期间可能同时存在 SQLite 的 `-wal` 和 `-shm` 文件。
-- **迁移：** 完全退出 QuickPaste 后复制整个 `data` 目录。该目录包含历史、集合、永久片段和 OCR 数据；主题、语言、快捷键等界面偏好由当前 WebView 配置保存，需要在新环境重新确认。
+- **迁移：** 完全退出 QuickPaste 后复制整个 `data` 目录。该目录包含历史、集合、永久片段和 OCR 数据；主题、语言、快捷键等偏好保存在同目录的 `settings.json`，Windows 开机启动仍按各台机器配置。
 - **WebView2：** 安装器使用在线 Bootstrapper；目标机器缺少 Runtime 时需要访问 Microsoft 下载服务，当前不声明离线安装支持。
 
 ## 隐私与安全
@@ -146,7 +148,7 @@ npm run build:windows
 - [测试策略](docs/testing.md)
 - [质量与缺陷闭环](docs/quality.md)
 - [贡献指南](CONTRIBUTING.md)
-- [v0.23.0 发布说明](docs/releases/v0.23.0.md)
+- [v0.24.0 发布说明](docs/releases/v0.24.0.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md)
 
 ## 许可证

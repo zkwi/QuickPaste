@@ -82,7 +82,7 @@ import {
   type SnippetDraft,
 } from './domain/collections'
 import { formatUpdateSize } from './domain/update'
-import { copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText } from './platform/clipboard'
+import { copyFiles, copyFormats, copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText } from './platform/clipboard'
 import {
   cancelNativeQuit,
   connectCaptureAvailability,
@@ -101,10 +101,12 @@ import {
 import {
   applyNativeHistoryBatch,
   applyNativeHistoryMutation,
+  clearNativeOrdinaryHistory,
   createIncrementalHistoryPersistence,
   createNativeHistoryCollection,
   createSerializedHistoryOperationLane,
   deleteNativeHistoryCollection,
+  getNativeStorageStats,
   listNativeHistoryCollections,
   renameNativeHistoryCollection,
   saveNativeHistorySnippet,
@@ -124,7 +126,7 @@ import {
 } from './platform/ocr'
 import { acknowledgeQuickPanelFirstFrame } from './platform/metrics'
 import { detectNativeClipQr } from './platform/qr'
-import { getLaunchAtStartup, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setScreenCaptureProtection } from './platform/settings'
+import { getLaunchAtStartup, loadPortableSettings, savePortableSettings, setCaptureExclusions, setElevatedPasteEnabled, setGlobalShortcut, setScreenCaptureProtection } from './platform/settings'
 import { openExternalLink, openFilePath, revealFilePath, saveClipboardImage } from './platform/system'
 import {
   observeWindowMaximizedState,
@@ -189,6 +191,7 @@ interface PermanentSnippetDeleteTarget {
 // 品牌重命名不改已有持久化 key，避免 WebView/浏览器模式中的设置和演示历史失效。
 const ITEMS_STORAGE_KEY = 'mypaste-demo-items-v1'
 const SETTINGS_STORAGE_KEY = 'mypaste-ui-settings-v1'
+const PORTABLE_SETTINGS_PENDING_KEY = 'quickpaste-portable-settings-pending'
 const MAX_HISTORY_ITEMS = DEFAULT_HISTORY_POLICY.maxRecords
 const MAX_PENDING_NATIVE_CAPTURES = 500
 const HISTORY_RETRY_ATTEMPTS = 3
@@ -303,6 +306,7 @@ const elevatedPasteEnabled = ref(storedSettings.elevatedPasteEnabled)
 const excludedApps = ref([...storedSettings.excludedApps])
 const sensitiveAppsOpen = ref(false)
 const clearHistoryOpen = ref(false)
+const clearHistoryError = ref('')
 const pendingRetentionChange = ref<PendingRetentionChange | null>(null)
 const retentionChangeInFlight = ref(false)
 const retentionChangeError = ref('')
@@ -314,6 +318,7 @@ const targetApp = ref<string | null>(null)
 const targetAppIcon = ref<string | null>(null)
 const targetElevated = ref(false)
 const quickPanelPinned = ref(storedSettings.quickPanelPinned)
+const singleClickPaste = ref(storedSettings.singleClickPaste)
 const autoCheckUpdates = ref(storedSettings.autoCheckUpdates)
 const ocrEnabled = ref(storedSettings.ocrEnabled)
 const quickPanelPinInFlight = ref(false)
@@ -707,9 +712,9 @@ const ordinaryHistoryCount = computed(() => items.value.filter((clip) => (
   !clip.pinned && clip.permanent !== true
 )).length)
 const ordinaryClearLabel = computed(() => t('clearOrdinaryHistory'))
-const ordinaryClearDescription = computed(() => t('clearOrdinaryHistoryDescription', {
-  count: ordinaryHistoryCount.value,
-}))
+const ordinaryClearDescription = computed(() => nativeRuntime
+  ? t('clearOrdinaryHistoryNativeDescription')
+  : t('clearOrdinaryHistoryDescription', { count: ordinaryHistoryCount.value }))
 const imageCount = computed(() => items.value.filter((clip) => clip.kind === 'image').length)
 const captureAvailability = computed<'starting' | 'available' | 'unavailable'>(() => {
   if (!nativeRuntime) return 'available'
@@ -775,6 +780,10 @@ const canAddSensitiveApp = computed(() => {
   return Boolean(candidate)
     && !excludedApps.value.some((app) => app.toLocaleLowerCase() === candidate.toLocaleLowerCase())
 })
+const excludedAppSuggestions = computed(() => {
+  const excluded = new Set(excludedApps.value.map((app) => app.toLocaleLowerCase()))
+  return knownSourceApps.value.filter((app) => !excluded.has(app.toLocaleLowerCase())).slice(0, 12)
+})
 const modalOverlayOpen = computed(() => (
   sensitiveAppsOpen.value
   || clearHistoryOpen.value
@@ -789,6 +798,7 @@ const filters = computed<Array<{ id: ClipKindFilter; label: string }>>(() => [
   { id: 'code', label: t('code') },
   { id: 'link', label: t('link') },
   { id: 'image', label: t('image') },
+  { id: 'file', label: t('file') },
   { id: 'pinned', label: t('pinned') },
 ])
 
@@ -803,6 +813,7 @@ const quickPanelState = computed(() => ({
   targetAppIcon: targetAppIcon.value,
   targetElevated: targetElevated.value,
   quickPanelPinned: quickPanelPinned.value,
+  singleClickPaste: singleClickPaste.value,
   quickPanelPinInFlight: quickPanelPinInFlight.value,
   nativeSettingsReady: nativeSettingsReady.value,
   theme: theme.value,
@@ -1205,8 +1216,8 @@ watch(theme, (value) => {
   document.documentElement.dataset.theme = value
 }, { immediate: true })
 
-watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, historyRetentionDays, launchAtStartup, hideDuringSharing, elevatedPasteEnabled, capturePaused, excludedApps, globalShortcut, onboardingCompleted, onboardingPracticePending, quickPanelPinned, autoCheckUpdates, ocrEnabled], () => {
-  writeStoredValue(SETTINGS_STORAGE_KEY, {
+function currentUserSettings(): StoredSettings {
+  return {
     settingsVersion: SETTINGS_SCHEMA_VERSION,
     theme: theme.value,
     locale: locale.value,
@@ -1216,15 +1227,63 @@ watch([theme, locale, retentionDays, historyMaxRecords, historyMaxImageBytes, hi
     hideDuringSharing: hideDuringSharing.value,
     elevatedPasteEnabled: elevatedPasteEnabled.value,
     capturePaused: capturePaused.value,
-    excludedApps: excludedApps.value,
+    excludedApps: [...excludedApps.value],
     globalShortcut: globalShortcut.value,
     onboardingCompleted: onboardingCompleted.value,
     onboardingPracticePending: onboardingPracticePending.value,
     quickPanelPinned: quickPanelPinned.value,
+    singleClickPaste: singleClickPaste.value,
     autoCheckUpdates: autoCheckUpdates.value,
     ocrEnabled: ocrEnabled.value,
-  } satisfies StoredSettings)
-}, { immediate: true, deep: true })
+  }
+}
+
+function hasPendingPortableSettings(): boolean {
+  try {
+    return localStorage.getItem(PORTABLE_SETTINGS_PENDING_KEY) === 'true'
+  } catch {
+    return false
+  }
+}
+
+let portableSettingsWrite = Promise.resolve()
+let portableSettingsRevision = 0
+function persistUserSettings(settings: StoredSettings) {
+  writeStoredValue(SETTINGS_STORAGE_KEY, settings)
+  if (nativeRuntime && nativeSettingsReady.value) {
+    const revision = ++portableSettingsRevision
+    writeStoredValue(PORTABLE_SETTINGS_PENDING_KEY, true)
+    portableSettingsWrite = portableSettingsWrite.then(async () => {
+      const saved = await savePortableSettings(settings)
+      if (saved && revision === portableSettingsRevision) writeStoredValue(PORTABLE_SETTINGS_PENDING_KEY, false)
+    })
+  }
+}
+
+watch(currentUserSettings, persistUserSettings, { immediate: true })
+
+function applyPortableSettings(settings: StoredSettings) {
+  theme.value = settings.theme
+  locale.value = settings.locale
+  historyMaxRecords.value = settings.historyPolicy.maxRecords
+  historyMaxImageBytes.value = settings.historyPolicy.maxImageBytes
+  historyRetentionDays.value = settings.historyPolicy.retentionDays
+  suppressRetentionPolicySync = true
+  retentionDays.value = retentionPeriodForPolicy(settings.historyPolicy)
+  launchAtStartup.value = settings.launchAtStartup
+  hideDuringSharing.value = settings.hideDuringSharing
+  elevatedPasteEnabled.value = settings.elevatedPasteEnabled
+  capturePaused.value = settings.capturePaused
+  excludedApps.value = [...settings.excludedApps]
+  globalShortcut.value = settings.globalShortcut
+  onboardingCompleted.value = settings.onboardingCompleted
+  onboardingPracticePending.value = settings.onboardingPracticePending
+  onboardingStep.value = settings.onboardingCompleted ? -1 : 0
+  quickPanelPinned.value = settings.quickPanelPinned
+  singleClickPaste.value = settings.singleClickPaste
+  autoCheckUpdates.value = settings.autoCheckUpdates
+  ocrEnabled.value = settings.ocrEnabled
+}
 
 watch(locale, (value) => {
   document.documentElement.lang = value
@@ -1761,7 +1820,9 @@ function handleContextMenuPointerDown(event: PointerEvent) {
   if (!target?.closest('[data-testid="clip-context-menu"]')) closeClipContextMenu()
 }
 
-function handleContextMenuScroll() {
+function handleContextMenuScroll(event: Event) {
+  const target = event.target
+  if (target instanceof Element && target.closest('[data-testid="clip-context-menu"]')) return
   closeClipContextMenu()
 }
 
@@ -1789,7 +1850,7 @@ function runContextPreview() {
 async function runContextAction(action: ClipAction) {
   const clip = contextMenuClip.value
   if (!clip || action.disabled) return
-  const actionSurface = clipContextMenu.value?.surface === 'manager' ? 'manager' : 'quick'
+  const actionSurface = clipContextMenu.value?.surface ?? 'quick'
   closeClipContextMenu(true)
   if (action.pasteMode) {
     await pasteClip(clip, action.pasteMode)
@@ -1797,6 +1858,18 @@ async function runContextAction(action: ClipAction) {
   }
   if (action.id === 'copy') {
     await copyClip(clip)
+    return
+  }
+  if (action.id === 'pin' || action.id === 'unpin') {
+    pinClip(clip.id, 'quick')
+    return
+  }
+  if (action.id === 'delete') {
+    deleteClip(clip.id, 'quick')
+    return
+  }
+  if (action.id === 'exclude-source') {
+    if (addExcludedSourceApp(clip.sourceApp)) showToast(t('sourceAppExcluded', { app: clip.sourceApp }))
     return
   }
 
@@ -1871,12 +1944,14 @@ function closeSensitiveApps() {
 }
 
 function requestClearHistory() {
-  if (ordinaryHistoryCount.value <= 0) return
+  if (nativeRuntime ? historyState.value !== 'ready' || managerOperationBusy.value : ordinaryHistoryCount.value <= 0) return
+  clearHistoryError.value = ''
   clearHistoryOpen.value = true
   nextTick(() => document.querySelector<HTMLElement>('[data-testid="cancel-clear-history"]')?.focus())
 }
 
 function closeClearHistory() {
+  if (managerOperationBusy.value) return
   clearHistoryOpen.value = false
   restoreFocus(clearHistoryTrigger.value)
 }
@@ -2010,17 +2085,32 @@ function trapModalFocus(event: KeyboardEvent) {
   }
 }
 
-function confirmClearHistory() {
-  const result = clearUnpinnedHistory(items.value)
-  items.value = result.items
-  if (nativeRuntime) nativeHistoryTotalCount.value = Math.max(0, nativeHistoryTotalCount.value - result.removedCount)
+async function confirmClearHistory() {
+  if (!clearHistoryOpen.value || managerOperationBusy.value) return
+  clearHistoryError.value = ''
+  let removedCount: number
+  if (nativeRuntime) {
+    const result = await runSerializedManagerOperation(clearNativeOrdinaryHistory)
+    if (result.status === 'failed') {
+      clearHistoryError.value = t('clearOrdinaryHistoryFailed')
+      return
+    }
+    removedCount = result.value
+    clearManagerSelection()
+    managerBulkToolbarKey.value += 1
+    void refreshStorageState()
+  } else {
+    const result = clearUnpinnedHistory(items.value)
+    items.value = result.items
+    removedCount = result.removedCount
+  }
   clearHistoryOpen.value = false
   lastRemoved.value = null
   if (undoTimer) clearTimeout(undoTimer)
   undoTimer = undefined
   previewId.value = null
   selectedId.value = items.value[0]?.id ?? ''
-  showToast(t('ordinaryHistoryCleared', { count: result.removedCount }))
+  showToast(t('ordinaryHistoryCleared', { count: removedCount }))
   nextTick(() => managerSearchInput.value?.focus())
 }
 
@@ -2269,6 +2359,7 @@ async function releaseInputFocusBeforePaste(): Promise<HTMLElement | null> {
 async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode(clip)) {
   if (pasteInFlight.value) return
   const sessionGeneration = quickSessionGeneration
+  const fromQuick = currentView.value === 'quick'
   const pasteTargetLabel = targetApp.value ?? t('currentApp')
   pasteInFlight.value = true
   try {
@@ -2288,7 +2379,7 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
           ? await pasteImage(payload.imageUrl)
           : await pasteText(payload.content)
     if (sessionGeneration !== quickSessionGeneration) return
-    if (!result.pasted) restoreFocus(focusBeforePaste)
+    if (!result.pasted && (!nativeRuntime || !result.copied || quickPanelPinned.value || !fromQuick)) restoreFocus(focusBeforePaste)
     if (payload.id === ONBOARDING_SAMPLE_ID && result.pasted) {
       onboardingPracticePending.value = false
     }
@@ -2299,7 +2390,7 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
       : result.copied
         ? t('pasteFallbackCopied', { app: pasteTargetLabel })
       : t('clipboardUnavailable'), result.requiresElevation || !result.pasted)
-    return result.pasted || result.copied
+    if (fromQuick && (result.pasted || result.copied)) promoteQuickClip(clip.id)
   } finally {
     pasteInFlight.value = false
   }
@@ -2310,27 +2401,52 @@ function pastePreviewClip(mode?: PasteMode) {
   if (clip) void pasteClip(clip, mode)
 }
 
-async function useClipFromDoubleClick(clip: ClipboardItem) {
-  const used = await pasteClip(clip)
-  if (!used) return
-
-  items.value = promoteUsedClip(items.value, clip.id)
-  selectedId.value = clip.id
+function promoteQuickClip(id: string) {
+  items.value = promoteUsedClip(items.value, id)
+  selectedId.value = id
   if (nativeRuntime) queueNativeHistoryRefresh(true)
 }
 
 async function copyClip(clip: ClipboardItem) {
+  if (pasteInFlight.value) return
   const sessionGeneration = quickSessionGeneration
-  const payload = await resolveClipPayload(clip)
-  if (!payload || sessionGeneration !== quickSessionGeneration) {
-    if (!payload && sessionGeneration === quickSessionGeneration) showToast(t('historyUnavailable'), true)
-    return
+  const view = currentView.value
+  const isCurrent = () => sessionGeneration === quickSessionGeneration && view === currentView.value
+  pasteInFlight.value = true
+  try {
+    const payload = await resolveClipPayload(clip)
+    if (!payload || !isCurrent()) {
+      if (!payload && isCurrent()) showToast(t('historyUnavailable'), true)
+      return
+    }
+    let copied: boolean
+    switch (defaultPasteMode(payload)) {
+      case 'image':
+        copied = Boolean(payload.imageUrl && await copyImage(payload.imageUrl))
+        break
+      case 'files':
+        copied = await copyFiles(payload.files ?? [])
+        break
+      case 'preserve':
+        copied = await copyFormats(payload.content, payload.html, payload.rtfBase64)
+        break
+      default:
+        copied = await copyText(payload.content)
+    }
+    if (!isCurrent()) return
+    if (copied && view === 'quick') {
+      promoteQuickClip(clip.id)
+      if (nativeRuntime && !quickPanelPinned.value) {
+        await releaseInputFocusBeforePaste()
+        if (isCurrent()) await runWindowAction('close', undefined, isCurrent)
+      }
+    }
+    if (isCurrent()) {
+      showToast(copied ? t('copiedFrom', { source: payload.sourceApp }) : t('clipboardUnavailable'), !copied)
+    }
+  } finally {
+    pasteInFlight.value = false
   }
-  const copied = payload.kind === 'image' && payload.imageUrl
-    ? await copyImage(payload.imageUrl)
-    : await copyText(payload.content)
-  if (sessionGeneration !== quickSessionGeneration) return
-  showToast(copied ? t('copiedFrom', { source: payload.sourceApp }) : t('clipboardUnavailable'), !copied)
 }
 
 async function pasteRecognizedText(text: string) {
@@ -2342,7 +2458,7 @@ async function pasteRecognizedText(text: string) {
     const focusBeforePaste = await releaseInputFocusBeforePaste()
     const result = await pasteText(text)
     if (sessionGeneration !== quickSessionGeneration) return
-    if (!result.pasted) restoreFocus(focusBeforePaste)
+    if (!result.pasted && (!nativeRuntime || !result.copied || quickPanelPinned.value)) restoreFocus(focusBeforePaste)
     showToast(result.requiresElevation
       ? t('elevatedPasteApprovalRequired')
       : result.pasted
@@ -2405,7 +2521,7 @@ async function mergeNativeCapture(payload: NativeCapturePayload, announce = true
 }
 
 function acceptNativeCapture(payload: NativeCapturePayload) {
-  if (capturePaused.value) return
+  if (!nativeSettingsReady.value || capturePaused.value) return
   if (nativeRuntime && historyPersistence.isFrozen()) {
     deferredStorageCaptures.push(payload)
     if (deferredStorageCaptures.length > MAX_PENDING_NATIVE_CAPTURES) deferredStorageCaptures.shift()
@@ -2925,12 +3041,22 @@ function handleWindowBlur() {
   }
 }
 
-function addSensitiveApp() {
-  const app = sensitiveAppDraft.value.trim()
-  if (!canAddSensitiveApp.value) return
+function addExcludedSourceApp(value: string): boolean {
+  const app = value.trim()
+  if (!app || (nativeRuntime && !nativeSettingsReady.value)
+    || excludedApps.value.some((existing) => existing.toLocaleLowerCase() === app.toLocaleLowerCase())) return false
   excludedApps.value.push(app)
+  return true
+}
+
+function addSensitiveApp() {
+  if (!addExcludedSourceApp(sensitiveAppDraft.value)) return
   sensitiveAppDraft.value = ''
   nextTick(() => sensitiveAppInput.value?.focus())
+}
+
+function addSuggestedSourceApp(app: string) {
+  if (addExcludedSourceApp(app)) nextTick(() => sensitiveAppInput.value?.focus())
 }
 
 function removeSensitiveApp(app: string) {
@@ -3041,6 +3167,8 @@ const { handleKeydown } = useGlobalKeyboard(() => ({
   selectSourceSuggestion,
   clearQuickSourceFilter,
   pasteClip: (clip) => { void pasteClip(clip) },
+  copyClip: (clip) => { void copyClip(clip) },
+  deleteClip: (id) => deleteClip(id, 'quick'),
   selectWithKeyboard,
   selectIndexWithKeyboard,
   openPreview: (id) => { void openPreview(id) },
@@ -3134,31 +3262,48 @@ async function connectClipboardBridge() {
 
 async function connectDesktopBridges() {
   if (nativeRuntime) {
+    const portable = await loadPortableSettings()
+    if (appUnmounted) return
+    const retryPortableSave = hasPendingPortableSettings()
+    if (portable && !retryPortableSave) {
+      applyPortableSettings(portable)
+      await nextTick()
+      suppressRetentionPolicySync = false
+      void setOnboardingWindowActive(!onboardingCompleted.value)
+      focusCurrentView()
+      if (!onboardingCompleted.value) focusOnboardingStep()
+    }
     const nativeLaunchAtStartup = await getLaunchAtStartup()
     if (nativeLaunchAtStartup !== null) launchAtStartup.value = nativeLaunchAtStartup
+    // 先应用排除列表，再允许原生端接收新剪贴板历史。
+    const exclusionsApplied = await setCaptureExclusions(excludedApps.value)
+    if (!exclusionsApplied) capturePaused.value = true
     const initializationResults = await Promise.all([
       setNativeCapturePaused(capturePaused.value),
       setScreenCaptureProtection(hideDuringSharing.value),
-      setCaptureExclusions(excludedApps.value),
       setElevatedPasteEnabled(elevatedPasteEnabled.value),
       setQuickPanelPinned(quickPanelPinned.value),
       setNativeClipboardOcrEnabled(ocrEnabled.value),
     ])
-    const [capturePausedApplied, captureProtectionApplied, exclusionsApplied, elevatedPasteApplied, quickPanelPinnedApplied] = initializationResults
+    const [capturePausedApplied, captureProtectionApplied, elevatedPasteApplied, quickPanelPinnedApplied] = initializationResults
     // 启动阶段失败时，回到本进程已知的原生初始状态，避免 UI 与 Windows 状态相反。
-    if (!capturePausedApplied) capturePaused.value = false
+    if (!capturePausedApplied) capturePaused.value = true
     if (!captureProtectionApplied) hideDuringSharing.value = false
     if (!elevatedPasteApplied) elevatedPasteEnabled.value = true
     if (!quickPanelPinnedApplied) quickPanelPinned.value = false
     // OCR 是隐私选择：原生同步失败时保留本地意图，尤其不能把显式关闭改回开启。
-    if (!exclusionsApplied) {
-      excludedApps.value = []
-      resetNativeExcludedApps([])
-    }
-    if (initializationResults.some((applied) => !applied)) showToast(t('settingApplyFailed'), true)
+    resetNativeExcludedApps(exclusionsApplied ? excludedApps.value : [])
+    if (!exclusionsApplied || initializationResults.some((applied) => !applied)) showToast(t('settingApplyFailed'), true)
     // 先让初始化造成的响应式变更在 nativeSettingsReady=false 时完成，避免被误判为用户操作并重复调用。
     await nextTick()
+    // 已有历史的保留策略以 SQLite 最后提交的值为准，避免设置镜像滞后时误删记录。
+    const useDatabasePolicy = Boolean(portable) || retryPortableSave
+    const startupStorage = useDatabasePolicy ? await getNativeStorageStats() : null
+    if (appUnmounted) return
+    const policyFromDatabase = Boolean(startupStorage?.recordCount)
+    if (startupStorage && policyFromDatabase) await adoptRestoredHistoryPolicy(startupStorage)
     nativeSettingsReady.value = true
+    if (portable === null || retryPortableSave || policyFromDatabase) persistUserSettings(currentUserSettings())
     await refreshManagerCollections()
     shortcutApplyInFlight.value = true
     try {
@@ -3178,7 +3323,7 @@ async function connectDesktopBridges() {
     } finally {
       shortcutApplyInFlight.value = false
     }
-    const policySynced = await applyNativeHistoryMutation({
+    const policySynced = (!useDatabasePolicy || startupStorage !== null) && await applyNativeHistoryMutation({
       upserts: [],
       deleteIds: [],
       policy: currentHistoryPolicy(),
@@ -3222,6 +3367,7 @@ async function connectDesktopBridges() {
     void (async () => {
       try {
         if (await flushHistoryWithRetry()) {
+          await portableSettingsWrite
           await exitNativeApp()
         } else {
           await cancelNativeQuit()
@@ -3326,7 +3472,7 @@ onBeforeUnmount(() => {
         @focus-content="focusCurrentQuickContent"
         @retry-history="retryHistoryLoad"
         @select-clip="selectedId = $event"
-        @use-clip="useClipFromDoubleClick"
+        @use-clip="pasteClip"
         @preview-clip="openPreview"
         @hover-preview-clip="showHoverPreview"
         @pin-clip="pinClip($event, 'quick')"
@@ -3406,6 +3552,7 @@ onBeforeUnmount(() => {
             v-model:ocr-enabled="ocrEnabled"
             v-model:elevated-paste-enabled="elevatedPasteEnabled"
             v-model:auto-check-updates="autoCheckUpdates"
+            v-model:single-click-paste="singleClickPaste"
             :native-runtime="nativeRuntime"
             :native-settings-ready="nativeSettingsReady"
             :global-shortcut="globalShortcut"
@@ -3546,6 +3693,9 @@ onBeforeUnmount(() => {
             <input ref="sensitiveAppInput" data-testid="sensitive-app-input" v-model="sensitiveAppDraft" type="text" autocomplete="off" :aria-label="t('sensitiveAppName')" :placeholder="t('sensitiveAppPlaceholder')" />
             <button data-testid="add-sensitive-app" class="primary-button" type="submit" :disabled="!canAddSensitiveApp" @click.prevent="addSensitiveApp">{{ t('add') }}</button>
           </form>
+          <div v-if="excludedAppSuggestions.length" class="sensitive-app-suggestions" role="group" :aria-label="t('sourceAppSuggestions')">
+            <button v-for="app in excludedAppSuggestions" :key="app" class="filter-chip" type="button" data-testid="exclude-source-suggestion" @click="addSuggestedSourceApp(app)">{{ app }}</button>
+          </div>
           <p class="settings-modal-note">{{ t('sensitiveAppsNote') }}</p>
         </section>
       </div>
@@ -3563,6 +3713,9 @@ onBeforeUnmount(() => {
         :confirm-label="t('confirmClear')"
         cancel-test-id="cancel-clear-history"
         confirm-test-id="confirm-clear-history"
+        :busy="managerOperationBusy"
+        :error-message="clearHistoryError"
+        error-test-id="clear-history-error"
         @cancel="closeClearHistory"
         @confirm="confirmClearHistory"
         @keydown="trapModalFocus"

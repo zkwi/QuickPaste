@@ -2,6 +2,8 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import App from './App.vue'
 
 const clipboardMocks = vi.hoisted(() => ({
+  copyFiles: vi.fn().mockResolvedValue(true),
+  copyFormats: vi.fn().mockResolvedValue(true),
   copyImage: vi.fn().mockResolvedValue(true),
   copyText: vi.fn().mockResolvedValue(true),
   pasteFiles: vi.fn().mockResolvedValue({ copied: true, pasted: false, requiresElevation: false }),
@@ -269,39 +271,81 @@ describe('quick panel high-frequency interaction', () => {
     expect(stored[0].copiedAt).not.toBe(originalCopiedAt)
   })
 
-  it('keeps quick surfaces free of copy and delete actions while retaining row pinning', async () => {
-    const first = wrapper.get('[data-clip-id="clip-1"]')
-    const primary = first.get('.clip-primary')
-    const pin = first.get('[data-testid="pin-clip-clip-1"]')
-
-    expect(pin.attributes('aria-pressed')).toBe('false')
-    expect(pin.attributes('title')).toContain('固定内容')
-    expect(primary.attributes('title')).toBeUndefined()
-    expect(primary.attributes('aria-keyshortcuts')).toContain('Alt+1')
-    expect(first.get('[data-testid="preview-clip-clip-1"]').attributes('title')).toContain('Space')
-    expect(first.find('[data-testid="delete-clip-clip-1"]').exists()).toBe(false)
-
-    await pin.trigger('click')
-    expect(pin.attributes('aria-pressed')).toBe('true')
-
-    dispatchKey(primary.element, 'c', { ctrlKey: true })
-    dispatchKey(primary.element, 'Delete')
-    await flushPromises()
+  it('keeps native text selection for Ctrl+C and uses the selected clip when no text is selected', async () => {
+    const search = wrapper.get<HTMLInputElement>('[data-testid="search-input"]')
+    await search.setValue('Windows')
+    search.element.setSelectionRange(0, 2)
+    expect(dispatchKey(search.element, 'c', { ctrlKey: true }).defaultPrevented).toBe(false)
     expect(clipboardMocks.copyText).not.toHaveBeenCalled()
+    search.element.setSelectionRange(2, 2)
+    expect(dispatchKey(search.element, 'c', { ctrlKey: true }).defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(clipboardMocks.copyText).toHaveBeenCalledWith(expect.stringContaining('Windows'))
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+  })
+
+  it('opens and closes preview with Space from an empty search without activating paste', async () => {
+    const search = wrapper.get('[data-testid="search-input"]')
+    expect(dispatchKey(search.element, ' ', { isComposing: true }).defaultPrevented).toBe(false)
+    expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
+    expect(dispatchKey(search.element, ' ').defaultPrevented).toBe(true)
+    await flushPromises()
+    const button = wrapper.get('[data-testid="preview-paste"]')
+    ;(button.element as HTMLElement).focus()
+    expect(dispatchKey(button.element, ' ').defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+    await search.setValue('Windows')
+    expect(dispatchKey(search.element, ' ').defaultPrevented).toBe(false)
+  })
+
+  it('preserves Delete for a search term, supports Shift+Delete and keeps undo', async () => {
+    const search = wrapper.get('[data-testid="search-input"]')
+    await search.setValue('Windows')
+    expect(dispatchKey(search.element, 'Delete').defaultPrevented).toBe(false)
     expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(true)
+    expect(dispatchKey(search.element, 'Delete', { shiftKey: true }).defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(false)
+    await wrapper.get('[data-testid="undo-delete"]').trigger('click')
+    expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(true)
+  })
 
-    dispatchContextMenu(first.element)
+  it('uses quick context actions to pin, exclude the source, and delete a record', async () => {
+    const first = () => wrapper.get('[data-clip-id="clip-1"]')
+    dispatchContextMenu(first().element)
     await wrapper.vm.$nextTick()
-    const menu = wrapper.get('[data-testid="clip-context-menu"]')
-    expect(menu.find('[data-testid="context-copy"]').exists()).toBe(false)
-    expect(menu.find('[data-testid="context-pin"]').exists()).toBe(false)
-    expect(menu.find('[data-testid="context-delete"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="context-copy"]').exists()).toBe(true)
+    await wrapper.get('[data-testid="context-pin"]').trigger('click')
+    expect(first().get('[data-testid="pin-clip-clip-1"]').attributes('aria-pressed')).toBe('true')
 
-    await menu.get('[data-testid="context-preview"]').trigger('click')
-    const preview = wrapper.get('[data-testid="preview-panel"]')
-    expect(preview.find('[data-testid="preview-copy"]').exists()).toBe(false)
-    expect(preview.find('[data-testid="preview-pin"]').exists()).toBe(false)
-    expect(preview.find('a[href]').exists()).toBe(false)
+    dispatchContextMenu(first().element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-exclude-source"]').trigger('click')
+    const stored = JSON.parse(localStorage.getItem('mypaste-ui-settings-v1') ?? '{}')
+    expect(stored.excludedApps).toHaveLength(3)
+
+    dispatchContextMenu(first().element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-delete"]').trigger('click')
+    expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(false)
+  })
+
+  it('applies the single-click paste setting without a second paste on a double click', async () => {
+    await wrapper.get('[data-clip-id="clip-1"] .clip-primary').trigger('click', { detail: 1 })
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+    await wrapper.get('[data-testid="open-settings"]').trigger('click')
+    await flushPromises()
+    await wrapper.get('[data-testid="settings-single-click-paste"]').setValue(true)
+    await wrapper.get('[data-testid="library-view"] .back-button').trigger('click')
+    await flushPromises()
+    const primary = wrapper.get('[data-clip-id="clip-1"] .clip-primary')
+    await primary.trigger('click', { detail: 1 })
+    await flushPromises()
+    await primary.trigger('click', { detail: 2 })
+    await primary.trigger('dblclick', { detail: 2 })
+    expect(clipboardMocks.pasteText).toHaveBeenCalledOnce()
   })
 
   it('routes rich preserve/plain and ordered files through their typed paste adapters', async () => {
@@ -744,7 +788,7 @@ describe('quick panel high-frequency interaction', () => {
 
     dispatchKey(search.element, '1', { ctrlKey: true })
     await flushPromises()
-    expect(clipboardMocks.pasteText).toHaveBeenLastCalledWith(expect.stringContaining('Windows 版本'))
+    expect(clipboardMocks.pasteText).toHaveBeenLastCalledWith(expect.stringContaining('问题已经收到'))
 
     const completedPastes = clipboardMocks.pasteText.mock.calls.length
     dispatchKey(search.element, '1', { altKey: true, ctrlKey: true })
@@ -887,7 +931,7 @@ describe('quick panel high-frequency interaction', () => {
     expect(event.defaultPrevented).toBe(true)
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     expect(menu.attributes('role')).toBe('menu')
-    expect(menu.findAll('[role="menuitem"]')).toHaveLength(2)
+    expect(menu.findAll('[role="menuitem"]')).toHaveLength(6)
     expect(menu.get('[data-testid="context-paste"]').text()).toContain('粘贴')
     expect(menu.get('[data-testid="context-preview"]').text()).toContain('预览')
     expect(document.activeElement).toBe(menu.get('[data-testid="context-paste"]').element)
@@ -903,16 +947,6 @@ describe('quick panel high-frequency interaction', () => {
 
     expect(clipboardMocks.pasteText).toHaveBeenCalledWith(expect.stringContaining('Windows 版本'))
     expect(wrapper.find('[data-testid="clip-context-menu"]').exists()).toBe(false)
-  })
-
-  it('does not expose destructive actions from a quick context menu', async () => {
-    const row = wrapper.get('[data-clip-id="clip-2"]')
-    dispatchContextMenu(row.element)
-    await wrapper.vm.$nextTick()
-
-    expect(wrapper.find('[data-testid="context-delete"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="context-pin"]').exists()).toBe(false)
-    expect(wrapper.find('[data-clip-id="clip-2"]').exists()).toBe(true)
   })
 
   it('keeps native editing commands for inputs and suppresses the WebView menu on blank chrome', async () => {
@@ -955,7 +989,7 @@ describe('quick panel high-frequency interaction', () => {
 
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     const first = menu.get('[data-testid="context-paste"]')
-    const second = menu.get('[data-testid="context-preview"]')
+    const second = menu.get('[data-testid="context-copy"]')
     expect(document.activeElement).toBe(first.element)
 
     dispatchKey(first.element, 'ArrowDown')

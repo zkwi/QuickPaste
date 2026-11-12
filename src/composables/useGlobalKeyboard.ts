@@ -63,6 +63,8 @@ export interface GlobalKeyboardActions {
   selectSourceSuggestion: (source: string) => void
   clearQuickSourceFilter: () => void
   pasteClip: (clip: ClipboardItem) => void
+  copyClip: (clip: ClipboardItem) => void
+  deleteClip: (id: string) => void
   selectWithKeyboard: (delta: number, moveFocus?: boolean) => void
   selectIndexWithKeyboard: (index: number, moveFocus?: boolean) => void
   openPreview: (id: string) => void
@@ -102,7 +104,10 @@ export function useGlobalKeyboard(
       return
     }
 
-    if (event.isComposing || state.isComposing) return
+    if (event.isComposing || state.isComposing) {
+      if (event.key === ' ' && state.previewId) event.preventDefault()
+      return
+    }
     if (state.onboardingStep >= 0) {
       if (event.key === 'Escape') actions.finishOnboarding()
       return
@@ -195,6 +200,29 @@ export function useGlobalKeyboard(
     const isSearchTarget = eventTarget === state.searchInput
     const isResultNavigationTarget = isSearchTarget || resultPrimary !== null
 
+    const plainSpace = event.key === ' ' && !event.ctrlKey && !event.altKey && !event.metaKey
+    if (plainSpace && state.previewId) {
+      event.preventDefault()
+      if (!event.repeat) actions.closePreview()
+      return
+    }
+
+    if (isResultNavigationTarget && state.selectedClip && !event.altKey && !event.metaKey) {
+      const searchHasSelection = isSearchTarget
+        && state.searchInput?.selectionStart !== state.searchInput?.selectionEnd
+      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'c' && !searchHasSelection) {
+        event.preventDefault()
+        if (!event.repeat) actions.copyClip(state.selectedClip)
+        return
+      }
+      if (!event.ctrlKey && event.key === 'Delete'
+        && (event.shiftKey || !isSearchTarget || !state.query)) {
+        event.preventDefault()
+        if (!event.repeat) actions.deleteClip(state.selectedClip.id)
+        return
+      }
+    }
+
     if (isSearchTarget && state.sourceSuggestions.length > 0) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
         event.preventDefault()
@@ -244,11 +272,9 @@ export function useGlobalKeyboard(
       actions.pasteClip(state.selectedClip)
       return
     }
-    if (event.key === ' ' && state.previewId === null) {
-      if (eventTarget?.closest('.clip-primary') && state.selectedClip) {
-        event.preventDefault()
-        actions.openPreview(state.selectedClip.id)
-      }
+    if (plainSpace && state.selectedClip && (resultPrimary || (isSearchTarget && !state.query))) {
+      event.preventDefault()
+      if (!event.repeat) actions.openPreview(state.selectedClip.id)
     }
   }
 

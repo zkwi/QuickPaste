@@ -5,7 +5,7 @@ import { validateProjectMetadata } from './check-versions.mjs'
 
 const CHECKOUT_ACTION = 'actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803'
 const SETUP_NODE_ACTION = 'actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38'
-const RUST_TOOLCHAIN_ACTION = 'dtolnay/rust-toolchain@39b0b3842c7e8bbf6904c0bfc3d9006fdd4dc4e0'
+const RUST_TOOLCHAIN_ACTION = 'dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66'
 const RUST_CACHE_ACTION = 'Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae'
 const RUST_AUDIT_ACTION = 'rustsec/audit-check@69366f33c96575abad1ee0dba8212993eecbe998'
 
@@ -52,7 +52,7 @@ function validMetadata() {
       'name = "quickpaste"',
       'version = "0.1.0"',
       'publish = false',
-      'rust-version = "1.88"',
+      'rust-version = "1.89"',
       '',
       '[dependencies]',
     ].join('\n'),
@@ -64,13 +64,13 @@ function validMetadata() {
     nvmrc: '22.14.0\n',
     rustToolchain: [
       '[toolchain]',
-      'channel = "1.88.0"',
+      'channel = "1.89.0"',
       'components = ["clippy", "rustfmt"]',
     ].join('\n'),
     ciWorkflow: [
       `uses: ${CHECKOUT_ACTION} # v6`,
       `uses: ${SETUP_NODE_ACTION} # v6`,
-      `uses: ${RUST_TOOLCHAIN_ACTION} # 1.88.0`,
+      `uses: ${RUST_TOOLCHAIN_ACTION} # 1.89.0`,
       `uses: ${RUST_CACHE_ACTION} # v2`,
       `uses: ${RUST_AUDIT_ACTION} # v2.0.0`,
     ].join('\n'),
@@ -118,13 +118,13 @@ test('validateProjectMetadata catches version and toolchain drift', () => {
   metadata.packageLock.packages[''].version = '0.2.0'
   metadata.cargoLock = metadata.cargoLock.replace('version = "0.1.0"', 'version = "0.2.0"')
   metadata.nvmrc = '22.13.0\n'
-  metadata.rustToolchain = metadata.rustToolchain.replace('1.88.0', '1.89.0')
+  metadata.rustToolchain = metadata.rustToolchain.replace('1.89.0', '1.90.0')
 
   assert.deepEqual(validateProjectMetadata(metadata), [
     '版本号不一致：package-lock.json packages[""].version = 0.2.0（期望 0.1.0）',
     '版本号不一致：src-tauri/Cargo.lock quickpaste = 0.2.0（期望 0.1.0）',
     '.nvmrc = 22.13.0，与 package.json devEngines.runtime.version = 22.14.0 不一致',
-    'rust-toolchain.toml channel = 1.89.0，与 Cargo.toml rust-version = 1.88 不一致',
+    'rust-toolchain.toml channel = 1.90.0，与 Cargo.toml rust-version = 1.89 不一致',
   ])
 })
 

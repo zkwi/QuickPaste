@@ -36,22 +36,25 @@ describe('clip action policy', () => {
     expect(getClipActions(richClip, 'quick').map(({ id }) => id)).toContain('paste-plain')
   })
 
-  it('offers manager-only file reveal while keeping file paste as the default mode', () => {
+  it('offers file actions in both menus and keeps file paste as the default mode', () => {
     expect(getClipActions(fileClip, 'manager').map(({ id }) => id)).toEqual([
       'paste', 'copy', 'open-file', 'reveal-file',
     ])
-    expect(getClipActions(fileClip, 'quick').map(({ id }) => id)).not.toContain('reveal-file')
+    expect(getClipActions(fileClip, 'quick').map(({ id }) => id)).toContain('reveal-file')
     expect(defaultPasteMode(fileClip)).toBe('files')
   })
 
-  it('limits the quick surface to paste actions for every clip type', () => {
+  it('adds history management actions in quick menus while keeping preview paste-only', () => {
     for (const clip of [textClip, richClip, fileClip, imageClip, linkClip]) {
-      expect(getClipActions(clip, 'quick').every(({ id }) => id.startsWith('paste'))).toBe(true)
+      const quick = getClipActions(clip, 'quick').map(({ id }) => id)
+      expect(quick).toEqual(expect.arrayContaining(['copy', 'pin', 'delete', 'exclude-source']))
+      expect(getClipActions(clip, 'preview').every(({ id }) => id.startsWith('paste'))).toBe(true)
     }
-    expect(getClipActions(linkClip, 'quick').map(({ id }) => id)).not.toContain('open-link')
+    expect(getClipActions({ ...linkClip, pinned: true }, 'quick').map(({ id }) => id)).toContain('unpin')
+    expect(getClipActions(linkClip, 'quick').map(({ id }) => id)).toContain('open-link')
   })
 
-  it('offers the manager type-action matrix without leaking link opening to quick', () => {
+  it('offers the manager type-action matrix', () => {
     expect(getClipActions(textClip, 'manager').map(({ id }) => id)).toEqual(['paste', 'copy'])
     expect(getClipActions(richClip, 'manager').map(({ id }) => id)).toEqual([
       'paste-preserve', 'paste-plain', 'copy',

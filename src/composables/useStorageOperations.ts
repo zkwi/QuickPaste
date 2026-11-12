@@ -1,4 +1,5 @@
 import { ref, type Ref } from 'vue'
+import { formatUpdateSize } from '../domain/update'
 import type { MessageKey } from '../i18n'
 import {
   compactNativeHistoryDatabase,
@@ -154,13 +155,17 @@ export function useStorageOperations(options: UseStorageOperationsOptions) {
     const lease = await options.acquireLease('compact')
     if (!lease) return
     try {
+      const before = await getNativeStorageStats()
       const stats = await compactNativeHistoryDatabase()
       if (!stats) {
         storageStatusMessage.value = options.t('storageCompactionFailed')
         return
       }
       storageStats.value = stats
-      storageStatusMessage.value = options.t('storageCompactionCompleted')
+      const released = before ? Math.max(0, before.totalPhysicalBytes - stats.totalPhysicalBytes) : 0
+      storageStatusMessage.value = released > 0
+        ? options.t('storageCompactionReleased', { size: formatUpdateSize(released) })
+        : options.t('storageCompactionCompleted')
     } finally {
       await options.releaseLease(lease)
     }

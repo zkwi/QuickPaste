@@ -406,6 +406,12 @@ export function getNativeHistoryHealth(invokeAdapter?: HistoryInvoke): Promise<H
   return invokeParsed('get_history_health', {}, parseHistoryHealth, invokeAdapter)
 }
 
+export function clearNativeOrdinaryHistory(invokeAdapter?: HistoryInvoke): Promise<number | null> {
+  return invokeParsed('clear_ordinary_history', {}, (value) => (
+    typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+  ), invokeAdapter)
+}
+
 export function getNativeStorageStats(invokeAdapter?: HistoryInvoke): Promise<StorageStats | null> {
   return invokeParsed('get_storage_stats', {}, parseStorageStats, invokeAdapter)
 }

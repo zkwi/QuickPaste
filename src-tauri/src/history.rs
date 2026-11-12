@@ -5445,7 +5445,11 @@ where
         destination,
         |source, temporary| {
             source
-                .backup(rusqlite::MAIN_DB, temporary, None)
+                .backup(
+                    rusqlite::MAIN_DB,
+                    temporary,
+                    None::<fn(rusqlite::backup::Progress)>,
+                )
                 .map_err(|error| error.to_string())
         },
         validate,
@@ -6676,10 +6680,41 @@ where
     })
 }
 
+pub(crate) fn clear_ordinary_history(connection: &mut Connection) -> Result<u64, String> {
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    // 图片、富文本、缩略图与搜索索引由现有外键和删除触发器随记录一起清理。
+    let removed = transaction
+        .execute(
+            "DELETE FROM clips WHERE pinned = 0 AND permanent = 0 AND collection_id IS NULL",
+            [],
+        )
+        .map_err(|error| error.to_string())?;
+    if removed > 0 {
+        advance_history_revision(&transaction)?;
+    }
+    transaction.commit().map_err(|error| error.to_string())?;
+    safe_batch_count(removed)
+}
+
+fn truncate_history_wal(connection: &Connection) -> Result<(), String> {
+    let busy: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .map_err(|error| error.to_string())?;
+    if busy != 0 {
+        return Err("历史数据库正在使用，无法截断 WAL".into());
+    }
+    Ok(())
+}
+
 pub(crate) fn compact_history_database(connection: &Connection) -> Result<StorageStats, String> {
+    truncate_history_wal(connection)?;
     connection
         .execute_batch("VACUUM")
         .map_err(|error| error.to_string())?;
+    // VACUUM 本身也写 WAL；测量前将整理后的页面写回主数据库。
+    truncate_history_wal(connection)?;
     get_storage_stats(connection)
 }
 
@@ -6719,10 +6754,12 @@ mod tests {
 
     fn traced_history_query_select_count(database: &mut Connection, limit: u32) -> usize {
         HISTORY_QUERY_SELECT_COUNT.with(|count| count.set(0));
-        database.trace_v2(
-            TraceEventCodes::SQLITE_TRACE_STMT,
-            Some(trace_history_query_select),
-        );
+        database
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                Some(trace_history_query_select),
+            )
+            .expect("start query trace");
         let result = query_history(
             database,
             HistoryQuery {
@@ -6730,7 +6767,12 @@ mod tests {
                 ..HistoryQuery::default()
             },
         );
-        database.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, None);
+        database
+            .trace_v2(
+                TraceEventCodes::SQLITE_TRACE_STMT,
+                None::<fn(TraceEvent<'_>)>,
+            )
+            .expect("stop query trace");
         result.expect("traced history query");
         HISTORY_QUERY_SELECT_COUNT.with(Cell::get)
     }
@@ -10280,6 +10322,57 @@ mod tests {
     }
 
     #[test]
+    fn clear_ordinary_history_removes_payloads_and_preserves_protected_records() {
+        let mut database = Connection::open_in_memory().expect("in-memory database");
+        initialize_history_database(&mut database).unwrap();
+        let timestamp = canonical_utc_millis_after(None).unwrap();
+        let collection = create_history_collection(&mut database, "Keep").unwrap();
+        let mut rich = text_item("ordinary", &timestamp);
+        rich.html = Some("<b>ordinary</b>".into());
+        rich.formats.push("html".into());
+        let mut pinned = text_item("pinned", &timestamp);
+        pinned.pinned = true;
+        let mut permanent = text_item("permanent", &timestamp);
+        permanent.permanent = true;
+        let mut filed = text_item("collected", &timestamp);
+        filed.collection_id = Some(collection.id);
+        apply_history_mutation(
+            &mut database,
+            mutation(
+                vec![
+                    rich,
+                    pinned,
+                    permanent,
+                    filed,
+                    image_item(
+                        "ordinary-image",
+                        &timestamp,
+                        &rgba_png_bytes([0, 0, 0, 255]),
+                    ),
+                ],
+                CapacityPolicy::default(),
+            ),
+        )
+        .unwrap();
+        let revision = history_revision(&database).unwrap();
+
+        assert_eq!(clear_ordinary_history(&mut database).unwrap(), 2);
+        assert_eq!(clear_ordinary_history(&mut database).unwrap(), 0);
+        assert_eq!(history_revision(&database).unwrap(), revision + 1);
+        for id in ["pinned", "permanent", "collected"] {
+            assert!(get_clip_payload(&database, id).unwrap().is_some());
+        }
+        assert!(get_clip_payload(&database, "ordinary").unwrap().is_none());
+        assert!(get_clip_payload(&database, "ordinary-image")
+            .unwrap()
+            .is_none());
+        let stats = get_storage_stats(&database).unwrap();
+        assert_eq!(stats.image_bytes, 0);
+        assert_eq!(stats.rich_format_bytes, 0);
+        assert_eq!(stats.record_count, 3);
+    }
+
+    #[test]
     fn compact_returns_fresh_storage_stats_without_promising_a_decrease() {
         let mut database = Connection::open_in_memory().expect("in-memory database");
         apply_history_mutation(
@@ -10565,7 +10658,11 @@ mod tests {
             &destination,
             |source, temporary| {
                 source
-                    .backup(rusqlite::MAIN_DB, temporary, None)
+                    .backup(
+                        rusqlite::MAIN_DB,
+                        temporary,
+                        None::<fn(rusqlite::backup::Progress)>,
+                    )
                     .map_err(|error| error.to_string())
             },
             |temporary| {
