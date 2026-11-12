@@ -21,6 +21,7 @@ const desktopMocks = vi.hoisted(() => ({
   connectNativeClipboard: vi.fn(),
   connectQuitRequested: vi.fn(),
   connectQuickPanelSession: vi.fn(),
+  connectLibraryOpenRequested: vi.fn(),
   exitNativeApp: vi.fn(),
   getNativeCaptureAvailability: vi.fn(),
   connectPasteTarget: vi.fn(),
@@ -105,6 +106,7 @@ vi.mock('./platform/desktop', () => ({
     connectPasteTarget: desktopMocks.connectPasteTarget,
     connectQuitRequested: desktopMocks.connectQuitRequested,
     connectQuickPanelSession: desktopMocks.connectQuickPanelSession,
+  connectLibraryOpenRequested: desktopMocks.connectLibraryOpenRequested,
   exitNativeApp: desktopMocks.exitNativeApp,
   getNativeCaptureAvailability: desktopMocks.getNativeCaptureAvailability,
   isTauriRuntime: () => true,
@@ -189,6 +191,7 @@ describe('native setting reliability', () => {
     desktopMocks.connectPasteTarget.mockResolvedValue(() => undefined)
     desktopMocks.connectQuitRequested.mockResolvedValue(() => undefined)
     desktopMocks.connectQuickPanelSession.mockResolvedValue(() => undefined)
+    desktopMocks.connectLibraryOpenRequested.mockResolvedValue(() => undefined)
     desktopMocks.exitNativeApp.mockResolvedValue(true)
     desktopMocks.getNativeCaptureAvailability.mockResolvedValue({ available: true, initialized: true })
     windowMocks.setQuickPanelPinned.mockReset().mockResolvedValue(true)
@@ -1506,6 +1509,31 @@ describe('native setting reliability', () => {
     expect((wrapper.get('.clip-list').element as HTMLElement).scrollTop).toBe(0)
     expect(document.activeElement).toBe(wrapper.get('[data-testid="search-input"]').element)
     wrapper.unmount()
+  })
+
+  it('opens the manager and settings directly on native tray requests', async () => {
+    let trayRequested: ((section: 'all' | 'settings') => void) | undefined
+    const disconnect = vi.fn()
+    desktopMocks.connectLibraryOpenRequested.mockImplementationOnce(async (handler) => {
+      trayRequested = handler
+      return disconnect
+    })
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+
+    expect(trayRequested).toBeDefined()
+    trayRequested?.('settings')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="library-section-settings"]').attributes('aria-current')).toBe('page')
+    expect(windowMocks.setWindowMode).toHaveBeenCalledWith('library')
+    expect(wrapper.find('[data-testid="search-input"]').exists()).toBe(false)
+
+    trayRequested?.('all')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="library-section-all"]').attributes('aria-current')).toBe('page')
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-search-input"]').element)
+    wrapper.unmount()
+    expect(disconnect).toHaveBeenCalledOnce()
   })
 
   it('acknowledges only the current quick session after Vue flushes and one animation frame', async () => {
@@ -3560,7 +3588,7 @@ describe('native setting reliability', () => {
     wrapper.unmount()
   })
 
-  it('clears manager selection when an ordinary selected row is deleted directly', async () => {
+  it('clears manager selection and focuses search when the last row is deleted from its menu', async () => {
     const clip = {
       id: 'single-selected-delete', kind: 'text', title: '待删除', content: 'ordinary', sourceApp: 'Editor',
       copiedAt: '2026-07-19T10:00:00.000Z', pinned: false, permanent: false,
@@ -3577,11 +3605,13 @@ describe('native setting reliability', () => {
     await row.trigger('keydown', { key: ' ' })
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('1')
 
-    await wrapper.get('[data-testid="manager-delete-single-selected-delete"]').trigger('click')
-    await wrapper.vm.$nextTick()
+    await row.trigger('contextmenu', { clientX: 120, clientY: 90 })
+    await wrapper.get('[data-testid="context-delete"]').trigger('click')
+    await flushPromises()
 
     expect(wrapper.get('[data-testid="manager-selected-count"]').text()).toContain('0')
     expect(wrapper.find('[data-manager-clip-id="single-selected-delete"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-search-input"]').element)
     expect(historyMocks.applyNativeHistoryBatch).not.toHaveBeenCalled()
     wrapper.unmount()
   })

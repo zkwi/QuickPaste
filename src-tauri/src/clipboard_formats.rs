@@ -104,6 +104,10 @@ pub(crate) enum PackageReadOutcome {
         package: FormatPackage,
         sequence: Option<u64>,
     },
+    Suppressed {
+        package: FormatPackage,
+        sequence: Option<u64>,
+    },
     Retryable,
 }
 
@@ -425,7 +429,7 @@ fn read_package_with_guard<G>(
     outcome
 }
 
-fn ignored_package_after_guard<G>(
+fn suppressed_package_after_guard<G>(
     guard: G,
     before: Option<u64>,
     observe_after: impl FnOnce() -> Option<u64>,
@@ -433,7 +437,7 @@ fn ignored_package_after_guard<G>(
     drop(guard);
     let after = observe_after();
     if after == before {
-        PackageReadOutcome::Ignored {
+        PackageReadOutcome::Suppressed {
             package: FormatPackage::default(),
             sequence: after,
         }
@@ -945,7 +949,7 @@ fn clipboard_file_count() -> Result<usize, ()> {
 }
 
 #[cfg(target_os = "windows")]
-pub(crate) fn read_format_package() -> PackageReadOutcome {
+fn read_windows_format_package(verify: bool) -> PackageReadOutcome {
     let html_format = clipboard_win::formats::Html::new();
     let rtf_format = clipboard_win::raw::register_format("Rich Text Format").map(|code| code.get());
     let png_format = clipboard_win::raw::register_format("PNG").map(|code| code.get());
@@ -959,8 +963,10 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
         }
     };
     let quickpaste_internal_write = history_controls.is_quickpaste_internal_write();
-    if !quickpaste_internal_write && history_controls.excludes_history() {
-        return ignored_package_after_guard(guard, before, || {
+    if (quickpaste_internal_write && !verify)
+        || (!quickpaste_internal_write && history_controls.excludes_history())
+    {
+        return suppressed_package_after_guard(guard, before, || {
             clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get()))
         });
     }
@@ -974,14 +980,15 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
         },
         before,
         || clipboard_win::raw::seq_num().map(|sequence| u64::from(sequence.get())),
-        system_metadata,
+        |path| if verify { None } else { system_metadata(path) },
     );
     if quickpaste_internal_write {
         match outcome {
             PackageReadOutcome::Captured { package, sequence }
             | PackageReadOutcome::Ignored { package, sequence } => {
-                PackageReadOutcome::Ignored { package, sequence }
+                PackageReadOutcome::Suppressed { package, sequence }
             }
+            suppressed @ PackageReadOutcome::Suppressed { .. } => suppressed,
             PackageReadOutcome::Retryable => PackageReadOutcome::Retryable,
         }
     } else {
@@ -989,8 +996,20 @@ pub(crate) fn read_format_package() -> PackageReadOutcome {
     }
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn read_format_package() -> PackageReadOutcome {
+    read_windows_format_package(false)
+}
+
 #[cfg(not(target_os = "windows"))]
 pub(crate) fn read_format_package() -> PackageReadOutcome {
+    PackageReadOutcome::Retryable
+}
+
+pub(crate) fn read_format_package_for_verification() -> PackageReadOutcome {
+    #[cfg(target_os = "windows")]
+    return read_windows_format_package(true);
+    #[cfg(not(target_os = "windows"))]
     PackageReadOutcome::Retryable
 }
 
@@ -1177,7 +1196,9 @@ mod tests {
     fn windows_writer_round_trips_chrome_style_multiblock_html_before_paste() {
         fn read_matching_internal_write_with_retry(expected: &FormatPackage) -> FormatPackage {
             for _ in 0..100 {
-                if let PackageReadOutcome::Ignored { package, .. } = read_format_package() {
+                if let PackageReadOutcome::Suppressed { package, .. } =
+                    read_format_package_for_verification()
+                {
                     if package_matches_requested(expected, &package) {
                         return package;
                     }
@@ -1796,14 +1817,14 @@ mod tests {
         }
 
         let open = Rc::new(Cell::new(true));
-        let outcome = ignored_package_after_guard(GuardProbe(open.clone()), Some(41), || {
+        let outcome = suppressed_package_after_guard(GuardProbe(open.clone()), Some(41), || {
             assert!(!open.get(), "sequence observed before clipboard guard drop");
             Some(41)
         });
 
         assert!(matches!(
             outcome,
-            PackageReadOutcome::Ignored {
+            PackageReadOutcome::Suppressed {
                 package,
                 sequence: Some(41)
             } if package == FormatPackage::default()

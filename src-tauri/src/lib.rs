@@ -66,6 +66,7 @@ const FILE_COPY_SOURCE_MISSING: &str = "file_copy_source_missing";
 const TRAY_ID: &str = "quickpaste";
 const TRAY_TOOLTIP: &str = "闪电剪贴板 QuickPaste";
 const QUICK_PANEL_INVOKED_EVENT: &str = "quick-panel://invoked";
+const LIBRARY_OPEN_REQUESTED_EVENT: &str = "library://open-requested";
 const CAPTURE_STATE_EVENT: &str = "capture://state-changed";
 const CAPTURE_AVAILABILITY_EVENT: &str = "capture://availability-changed";
 const QUIT_REQUESTED_EVENT: &str = "app://quit-requested";
@@ -92,7 +93,12 @@ const CLIPBOARD_WRITE_RETRY_DELAY: Duration = Duration::from_millis(20);
 static CLIPBOARD_ACCESS: Mutex<()> = Mutex::new(());
 const CLIPBOARD_READ_ATTEMPTS: usize = 4;
 const CLIPBOARD_READ_RETRY_DELAY: Duration = Duration::from_millis(40);
-const CLIPBOARD_EXHAUSTED_RETRY_DELAY: Duration = Duration::from_millis(800);
+const CLIPBOARD_READ_BACKOFF: [Duration; 3] = [
+    Duration::from_millis(800),
+    Duration::from_secs(2),
+    Duration::from_secs(5),
+];
+const REQUIRED_FORMAT_FAILURE_LIMIT: u8 = 3;
 const QUICK_PANEL_SHELL_INSET_DIP: f64 = 16.0;
 const QUICK_PANEL_VISIBLE_GAP_DIP: f64 = 12.0;
 const QUICK_PANEL_COMPACT_SIZE_DIP: ScreenSize = ScreenSize::new(640, 440);
@@ -1232,15 +1238,16 @@ impl InternalClipboardWrites {
     }
 
     fn consume(&self, observed_sequence: Option<u64>, signature: u64) -> bool {
-        let Ok(mut pending) = self.0.lock() else {
-            return false;
-        };
-        let Some(change) = pending.as_ref() else {
-            return false;
-        };
+        self.take_observed(observed_sequence)
+            .is_some_and(|change| change.signature == signature)
+    }
+
+    fn take_observed(&self, observed_sequence: Option<u64>) -> Option<InternalClipboardWrite> {
+        let mut pending = self.0.lock().ok()?;
+        let change = pending.as_ref()?;
         if Instant::now() > change.expires_at {
             *pending = None;
-            return false;
+            return None;
         }
         // 系统序号是 32 位，短窗口内允许向前变化并跨越回绕。
         let observed_after_write = change.sequence.is_none_or(|written| {
@@ -1248,12 +1255,10 @@ impl InternalClipboardWrites {
                 .is_some_and(|observed| (observed as u32).wrapping_sub(written as u32) < 1 << 31)
         });
         if !observed_after_write {
-            return false;
+            return None;
         }
-        let matches = change.signature == signature;
         // 观察到的新内容结束本次自写归因，之后相同内容可以由外部应用重新复制。
-        *pending = None;
-        matches
+        pending.take()
     }
 }
 
@@ -1529,6 +1534,9 @@ fn read_clipboard_snapshot(clipboard: &mut Clipboard) -> ClipboardReadAttempt<Cl
         clipboard_formats::PackageReadOutcome::Retryable => {
             return ClipboardReadAttempt::Retryable;
         }
+        clipboard_formats::PackageReadOutcome::Suppressed { package, sequence } => {
+            return ClipboardReadAttempt::Ignored { package, sequence };
+        }
         clipboard_formats::PackageReadOutcome::Ignored { package, sequence } => {
             if !clipboard_package_allows_image_fallback(&package) {
                 return ClipboardReadAttempt::Ignored { package, sequence };
@@ -1607,17 +1615,44 @@ fn committed_clipboard_sequence<T>(
     }
 }
 
-fn exhausted_clipboard_sequence(observed: Option<u64>) -> Option<u64> {
-    observed
+struct ClipboardReadBackoff {
+    sequence: Option<u64>,
+    delay_index: usize,
+    required_format_failures: u8,
+    retry_at: Instant,
 }
 
-fn exhausted_clipboard_retry_pending(
-    observed: Option<u64>,
-    exhausted: Option<u64>,
-    retry_at: Option<Instant>,
-    now: Instant,
-) -> bool {
-    observed.is_some() && observed == exhausted && retry_at.is_some_and(|deadline| now < deadline)
+impl ClipboardReadBackoff {
+    fn after_failure(
+        previous: Option<Self>,
+        sequence: Option<u64>,
+        reason: &str,
+        now: Instant,
+    ) -> Option<Self> {
+        let previous = previous.filter(|state| state.sequence == sequence);
+        let delay_index = previous.as_ref().map_or(0, |state| {
+            (state.delay_index + 1).min(CLIPBOARD_READ_BACKOFF.len() - 1)
+        });
+        let required_format_failures = if reason == "required-format-read" {
+            previous.map_or(1, |state| state.required_format_failures.saturating_add(1))
+        } else {
+            0
+        };
+        // 无法确认序号时仍可恢复；只跳过已确认且反复读不到必需格式的同一序号。
+        if sequence.is_some() && required_format_failures >= REQUIRED_FORMAT_FAILURE_LIMIT {
+            return None;
+        }
+        Some(Self {
+            sequence,
+            delay_index,
+            required_format_failures,
+            retry_at: now + CLIPBOARD_READ_BACKOFF[delay_index],
+        })
+    }
+
+    fn is_waiting(&self, observed: Option<u64>, now: Instant) -> bool {
+        (observed.is_none() || observed == self.sequence) && now < self.retry_at
+    }
 }
 
 fn committed_capture_signature(
@@ -3701,17 +3736,22 @@ fn clipboard_matches_snapshot(expected: &ClipboardSnapshot) -> Option<bool> {
             let mut clipboard = Clipboard::new().ok()?;
             clipboard_read_matches(clipboard.get_text(), |actual| actual == *expected)
         }
-        ClipboardSnapshot::Package(expected) => match clipboard_formats::read_format_package() {
-            clipboard_formats::PackageReadOutcome::Captured {
-                package: actual, ..
+        ClipboardSnapshot::Package(expected) => {
+            match clipboard_formats::read_format_package_for_verification() {
+                clipboard_formats::PackageReadOutcome::Captured {
+                    package: actual, ..
+                }
+                | clipboard_formats::PackageReadOutcome::Ignored {
+                    package: actual, ..
+                }
+                | clipboard_formats::PackageReadOutcome::Suppressed {
+                    package: actual, ..
+                } => Some(clipboard_formats::package_matches_requested(
+                    expected, &actual,
+                )),
+                clipboard_formats::PackageReadOutcome::Retryable => None,
             }
-            | clipboard_formats::PackageReadOutcome::Ignored {
-                package: actual, ..
-            } => Some(clipboard_formats::package_matches_requested(
-                expected, &actual,
-            )),
-            clipboard_formats::PackageReadOutcome::Retryable => None,
-        },
+        }
         ClipboardSnapshot::Image {
             width,
             height,
@@ -3797,8 +3837,7 @@ fn start_clipboard_monitor(
         health.finish(true);
         let _ = app.emit(CAPTURE_AVAILABILITY_EVENT, health.snapshot());
         let mut last_sequence = None;
-        let mut exhausted_sequence = None;
-        let mut exhausted_retry_at = None;
+        let mut backoff: Option<ClipboardReadBackoff> = None;
         let mut last_signature = None;
         let mut warning_throttle = diagnostics::WarningThrottle::default();
 
@@ -3808,28 +3847,26 @@ fn start_clipboard_monitor(
                 continue;
             };
             let sequence = clipboard_sequence();
-            if sequence.is_some() && exhausted_sequence.is_some() && sequence != exhausted_sequence
+            if sequence.is_some()
+                && backoff
+                    .as_ref()
+                    .is_some_and(|state| state.sequence != sequence)
+                && backoff.take().is_some_and(|state| state.sequence.is_some())
             {
                 let _ = metrics
                     .record_capture_terminal(metrics::CaptureTerminalOutcome::RetryExhausted);
-                exhausted_sequence = None;
-                exhausted_retry_at = None;
             }
             let sequence_is_committed = sequence.is_some() && sequence == last_sequence;
-            let sequence_retry_pending = exhausted_clipboard_retry_pending(
-                sequence,
-                exhausted_sequence,
-                exhausted_retry_at,
-                Instant::now(),
-            );
+            let sequence_retry_pending = backoff
+                .as_ref()
+                .is_some_and(|state| state.is_waiting(sequence, Instant::now()));
             if sequence_is_committed || sequence_retry_pending {
                 drop(access);
                 thread::sleep(CLIPBOARD_POLL_INTERVAL);
                 continue;
             }
 
-            exhausted_sequence = None;
-            exhausted_retry_at = None;
+            let previous_backoff = backoff.take();
             let outcome = retry_clipboard_snapshot_read(
                 CLIPBOARD_READ_ATTEMPTS,
                 CLIPBOARD_READ_RETRY_DELAY,
@@ -3930,18 +3967,44 @@ fn start_clipboard_monitor(
                         );
                     }
                 }
-                ClipboardReadOutcome::Ignored { .. } => {
+                ClipboardReadOutcome::Ignored { sequence, .. } => {
+                    internal_writes.take_observed(sequence);
                     drop(access);
                     let _ = metrics
                         .record_capture_terminal(metrics::CaptureTerminalOutcome::Unsupported);
                 }
                 ClipboardReadOutcome::Exhausted => {
+                    let observed = clipboard_sequence();
                     drop(access);
-                    exhausted_sequence = exhausted_clipboard_sequence(sequence);
-                    exhausted_retry_at = exhausted_sequence
-                        .map(|_| Instant::now() + CLIPBOARD_EXHAUSTED_RETRY_DELAY);
-                    if warning_throttle.should_log(Instant::now()) {
-                        log::warn!("剪贴板读取重试耗尽: reason={}; 将短暂退避后重试（重复日志每分钟最多一次）", diagnostics::last_clipboard_failure());
+                    let now = Instant::now();
+                    let reason = diagnostics::last_clipboard_failure();
+                    if sequence.is_some() && observed.is_some() && sequence != observed {
+                        // 一轮中序号已变，不能把旧内容的失败归给新内容。
+                        if previous_backoff.is_some() {
+                            let _ = metrics.record_capture_terminal(
+                                metrics::CaptureTerminalOutcome::RetryExhausted,
+                            );
+                        }
+                    } else {
+                        let stable = sequence.filter(|_| sequence == observed);
+                        backoff = ClipboardReadBackoff::after_failure(
+                            previous_backoff,
+                            stable,
+                            reason,
+                            now,
+                        );
+                        if backoff.is_none() {
+                            last_sequence = stable;
+                            let _ = metrics.record_capture_terminal(
+                                metrics::CaptureTerminalOutcome::RetryExhausted,
+                            );
+                        }
+                    }
+                    if warning_throttle.should_log(now) {
+                        log::warn!(
+                            "剪贴板读取重试耗尽: reason={reason}; retry_scheduled={}",
+                            backoff.is_some()
+                        );
                     }
                 }
             }
@@ -4083,6 +4146,27 @@ fn present_onboarding_window(app: &AppHandle) -> Result<(), String> {
         log::warn!("首次引导窗口居中失败，将继续显示当前窗口: {error}");
     }
     present_main_window(app)
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+enum TrayLibrarySection {
+    All,
+    Settings,
+}
+
+fn open_library_from_tray(app: &AppHandle, section: TrayLibrarySection) {
+    let result = if app.state::<OnboardingWindowActive>().get() {
+        present_onboarding_window(app)
+    } else {
+        present_main_window(app).and_then(|()| {
+            app.emit(LIBRARY_OPEN_REQUESTED_EVENT, section)
+                .map_err(|error| error.to_string())
+        })
+    };
+    if let Err(error) = result {
+        log::warn!("无法从托盘打开完整窗口: {error}");
+    }
 }
 
 fn current_quick_panel_session_id(app: &AppHandle) -> u64 {
@@ -4320,26 +4404,21 @@ fn write_clipboard_formats(
     plain_text: String,
     html: Option<String>,
     rtf_base64: Option<String>,
-    internal_writes: State<'_, InternalClipboardWrites>,
 ) -> Result<(), String> {
     let package = clipboard_formats::prepare_format_package(
         &plain_text,
         html.as_deref(),
         rtf_base64.as_deref(),
     )?;
-    copy_format_package(package, &internal_writes)
+    copy_format_package(&package)
 }
 
 #[tauri::command]
-async fn write_clipboard_files(
-    paths: Vec<String>,
-    internal_writes: State<'_, InternalClipboardWrites>,
-) -> Result<(), String> {
+async fn write_clipboard_files(paths: Vec<String>) -> Result<(), String> {
     let package = clipboard_formats::prepare_file_package(&paths)?;
-    let internal_writes = internal_writes.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         check_file_copy_sources(&paths)?;
-        copy_format_package(package, &internal_writes)
+        copy_format_package(&package)
     })
     .await
     .map_err(|_| "文件复制后台任务异常结束".to_owned())?
@@ -4401,16 +4480,9 @@ fn check_local_file_copy_source(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn copy_format_package(
-    package: clipboard_formats::FormatPackage,
-    internal_writes: &InternalClipboardWrites,
-) -> Result<(), String> {
-    let expected = ClipboardSnapshot::Package(package.clone());
+fn copy_format_package(package: &clipboard_formats::FormatPackage) -> Result<(), String> {
     let _access = clipboard_write_access()?;
-    write_internal_clipboard(internal_writes, &expected, || {
-        clipboard_formats::write_format_package(&package)
-    })
-    .map(|_| ())
+    clipboard_formats::write_format_package(package).map(|_| ())
 }
 
 fn decode_clipboard_image(data_url: &str) -> Result<ImageData<'static>, String> {
@@ -5385,13 +5457,11 @@ fn paste_clipboard_text(
 
 #[tauri::command]
 // Tauri command 保持顶层 camelCase 参数；状态参数由运行时注入，不能打包进前端请求。
-#[allow(clippy::too_many_arguments)]
 fn paste_clipboard_formats(
     plain_text: String,
     html: Option<String>,
     rtf_base64: Option<String>,
     app: AppHandle,
-    internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
     metrics_state: State<'_, AcceptanceMetricsState>,
@@ -5410,9 +5480,7 @@ fn paste_clipboard_formats(
     };
     let expected = ClipboardSnapshot::Package(package.clone());
     let _access = clipboard_write_access()?;
-    let clipboard_sequence = match write_internal_clipboard(&internal_writes, &expected, || {
-        clipboard_formats::write_format_package(&package)
-    }) {
+    let clipboard_sequence = match clipboard_formats::write_format_package(&package) {
         Ok(sequence) => sequence,
         Err(error) => {
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
@@ -5433,11 +5501,9 @@ fn paste_clipboard_formats(
 
 #[tauri::command]
 // Tauri command 保持顶层参数；状态参数由运行时注入，不能打包进前端请求。
-#[allow(clippy::too_many_arguments)]
 fn paste_clipboard_files(
     paths: Vec<String>,
     app: AppHandle,
-    internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
     metrics_state: State<'_, AcceptanceMetricsState>,
@@ -5452,9 +5518,7 @@ fn paste_clipboard_files(
     };
     let expected = ClipboardSnapshot::Package(package.clone());
     let _access = clipboard_write_access()?;
-    let clipboard_sequence = match write_internal_clipboard(&internal_writes, &expected, || {
-        clipboard_formats::write_format_package(&package)
-    }) {
+    let clipboard_sequence = match clipboard_formats::write_format_package(&package) {
         Ok(sequence) => sequence,
         Err(error) => {
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
@@ -5641,6 +5705,10 @@ pub fn run() {
             }
 
             let show_item = MenuItem::with_id(app, "show", "打开闪电剪贴板", true, None::<&str>)?;
+            let library_item =
+                MenuItem::with_id(app, "show-library", "管理剪贴板", true, None::<&str>)?;
+            let settings_item =
+                MenuItem::with_id(app, "show-settings", "设置…", true, None::<&str>)?;
             let pause_item = MenuItem::with_id(
                 app,
                 "toggle-capture",
@@ -5651,7 +5719,17 @@ pub fn run() {
             let update_item =
                 MenuItem::with_id(app, "check-update", "检查更新…", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &pause_item, &update_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &show_item,
+                    &library_item,
+                    &settings_item,
+                    &pause_item,
+                    &update_item,
+                    &quit_item,
+                ],
+            )?;
             let pause_item_for_menu = pause_item.clone();
             capture_menu_item.replace(pause_item.clone());
             let mut tray_builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -5660,6 +5738,8 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id.as_ref() {
                     "show" => activate_quick_panel_from_foreground(app, Some(Instant::now()), true),
+                    "show-library" => open_library_from_tray(app, TrayLibrarySection::All),
+                    "show-settings" => open_library_from_tray(app, TrayLibrarySection::Settings),
                     "toggle-capture" => {
                         let control = app.state::<CaptureControl>();
                         let paused = !control.0.fetch_xor(true, Ordering::Relaxed);
@@ -6158,6 +6238,20 @@ mod tests {
 
         assert!(writes.consume(Some(91), signature));
         assert!(!writes.consume(Some(92), signature));
+    }
+
+    #[test]
+    fn a_suppressed_observation_retires_only_the_pending_write_it_can_follow() {
+        let writes = InternalClipboardWrites::default();
+        let snapshot = ClipboardSnapshot::Text("本轮内部写入".into());
+        let signature = writes.begin(&snapshot);
+        writes.commit(signature, Some(u32::MAX as u64));
+
+        assert!(writes.take_observed(Some(u32::MAX as u64 - 1)).is_none());
+        assert!(writes.take_observed(None).is_none());
+        assert!(writes.take_observed(Some(1)).is_some());
+        assert!(!writes.consume(Some(2), signature));
+        assert!(should_capture_snapshot(Some(2), Some(signature), signature));
     }
 
     #[test]
@@ -8174,34 +8268,56 @@ mod tests {
     }
 
     #[test]
-    fn sequence_less_platforms_are_not_permanently_suppressed_after_exhaustion() {
-        assert_eq!(exhausted_clipboard_sequence(None), None);
-        assert_eq!(exhausted_clipboard_sequence(Some(41)), Some(41));
+    fn clipboard_open_backoff_grows_and_caps_without_retiring_the_sequence() {
+        let mut now = Instant::now();
+        let mut previous = None;
+        for delay in [800, 2_000, 5_000, 5_000] {
+            let state =
+                ClipboardReadBackoff::after_failure(previous, Some(41), "clipboard-open", now)
+                    .expect("clipboard contention can clear without changing the sequence");
+            assert!(state.is_waiting(Some(41), now));
+            assert!(state.is_waiting(None, now));
+            assert!(!state.is_waiting(Some(42), now));
+            now += Duration::from_millis(delay);
+            assert_eq!(state.retry_at, now);
+            assert!(!state.is_waiting(Some(41), now));
+            previous = Some(state);
+        }
     }
 
     #[test]
-    fn exhausted_sequence_is_retried_after_the_backoff_deadline() {
+    fn repeated_required_format_failures_retire_only_a_known_unchanged_sequence() {
         let now = Instant::now();
-        let retry_at = now + Duration::from_secs(1);
+        let fail = |previous, sequence| {
+            ClipboardReadBackoff::after_failure(previous, sequence, "required-format-read", now)
+        };
+        let first = fail(None, Some(41)).unwrap();
+        let second = fail(Some(first), Some(41)).unwrap();
+        assert_eq!(second.retry_at, now + Duration::from_secs(2));
+        assert!(fail(Some(second), Some(41)).is_none());
 
-        assert!(exhausted_clipboard_retry_pending(
-            Some(41),
-            Some(41),
-            Some(retry_at),
-            now,
-        ));
-        assert!(!exhausted_clipboard_retry_pending(
-            Some(41),
-            Some(41),
-            Some(retry_at),
-            retry_at,
-        ));
-        assert!(!exhausted_clipboard_retry_pending(
-            Some(42),
-            Some(41),
-            Some(retry_at),
-            now,
-        ));
+        let first = fail(None, Some(41)).unwrap();
+        let newer = fail(Some(first), Some(42)).unwrap();
+        assert_eq!(newer.retry_at, now + Duration::from_millis(800));
+        assert_eq!(newer.required_format_failures, 1);
+        let mut unknown = None;
+        for _ in 0..5 {
+            unknown = fail(unknown, None);
+            assert!(unknown.is_some());
+        }
+    }
+
+    #[test]
+    fn tray_library_sections_match_the_frontend_event_contract() {
+        assert_eq!(LIBRARY_OPEN_REQUESTED_EVENT, "library://open-requested");
+        assert_eq!(
+            serde_json::to_value(TrayLibrarySection::All).unwrap(),
+            "all"
+        );
+        assert_eq!(
+            serde_json::to_value(TrayLibrarySection::Settings).unwrap(),
+            "settings"
+        );
     }
 
     #[test]

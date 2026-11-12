@@ -87,6 +87,7 @@ import {
   cancelNativeQuit,
   connectCaptureAvailability,
   connectCaptureState,
+  connectLibraryOpenRequested,
   connectNativeClipboard,
   connectPasteTarget,
   connectQuickPanelSession,
@@ -266,6 +267,7 @@ const snippetLoading = ref(false)
 const activeFilter = ref<ClipKindFilter>('all')
 const selectedId = ref(items.value[0]?.id ?? '')
 const previewId = ref<string | null>(null)
+const quickPanel = ref<InstanceType<typeof QuickPanel> | null>(null)
 const hoverPreviewClip = ref<ClipboardItem | null>(null)
 const qrScanState = ref<'idle' | 'scanning' | 'complete'>('idle')
 const qrResults = ref<string[]>([])
@@ -336,6 +338,7 @@ let relativeTimeTimer: ReturnType<typeof setInterval> | undefined
 let disconnectNativeClipboard: (() => void) | undefined
 let disconnectPasteTarget: (() => void) | undefined
 let disconnectQuickPanelSession: (() => void) | undefined
+let disconnectLibraryOpenRequested: (() => void) | undefined
 let disconnectCaptureState: (() => void) | undefined
 let disconnectCaptureAvailability: (() => void) | undefined
 let disconnectQuitRequested: (() => void) | undefined
@@ -730,7 +733,9 @@ const captureStatusText = computed(() => {
   return capturePaused.value ? t('paused') : t('recording')
 })
 const libraryItems = computed(() => {
-  if (nativeRuntime) return items.value
+  if (nativeRuntime) {
+    return librarySection.value === 'pinned' ? items.value.filter((clip) => clip.pinned) : items.value
+  }
   const sectionItems = librarySection.value === 'pinned'
     ? items.value.filter((clip) => clip.pinned)
     : librarySection.value === 'images'
@@ -1458,7 +1463,8 @@ async function applyNativeHistoryPage(
     if (!append || !items.value.some((clip) => clip.id === selectedId.value)) {
       selectedId.value = items.value[0]?.id ?? ''
     }
-  } else if (!append || !items.value.some((clip) => clip.id === managerSelectedId.value)) {
+  } else if (!libraryItems.value.some((clip) => clip.id === managerSelectedId.value)
+    || (!append && !document.activeElement?.closest('[data-manager-clip-id]'))) {
     managerSelectedId.value = items.value[0]?.id ?? ''
   }
 
@@ -1693,8 +1699,10 @@ function deleteClipImmediately(id: string, focusSurface?: ClipFocusSurface) {
   if (focusSurface === 'quick' && (selectedId.value === id || focusedRowId === id)) {
     selectedId.value = nextFocusId ?? ''
   }
+  if (focusSurface === 'manager' && (managerSelectedId.value === id || focusedRowId === id)) {
+    managerSelectedId.value = nextFocusId ?? ''
+  }
   if (focusedRowId !== id) return
-  if (focusSurface === 'manager') managerSelectedId.value = nextFocusId ?? ''
   nextTick(() => {
     if (focusSurface === 'quick') {
       const nextResult = nextFocusId
@@ -1857,12 +1865,14 @@ async function runContextAction(action: ClipAction) {
   if (!clip || action.disabled) return
   const menu = clipContextMenu.value
   const actionSurface = menu?.surface ?? 'quick'
+  const focusSurface = actionSurface === 'manager' ? 'manager' : 'quick'
   if (action.id === 'delete') {
     closeClipContextMenu()
     await nextTick()
     const focus = menu?.searchHadFocus ? searchInput.value : menu?.restoreFocus
     if (focus?.isConnected) focus.focus({ preventScroll: true })
-    deleteClip(clip.id, 'quick')
+    else focusCurrentSurfaceFallback()
+    deleteClip(clip.id, focusSurface)
     return
   }
   closeClipContextMenu(true)
@@ -1875,7 +1885,7 @@ async function runContextAction(action: ClipAction) {
     return
   }
   if (action.id === 'pin' || action.id === 'unpin') {
-    pinClip(clip.id, 'quick')
+    pinClip(clip.id, focusSurface)
     return
   }
   if (action.id === 'exclude-source') {
@@ -2221,6 +2231,7 @@ function cancelSearchComposition(surface: ClipFocusSurface) {
 function resetQuickSession(focusSearch = true) {
   quickSessionGeneration += 1
   closeClipContextMenu()
+  quickPanel.value?.dismissSearchHelp()
   query.value = ''
   quickSourceFilter.value = ''
   sourceSuggestionIndex.value = 0
@@ -2480,6 +2491,11 @@ async function copyClip(clip: ClipboardItem) {
   } finally {
     pasteInFlight.value = false
   }
+}
+
+function copyPreviewClip() {
+  const clip = previewClip.value
+  if (clip) void copyClip(clip)
 }
 
 async function pasteRecognizedText(text: string) {
@@ -2985,6 +3001,10 @@ function handleManagerRowKeydown(event: KeyboardEvent, index: number, clipId: st
 }
 
 async function openLibrary(section?: LibrarySection) {
+  if (currentView.value === 'library') {
+    if (section) selectLibrarySection(section)
+    return
+  }
   if (windowModeTransitioning.value) return
   const generation = ++windowModeGeneration
   windowModeTransitioning.value = true
@@ -3063,6 +3083,7 @@ async function performWindowAction(action: WindowAction) {
 
 function handleWindowBlur() {
   closeClipContextMenu()
+  quickPanel.value?.dismissSearchHelp()
   if (currentView.value === 'quick' && !quickPanelPinned.value && !pasteInFlight.value) {
     resetQuickSession(false)
   }
@@ -3175,6 +3196,7 @@ const { handleKeydown } = useGlobalKeyboard(() => ({
   closeClipContextMenu,
   openKeyboardContextMenu,
   closePreview,
+  dismissSearchHelp: () => quickPanel.value?.dismissSearchHelp() ?? false,
   closeCollectionEditor,
   clearManagerSelection,
   clearManagerSearch,
@@ -3195,6 +3217,7 @@ const { handleKeydown } = useGlobalKeyboard(() => ({
   clearQuickSourceFilter,
   pasteClip: (clip) => { void pasteClip(clip) },
   copyClip: (clip) => { void copyClip(clip) },
+  copyPreviewClip,
   deleteClip: (id) => deleteClip(id, 'quick'),
   selectWithKeyboard,
   selectIndexWithKeyboard,
@@ -3224,7 +3247,7 @@ async function connectEventWithRetry(
 }
 
 async function connectSessionBridges() {
-  const [quickSessionDisconnect, pasteTargetDisconnect] = await Promise.all([
+  const [quickSessionDisconnect, pasteTargetDisconnect, libraryDisconnect] = await Promise.all([
     connectEventWithRetry(() => connectQuickPanelSession((session) => {
       if (session && Number.isFinite(session.sessionId)) {
         activeQuickSessionId = Math.max(activeQuickSessionId, session.sessionId)
@@ -3249,6 +3272,13 @@ async function connectSessionBridges() {
       }).catch(() => undefined)
     })),
     connectEventWithRetry(() => connectPasteTarget(applyPasteTarget)),
+    connectEventWithRetry(() => connectLibraryOpenRequested((section) => {
+      closeClipContextMenu()
+      void openLibrary(section).then(() => {
+        if (!appUnmounted && !modalOverlayOpen.value && currentView.value === 'library'
+          && librarySection.value === section) nextTick(focusCurrentSurfaceFallback)
+      })
+    })),
   ])
 
   if (quickSessionDisconnect) {
@@ -3260,6 +3290,12 @@ async function connectSessionBridges() {
   if (pasteTargetDisconnect) {
     if (appUnmounted) pasteTargetDisconnect()
     else disconnectPasteTarget = pasteTargetDisconnect
+  } else {
+    showToast(t('desktopEventsUnavailable'), true)
+  }
+  if (libraryDisconnect) {
+    if (appUnmounted) libraryDisconnect()
+    else disconnectLibraryOpenRequested = libraryDisconnect
   } else {
     showToast(t('desktopEventsUnavailable'), true)
   }
@@ -3440,6 +3476,7 @@ onBeforeUnmount(() => {
   disconnectNativeClipboard?.()
   disconnectPasteTarget?.()
   disconnectQuickPanelSession?.()
+  disconnectLibraryOpenRequested?.()
   disconnectCaptureState?.()
   disconnectCaptureAvailability?.()
   disconnectQuitRequested?.()
@@ -3464,6 +3501,7 @@ onBeforeUnmount(() => {
   >
     <Transition name="panel-swap" mode="out-in" @after-enter="focusCurrentView">
       <QuickPanel
+        ref="quickPanel"
         v-if="currentView === 'quick'"
         key="quick"
         :state="quickPanelState"
@@ -3506,6 +3544,7 @@ onBeforeUnmount(() => {
             :locale="locale"
             :t="t"
             @close="closePreview"
+            @copy="copyPreviewClip"
             @copy-recognized-text="copyRecognizedText"
             @paste-recognized-text="pasteRecognizedText"
             @open-qr-link="openQrLink"

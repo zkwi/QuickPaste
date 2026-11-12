@@ -1671,7 +1671,8 @@ button:disabled {
 
 .preview-actions {
   display: flex;
-  flex: 0 0 46px;
+  flex: 0 0 auto;
+  min-height: 46px;
   flex-wrap: wrap;
   align-items: flex-end;
   justify-content: flex-end;

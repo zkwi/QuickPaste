@@ -38,7 +38,7 @@ describe('clip action policy', () => {
 
   it('offers file actions in both menus and keeps file paste as the default mode', () => {
     expect(getClipActions(fileClip, 'manager').map(({ id }) => id)).toEqual([
-      'paste', 'copy', 'open-file', 'reveal-file',
+      'paste', 'copy', 'open-file', 'reveal-file', 'pin', 'delete',
     ])
     expect(getClipActions(fileClip, 'quick').map(({ id }) => id)).toContain('reveal-file')
     expect(defaultPasteMode(fileClip)).toBe('files')
@@ -55,15 +55,15 @@ describe('clip action policy', () => {
   })
 
   it('offers the manager type-action matrix', () => {
-    expect(getClipActions(textClip, 'manager').map(({ id }) => id)).toEqual(['paste', 'copy'])
+    expect(getClipActions(textClip, 'manager').map(({ id }) => id)).toEqual(['paste', 'copy', 'pin', 'delete'])
     expect(getClipActions(richClip, 'manager').map(({ id }) => id)).toEqual([
-      'paste-preserve', 'paste-plain', 'copy',
+      'paste-preserve', 'paste-plain', 'copy', 'pin', 'delete',
     ])
     expect(getClipActions(imageClip, 'manager').map(({ id }) => id)).toEqual([
-      'paste', 'copy', 'save-image',
+      'paste', 'copy', 'save-image', 'pin', 'delete',
     ])
     expect(getClipActions(linkClip, 'manager').map(({ id }) => id)).toEqual([
-      'paste', 'copy', 'open-link',
+      'paste', 'copy', 'open-link', 'pin', 'delete',
     ])
   })
 

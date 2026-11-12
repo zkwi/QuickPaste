@@ -38,6 +38,8 @@ const emit = defineEmits<{
 
 const searchInput = ref<HTMLInputElement | null>(null)
 const searchHelpOpen = ref(false)
+const searchHelpToggle = ref<HTMLButtonElement | null>(null)
+const searchHelp = ref<HTMLElement | null>(null)
 const HOVER_PREVIEW_DELAY_MS = 400
 const HOVER_PREVIEW_TEXT_LIMIT = 4_096
 let hoverPreviewTimer: ReturnType<typeof setTimeout> | undefined
@@ -46,9 +48,11 @@ let pendingHoverClipId: string | null = null
 onMounted(() => {
   emit('searchElement', searchInput.value)
   window.addEventListener('blur', clearHoverPreview)
+  window.addEventListener('pointerdown', dismissSearchHelpOutside, true)
 })
 onBeforeUnmount(() => {
   window.removeEventListener('blur', clearHoverPreview)
+  window.removeEventListener('pointerdown', dismissSearchHelpOutside, true)
   clearHoverPreview()
   emit('searchElement', null)
 })
@@ -93,15 +97,26 @@ watch(
   clearHoverPreview,
 )
 
-watch(() => props.state.query, closeSearchHelp)
+watch([() => props.state.query, () => props.state.previewActive], dismissSearchHelp)
 
 function updateQuery(event: Event) {
   if (event.target instanceof HTMLInputElement) emit('updateQuery', event.target.value)
 }
 
-function closeSearchHelp() {
+function dismissSearchHelp(): boolean {
+  if (!searchHelpOpen.value) return false
   searchHelpOpen.value = false
+  return true
 }
+
+function dismissSearchHelpOutside(event: PointerEvent) {
+  const target = event.target
+  if (target instanceof Node
+    && !searchHelpToggle.value?.contains(target)
+    && !searchHelp.value?.contains(target)) dismissSearchHelp()
+}
+
+defineExpose({ dismissSearchHelp })
 
 function toggleSearchHelp() {
   searchHelpOpen.value = !searchHelpOpen.value
@@ -150,10 +165,10 @@ function activateClip(event: MouseEvent, clip: ClipboardItem) {
       </span>
       <input ref="searchInput" :value="state.query" data-testid="search-input" class="search-input" type="search" role="combobox" autocomplete="off" spellcheck="false" aria-autocomplete="list" :aria-controls="state.sourceSuggestions.length > 0 ? 'source-suggestions' : undefined" :aria-expanded="state.sourceSuggestions.length > 0" aria-haspopup="listbox" :aria-activedescendant="state.activeDescendant" :aria-label="helpers.t('searchClipboard')" :placeholder="helpers.t('searchClipboard')" @input="updateQuery" @compositionstart="emit('compositionStart')" @compositionend="emit('compositionEnd')" @blur="emit('compositionBlur')" />
       <button v-if="state.query" class="clear-search" type="button" :aria-label="helpers.t('clearSearch')" @click="emit('clearSearch')"><X :size="15" /></button><span v-else class="search-hint">Ctrl K</span>
-      <button data-testid="search-help-toggle" class="search-help-toggle" type="button" aria-controls="quick-search-help" :aria-expanded="searchHelpOpen" :aria-label="helpers.t('searchHelp')" :title="helpers.t('searchHelp')" @click="toggleSearchHelp" @keydown.esc.stop.prevent="closeSearchHelp"><CircleHelp :size="15" /></button>
-      <div v-if="searchHelpOpen" id="quick-search-help" data-testid="quick-search-help" class="quick-search-help" role="note">
+      <button ref="searchHelpToggle" data-testid="search-help-toggle" class="search-help-toggle" type="button" aria-controls="quick-search-help" :aria-expanded="searchHelpOpen" :aria-label="helpers.t('searchHelp')" :title="helpers.t('searchHelp')" @click="toggleSearchHelp"><CircleHelp :size="15" /></button>
+      <div v-if="searchHelpOpen" id="quick-search-help" ref="searchHelp" data-testid="quick-search-help" class="quick-search-help" role="note">
         <strong>{{ helpers.t('searchHelpTitle') }}</strong>
-        <dl><div><dt>@</dt><dd>{{ helpers.t('searchHelpSource') }}</dd></div><div><dt>;</dt><dd>{{ helpers.t('searchHelpSnippets') }}</dd></div><div><dt>Space</dt><dd>{{ helpers.t('searchHelpPreview') }}</dd></div><div><dt>Enter</dt><dd>{{ helpers.t('searchHelpPaste') }}</dd></div><div><dt>Alt + 1…0</dt><dd>{{ helpers.t('searchHelpDirectPaste') }}</dd></div></dl>
+        <dl><div><dt>@</dt><dd>{{ helpers.t('searchHelpSource') }}</dd></div><div><dt>;</dt><dd>{{ helpers.t('searchHelpSnippets') }}</dd></div><div><dt>Space</dt><dd>{{ helpers.t('searchHelpPreview') }}</dd></div><div><dt>Enter</dt><dd>{{ helpers.t('searchHelpPaste') }}</dd></div><div><dt>Ctrl+C</dt><dd>{{ helpers.t('searchHelpCopy') }}</dd></div><div><dt>Del</dt><dd>{{ helpers.t('searchHelpDelete') }}</dd></div><div><dt>Alt + 1…0</dt><dd>{{ helpers.t('searchHelpDirectPaste') }}</dd></div></dl>
       </div>
       <div v-if="state.sourceSuggestions.length" id="source-suggestions" data-testid="source-suggestions" class="source-suggestions" role="listbox" :aria-label="helpers.t('sourceSuggestions')">
         <button v-for="(sourceApp, index) in state.sourceSuggestions" :id="`source-suggestion-${index}`" :key="sourceApp" :data-testid="`source-suggestion-${index}`" type="button" role="option" :aria-selected="state.sourceSuggestionIndex === index" :class="{ selected: state.sourceSuggestionIndex === index }" @mousedown.prevent @click="emit('selectSource', sourceApp)"><SourceAppIcon class="source-suggestion-icon" :source="sourceApp" /> <span>{{ sourceApp }}</span><kbd v-if="state.sourceSuggestionIndex === index">Enter</kbd></button>

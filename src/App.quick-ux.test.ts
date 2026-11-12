@@ -224,10 +224,23 @@ describe('quick panel high-frequency interaction', () => {
     expect(help.text()).toContain('Alt + 1…0')
     expect(help.text()).toContain('空格')
     expect(help.text()).toContain('Enter')
+    expect(help.text()).toContain('Ctrl+C')
+    expect(help.text()).toContain('Del')
 
-    dispatchKey(toggle.element, 'Escape')
+    const search = wrapper.get<HTMLInputElement>('[data-testid="search-input"]')
+    search.element.focus()
+    expect(dispatchKey(search.element, 'Escape', { isComposing: true }).defaultPrevented).toBe(false)
+    expect(wrapper.find('[data-testid="quick-search-help"]').exists()).toBe(true)
+    expect(dispatchKey(search.element, 'Escape').defaultPrevented).toBe(true)
     await wrapper.vm.$nextTick()
     expect(wrapper.find('[data-testid="quick-search-help"]').exists()).toBe(false)
+    expect(document.activeElement).toBe(search.element)
+
+    await toggle.trigger('click')
+    await wrapper.get('[data-testid="quick-search-help"]').trigger('pointerdown')
+    expect(toggle.attributes('aria-expanded')).toBe('true')
+    await wrapper.get('.filter-strip').trigger('pointerdown')
+    expect(toggle.attributes('aria-expanded')).toBe('false')
     expect(windowMocks.runWindowAction).not.toHaveBeenCalled()
   })
 
@@ -300,6 +313,31 @@ describe('quick panel high-frequency interaction', () => {
     expect(document.activeElement).toBe(search.element)
     await search.setValue('Windows')
     expect(dispatchKey(search.element, ' ').defaultPrevented).toBe(false)
+  })
+
+  it('copies a preview from the footer or Ctrl+C while preserving text selection and IME', async () => {
+    await wrapper.get('[data-testid="preview-clip-clip-1"]').trigger('click')
+    const preview = wrapper.get('[data-testid="preview-panel"]')
+    const copy = preview.get('[data-testid="preview-copy"]')
+    const shortcut = { ctrlKey: true }
+
+    expect(dispatchKey(copy.element, 'c', { ...shortcut, isComposing: true }).defaultPrevented).toBe(false)
+    expect(dispatchKey(copy.element, ' ', { isComposing: true }).defaultPrevented).toBe(true)
+    const selection = window.getSelection()!
+    selection.selectAllChildren(preview.get('.preview-copy').element)
+    expect(dispatchKey(copy.element, 'c', shortcut).defaultPrevented).toBe(false)
+    expect(clipboardMocks.copyText).not.toHaveBeenCalled()
+    selection.removeAllRanges()
+
+    expect(dispatchKey(copy.element, 'c', shortcut).defaultPrevented).toBe(true)
+    await flushPromises()
+    expect(clipboardMocks.copyText).toHaveBeenCalledOnce()
+    expect(clipboardMocks.copyText).toHaveBeenCalledWith(expect.stringContaining('Windows'))
+
+    await copy.trigger('click')
+    await flushPromises()
+    expect(clipboardMocks.copyText).toHaveBeenCalledTimes(2)
+    expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
   })
 
   it('preserves Delete for a search term, supports Shift+Delete and keeps undo', async () => {
@@ -1008,7 +1046,9 @@ describe('quick panel high-frequency interaction', () => {
 
     const menu = wrapper.get('[data-testid="clip-context-menu"]')
     expect(menu.find('[data-testid="context-preview"]').exists()).toBe(false)
-    expect(menu.findAll('[role="menuitem"]')).toHaveLength(2)
+    expect(menu.findAll('[role="menuitem"]').map((item) => item.attributes('data-testid'))).toEqual([
+      'context-paste', 'context-copy', 'context-pin', 'context-delete',
+    ])
     expect(row.attributes('aria-current')).toBe('true')
   })
 
@@ -1273,6 +1313,22 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.get('[data-manager-clip-id="clip-2"]').attributes('aria-current')).toBe('true')
   })
 
+  it('moves to the next manager row after deleting from the context menu', async () => {
+    await wrapper.get('[data-testid="open-library"]').trigger('click')
+    const rows = wrapper.findAll('[data-manager-clip-id]')
+    const deletedId = rows[1].attributes('data-manager-clip-id')
+    const nextId = rows[2].attributes('data-manager-clip-id')
+    dispatchContextMenu(rows[1].element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-delete"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find(`[data-manager-clip-id="${deletedId}"]`).exists()).toBe(false)
+    const next = wrapper.get(`[data-manager-clip-id="${nextId}"]`)
+    expect(next.attributes('aria-current')).toBe('true')
+    expect(document.activeElement).toBe(next.element)
+  })
+
   it('keeps search focus without pointing the combobox at the separate result list', async () => {
     const search = wrapper.get('[data-testid="search-input"]')
     ;(search.element as HTMLElement).focus()
@@ -1490,16 +1546,19 @@ describe('quick panel high-frequency interaction', () => {
     expect(document.activeElement).toBe(search.element)
   })
 
-  it('moves focus safely when unpinning removes a manager result from the pinned section', async () => {
+  it('moves focus safely when unpinning from the manager context menu', async () => {
     await wrapper.get('[data-testid="open-library"]').trigger('click')
     await wrapper.get('[data-testid="library-section-pinned"]').trigger('click')
     const unpin = wrapper.get('[data-testid="manager-pin-clip-2"]')
     ;(unpin.element as HTMLElement).focus()
 
-    await unpin.trigger('click')
+    dispatchContextMenu(unpin.element)
     await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-unpin"]').trigger('click')
+    await flushPromises()
 
     expect(wrapper.find('[data-manager-clip-id="clip-2"]').exists()).toBe(false)
+    expect(wrapper.get('[data-manager-clip-id="clip-6"]').attributes('aria-current')).toBe('true')
     expect(document.activeElement).toBe(wrapper.get('[data-testid="manager-pin-clip-6"]').element)
   })
 })

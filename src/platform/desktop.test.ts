@@ -5,6 +5,7 @@ import {
   connectNativeClipboard,
   connectPasteTarget,
   connectQuickPanelSession,
+  connectLibraryOpenRequested,
   connectQuitRequested,
   exitNativeApp,
   getNativeCaptureAvailability,
@@ -150,6 +151,20 @@ describe('Tauri desktop bridge', () => {
     const listen: NativeListen<{ sessionId: number; sourceApp: string; elevated: boolean }> = vi.fn().mockRejectedValue(new Error('event bus unavailable'))
 
     await expect(connectQuickPanelSession(vi.fn(), listen)).resolves.toBeNull()
+  })
+
+  it('accepts only manager and settings destinations from the tray bridge', async () => {
+    const handler = vi.fn()
+    const disconnect = vi.fn()
+    const listen: NativeListen<unknown> = async (eventName, callback) => {
+      expect(eventName).toBe('library://open-requested')
+      callback('all')
+      callback('settings')
+      callback('other')
+      return disconnect
+    }
+    await expect(connectLibraryOpenRequested(handler, listen)).resolves.toBe(disconnect)
+    expect(handler.mock.calls).toEqual([['all'], ['settings']])
   })
 
   it('reports a failed paste-target subscription instead of pretending it is connected', async () => {

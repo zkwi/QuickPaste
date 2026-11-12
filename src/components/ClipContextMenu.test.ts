@@ -60,6 +60,9 @@ describe('ClipContextMenu', () => {
       'context-exclude-source',
       'context-preview',
     ])
+    expect(wrapper.get('[data-testid="context-preview"] kbd').text()).toBe('Space')
+    expect(wrapper.get('[data-testid="context-copy"] kbd').text()).toBe('Ctrl+C')
+    expect(wrapper.get('[data-testid="context-delete"] kbd').text()).toBe('Del')
 
     wrapper.unmount()
   })
@@ -91,6 +94,8 @@ describe('ClipContextMenu', () => {
       'context-copy',
       'context-open-file',
       'context-reveal-file',
+      'context-pin',
+      'context-delete',
     ])
     expect(wrapper.find('[data-testid="context-preview"]').exists()).toBe(false)
 

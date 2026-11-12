@@ -47,6 +47,7 @@ export interface GlobalKeyboardActions {
   closeClipContextMenu: (restoreFocus?: boolean) => void
   openKeyboardContextMenu: (target: Element) => boolean
   closePreview: () => void
+  dismissSearchHelp: () => boolean
   closeCollectionEditor: () => void
   clearManagerSelection: () => void
   clearManagerSearch: () => void
@@ -64,6 +65,7 @@ export interface GlobalKeyboardActions {
   clearQuickSourceFilter: () => void
   pasteClip: (clip: ClipboardItem) => void
   copyClip: (clip: ClipboardItem) => void
+  copyPreviewClip: () => void
   deleteClip: (id: string) => void
   selectWithKeyboard: (delta: number, moveFocus?: boolean) => void
   selectIndexWithKeyboard: (index: number, moveFocus?: boolean) => void
@@ -135,6 +137,8 @@ export function useGlobalKeyboard(
       if (state.previewId) {
         event.preventDefault()
         actions.closePreview()
+      } else if (state.currentView === 'quick' && actions.dismissSearchHelp()) {
+        event.preventDefault()
       } else if (state.currentView === 'library') {
         event.preventDefault()
         if (state.collectionEditorOpen) actions.closeCollectionEditor()
@@ -199,6 +203,16 @@ export function useGlobalKeyboard(
     const resultPrimary = eventTarget?.closest<HTMLElement>('.clip-primary') ?? null
     const isSearchTarget = eventTarget === state.searchInput
     const isResultNavigationTarget = isSearchTarget || resultPrimary !== null
+    const copyShortcut = event.ctrlKey && !event.altKey && !event.metaKey && !event.shiftKey
+      && event.key.toLowerCase() === 'c'
+
+    if (copyShortcut && state.previewId && eventTarget?.closest('[data-preview-clip-id]')) {
+      const selection = window.getSelection()
+      if (selection && !selection.isCollapsed) return
+      event.preventDefault()
+      if (!event.repeat) actions.copyPreviewClip()
+      return
+    }
 
     const plainSpace = event.key === ' ' && !event.ctrlKey && !event.altKey && !event.metaKey
     if (plainSpace && state.previewId) {
@@ -210,7 +224,7 @@ export function useGlobalKeyboard(
     if (isResultNavigationTarget && state.selectedClip && !event.altKey && !event.metaKey) {
       const searchHasSelection = isSearchTarget
         && state.searchInput?.selectionStart !== state.searchInput?.selectionEnd
-      if (event.ctrlKey && !event.shiftKey && event.key.toLowerCase() === 'c' && !searchHasSelection) {
+      if (copyShortcut && !searchHasSelection) {
         event.preventDefault()
         if (!event.repeat) actions.copyClip(state.selectedClip)
         return

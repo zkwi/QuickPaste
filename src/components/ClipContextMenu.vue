@@ -63,6 +63,8 @@ function actionIcon(action: ClipAction) {
 }
 
 function actionShortcut(action: ClipAction): string | null {
+  if (action.id === 'copy') return 'Ctrl+C'
+  if (action.id === 'delete') return 'Del'
   return action.id === 'paste' || action.id === 'paste-preserve' ? 'Enter' : null
 }
 

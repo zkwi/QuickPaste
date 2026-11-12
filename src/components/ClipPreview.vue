@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, ref } from 'vue'
 import { AlignLeft, ArrowLeft, Code2, Copy, ExternalLink, Image as ImageIcon, LayoutList, Link2, QrCode } from 'lucide-vue-next'
-import { defaultPasteMode, getClipActions, type PasteMode } from '../domain/clipActions'
+import { defaultPasteMode, getClipActions, isClipCopyDisabled, type PasteMode } from '../domain/clipActions'
 import type { CodePreviewLanguage } from '../domain/codeLanguage'
 import { formatRelativeTime, type ClipKind, type LoadedClipboardItem } from '../domain/clipboard'
 import { isSafeExternalUrl } from '../domain/externalLink'
@@ -23,11 +23,17 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  copy: []
   copyRecognizedText: [text: string, sourceApp: string]
   pasteRecognizedText: [text: string]
   openQrLink: [value: string]
   paste: [mode?: PasteMode]
 }>()
+
+function handleCopyButtonSpace(event: KeyboardEvent) {
+  if (event.isComposing) event.preventDefault()
+  event.stopPropagation()
+}
 
 const pasteButton = ref<HTMLButtonElement | null>(null)
 
@@ -110,6 +116,7 @@ defineExpose({ focusPrimary, primaryButton: () => pasteButton.value })
         <button data-testid="preview-paste-plain" class="secondary-button" type="button" :disabled="pasteInFlight" @click="emit('paste', 'plain')">{{ t('pastePlain') }}</button>
       </template>
       <button v-else ref="pasteButton" data-testid="preview-paste" class="primary-button" type="button" :disabled="pasteInFlight || getClipActions(clip, 'preview')[0]?.disabled" @click="emit('paste')">{{ t('paste') }}</button>
+      <button data-testid="preview-copy" class="secondary-button" type="button" :disabled="pasteInFlight || isClipCopyDisabled(clip)" @click="emit('copy')" @keydown.space="handleCopyButtonSpace">{{ t('copyContent') }}</button>
     </div>
   </section>
 </template>

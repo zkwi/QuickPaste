@@ -31,6 +31,10 @@ function hasAvailableFile(clip: ClipboardItem): boolean {
   return Boolean(clip.files?.some((file) => file.exists))
 }
 
+export function isClipCopyDisabled(clip: ClipboardItem): boolean {
+  return defaultPasteMode(clip) === 'files' && !hasCompleteFileGroup(clip)
+}
+
 export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipAction[] {
   const mode = defaultPasteMode(clip)
   const actions: ClipAction[] = mode === 'preserve'
@@ -46,7 +50,7 @@ export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipA
 
   if (surface === 'preview') return actions
 
-  actions.push({ id: 'copy', ...(mode === 'files' && !hasCompleteFileGroup(clip) ? { disabled: true } : {}) })
+  actions.push({ id: 'copy', ...(isClipCopyDisabled(clip) ? { disabled: true } : {}) })
   if (clip.kind === 'link') actions.push({
     id: 'open-link',
     disabled: clip.payloadLoaded !== false && !isSafeExternalUrl(clip.content),
@@ -59,9 +63,7 @@ export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipA
     id: 'save-image',
     disabled: clip.payloadLoaded !== false && !clip.imageUrl,
   })
-  if (surface === 'quick') {
-    actions.push({ id: clip.pinned ? 'unpin' : 'pin' }, { id: 'delete' })
-    if (clip.sourceApp.trim()) actions.push({ id: 'exclude-source' })
-  }
+  actions.push({ id: clip.pinned ? 'unpin' : 'pin' }, { id: 'delete' })
+  if (surface === 'quick' && clip.sourceApp.trim()) actions.push({ id: 'exclude-source' })
   return actions
 }

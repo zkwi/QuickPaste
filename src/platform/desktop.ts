@@ -87,6 +87,21 @@ export async function connectQuickPanelSession(
   }
 }
 
+export async function connectLibraryOpenRequested(
+  onRequested: (section: 'all' | 'settings') => void,
+  listenAdapter?: NativeListen<unknown>,
+): Promise<(() => void) | null> {
+  if (!listenAdapter && !isTauriRuntime()) return () => undefined
+
+  try {
+    return await (listenAdapter ?? listenThroughTauri<unknown>)('library://open-requested', (section) => {
+      if (section === 'all' || section === 'settings') onRequested(section)
+    })
+  } catch {
+    return null
+  }
+}
+
 export async function connectNativeClipboard(
   onCaptured: (payload: CapturedClipboardPayload) => void,
   listenAdapter?: NativeListen,
