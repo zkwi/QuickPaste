@@ -62,6 +62,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 const CLIPBOARD_EVENT: &str = "clipboard://changed";
 const PASTE_TARGET_EVENT: &str = "paste-target://changed";
+const FILE_COPY_SOURCE_MISSING: &str = "file_copy_source_missing";
 const TRAY_ID: &str = "quickpaste";
 const TRAY_TOOLTIP: &str = "闪电剪贴板 QuickPaste";
 const QUICK_PANEL_INVOKED_EVENT: &str = "quick-panel://invoked";
@@ -72,7 +73,6 @@ const UPDATE_CHECK_REQUESTED_EVENT: &str = "update://check-requested";
 const APP_ICON_SIZE: u32 = 64;
 const APP_ICON_CACHE_CAPACITY: usize = 96;
 const DEFAULT_GLOBAL_SHORTCUT: &str = "Ctrl+Shift+V";
-const PASTE_TARGET_TTL: Duration = Duration::from_secs(5 * 60);
 const ELEVATED_HELPER_REQUEST_TTL_MS: u64 = 30_000;
 const ELEVATED_HELPER_WAIT_TIMEOUT_MS: u32 = 32_000;
 const ELEVATED_PIPE_BUFFER_BYTES: u32 = 512;
@@ -1032,16 +1032,8 @@ impl PasteTarget {
         self.0.lock().ok()?.take()
     }
 
-    fn identity_for_activation(
-        &self,
-        keep_for_continuous_paste: bool,
-    ) -> Option<PasteTargetIdentity> {
-        let mut current = self.0.lock().ok()?;
-        if keep_for_continuous_paste {
-            current.clone()
-        } else {
-            current.take()
-        }
+    fn snapshot(&self) -> Option<PasteTargetIdentity> {
+        self.0.lock().ok()?.clone()
     }
 
     fn clear_if_current(&self, identity: &PasteTargetIdentity) -> bool {
@@ -1243,19 +1235,24 @@ impl InternalClipboardWrites {
         let Ok(mut pending) = self.0.lock() else {
             return false;
         };
-        let matches = pending.as_ref().is_some_and(|change| {
-            change.signature == signature
-                && Instant::now() <= change.expires_at
-                && change
-                    .sequence
-                    .is_none_or(|sequence| observed_sequence == Some(sequence))
-        });
-        let expired = pending
-            .as_ref()
-            .is_some_and(|change| Instant::now() > change.expires_at);
-        if matches || expired {
+        let Some(change) = pending.as_ref() else {
+            return false;
+        };
+        if Instant::now() > change.expires_at {
             *pending = None;
+            return false;
         }
+        // 系统序号是 32 位，短窗口内允许向前变化并跨越回绕。
+        let observed_after_write = change.sequence.is_none_or(|written| {
+            observed_sequence
+                .is_some_and(|observed| (observed as u32).wrapping_sub(written as u32) < 1 << 31)
+        });
+        if !observed_after_write {
+            return false;
+        }
+        let matches = change.signature == signature;
+        // 观察到的新内容结束本次自写归因，之后相同内容可以由外部应用重新复制。
+        *pending = None;
         matches
     }
 }
@@ -1337,6 +1334,8 @@ struct PasteResult {
     copied: bool,
     pasted: bool,
     requires_elevation: bool,
+    panel_hidden: bool,
+    clipboard_changed: bool,
 }
 
 struct PasteAttempt {
@@ -2186,12 +2185,22 @@ fn set_window_mode_internal(
 
 #[tauri::command]
 fn set_window_mode(mode: String, app: AppHandle) -> Result<(), String> {
-    set_window_mode_internal(&app, WindowMode::parse(&mode)?, None, None)
+    let mode = WindowMode::parse(&mode)?;
+    set_window_mode_internal(&app, mode, None, None)?;
+    if mode == WindowMode::Library {
+        clear_paste_target_and_notify(&app, &app.state::<PasteTarget>());
+    } else if app.state::<QuickPanelPinned>().0.load(Ordering::Relaxed) {
+        refresh_pinned_paste_target(&app, &app.state::<PasteTarget>());
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn set_quick_panel_pinned(enabled: bool, pinned: State<'_, QuickPanelPinned>) {
+fn set_quick_panel_pinned(enabled: bool, app: AppHandle, pinned: State<'_, QuickPanelPinned>) {
     pinned.0.store(enabled, Ordering::Relaxed);
+    if enabled {
+        update_visible_pinned_paste_target(&app);
+    }
 }
 
 #[tauri::command]
@@ -2630,7 +2639,7 @@ fn external_target_identity(window_handle: isize) -> Option<PasteTargetIdentity>
 }
 
 #[cfg(target_os = "windows")]
-fn start_foreground_tracking() {
+fn start_foreground_tracking(app: &AppHandle) {
     use windows::Win32::{
         Foundation::HWND,
         UI::{
@@ -2640,6 +2649,8 @@ fn start_foreground_tracking() {
             },
         },
     };
+
+    static TRACKING_APP: OnceLock<AppHandle> = OnceLock::new();
 
     unsafe extern "system" fn changed(
         _hook: HWINEVENTHOOK,
@@ -2657,10 +2668,14 @@ fn start_foreground_tracking() {
                 RECENT_EXTERNAL_TARGET
                     .get_or_init(PasteTarget::default)
                     .refresh_if_newer(&identity);
+                if let Some(app) = TRACKING_APP.get() {
+                    update_visible_pinned_paste_target(app);
+                }
             }
         }
     }
 
+    let _ = TRACKING_APP.set(app.clone());
     if let Some(identity) = foreground_window_handle().and_then(external_target_identity) {
         RECENT_EXTERNAL_TARGET
             .get_or_init(PasteTarget::default)
@@ -2689,9 +2704,7 @@ fn recent_external_target() -> Option<PasteTargetIdentity> {
     if let Some(identity) = foreground_window_handle().and_then(external_target_identity) {
         recent.refresh_if_newer(&identity);
     }
-    recent
-        .identity_for_activation(true)
-        .filter(target_identity_is_current)
+    recent.snapshot().filter(target_identity_is_current)
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2718,24 +2731,60 @@ fn capture_foreground_paste_target(use_recent: bool) -> Option<ForegroundPasteTa
     })
 }
 
+fn update_visible_pinned_paste_target(app: &AppHandle) {
+    if app.state::<CurrentWindowMode>().get() == WindowMode::Quick
+        && app.state::<QuickPanelPinned>().0.load(Ordering::Relaxed)
+        && !app.state::<OnboardingWindowActive>().get()
+        && app.get_webview_window("main").is_some_and(|window| {
+            matches!(window.is_visible(), Ok(true)) && matches!(window.is_minimized(), Ok(false))
+        })
+    {
+        refresh_pinned_paste_target(app, &app.state::<PasteTarget>());
+    }
+}
+
 fn refresh_pinned_paste_target(app: &AppHandle, target: &PasteTarget) {
     let Some(identity) = recent_external_target() else {
         return;
     };
-    if !target.refresh_if_newer(&identity) {
+    let same_window = |candidate: &PasteTargetIdentity| {
+        candidate.window_handle == identity.window_handle
+            && candidate.process_id == identity.process_id
+    };
+    let already_tracked = target.snapshot().as_ref().is_some_and(same_window);
+    if !target.refresh_if_newer(&identity) || already_tracked {
         return;
     }
-    let (source_app, source_app_icon) =
-        paste_target_presentation(source_app_identity_for_process_id(identity.process_id));
-    let _ = app.emit(
-        PASTE_TARGET_EVENT,
-        PasteTargetPayload {
-            session_id: current_quick_panel_session_id(app),
-            source_app,
-            source_app_icon,
-            elevated: process_id_is_elevated(identity.process_id).unwrap_or(true),
-        },
-    );
+    let app = app.clone();
+    let target = target.clone();
+    let session_id = current_quick_panel_session_id(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let (source_app, source_app_icon) =
+            paste_target_presentation(source_app_identity_for_process_id(identity.process_id));
+        let elevated = process_id_is_elevated(identity.process_id).unwrap_or(true);
+        let window_handle = identity.window_handle;
+        let process_id = identity.process_id;
+        let app_for_event = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            // 较早启动的图标读取可能后完成，发事件前核对当前目标和面板会话。
+            if !target.snapshot().is_some_and(|latest| {
+                latest.window_handle == window_handle && latest.process_id == process_id
+            }) || current_quick_panel_session_id(&app_for_event) != session_id
+                || app_for_event.state::<CurrentWindowMode>().get() != WindowMode::Quick
+            {
+                return;
+            }
+            let _ = app_for_event.emit(
+                PASTE_TARGET_EVENT,
+                PasteTargetPayload {
+                    session_id,
+                    source_app,
+                    source_app_icon,
+                    elevated,
+                },
+            );
+        });
+    });
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -2857,12 +2906,21 @@ fn wait_for_physical_modifiers_released(deadline_ms: Option<u64>) -> bool {
 fn target_identity_is_current(identity: &PasteTargetIdentity) -> bool {
     use windows::Win32::{Foundation::HWND, UI::WindowsAndMessaging::IsWindow};
 
-    if identity.process_id == 0 || identity.captured_at.elapsed() > PASTE_TARGET_TTL {
-        return false;
-    }
     let target = HWND(identity.window_handle as *mut core::ffi::c_void);
-    unsafe { IsWindow(Some(target)) }.as_bool()
-        && window_process_id(identity.window_handle) == Some(identity.process_id)
+    paste_target_matches_live_window(
+        identity,
+        unsafe { IsWindow(Some(target)) }
+            .as_bool()
+            .then(|| window_process_id(identity.window_handle))
+            .flatten(),
+    )
+}
+
+fn paste_target_matches_live_window(
+    identity: &PasteTargetIdentity,
+    live_process_id: Option<u32>,
+) -> bool {
+    identity.process_id != 0 && live_process_id == Some(identity.process_id)
 }
 
 fn elevated_focus_snapshot_matches_target(
@@ -3021,6 +3079,15 @@ fn focus_target_and_send_ctrl_v(
     }
 }
 
+fn clipboard_ready_after_write(
+    written_sequence: Option<u64>,
+    expected: &ClipboardSnapshot,
+) -> bool {
+    clipboard_ready_for_direct_paste(written_sequence, clipboard_sequence(), || {
+        clipboard_matches_snapshot(expected)
+    })
+}
+
 #[cfg(target_os = "windows")]
 fn paste_into_window(
     identity: &PasteTargetIdentity,
@@ -3028,11 +3095,7 @@ fn paste_into_window(
     expected: &ClipboardSnapshot,
 ) -> Result<(), &'static str> {
     focus_target_and_send_ctrl_v(identity, None, || {
-        let before = clipboard_sequence();
-        // 只有序号变化时才做一次校验，能确认内容已变才停止普通窗口粘贴。
-        clipboard_ready_for_direct_paste(written_sequence, before, || {
-            clipboard_matches_snapshot(expected)
-        })
+        clipboard_ready_after_write(written_sequence, expected)
     })
 }
 
@@ -4261,12 +4324,74 @@ fn write_clipboard_formats(
 }
 
 #[tauri::command]
-fn write_clipboard_files(
+async fn write_clipboard_files(
     paths: Vec<String>,
     internal_writes: State<'_, InternalClipboardWrites>,
 ) -> Result<(), String> {
     let package = clipboard_formats::prepare_file_package(&paths)?;
-    copy_format_package(package, &internal_writes)
+    let internal_writes = internal_writes.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        check_file_copy_sources(&paths)?;
+        copy_format_package(package, &internal_writes)
+    })
+    .await
+    .map_err(|_| "文件复制后台任务异常结束".to_owned())?
+}
+
+fn check_file_copy_sources(paths: &[String]) -> Result<(), String> {
+    paths
+        .iter()
+        .try_for_each(|path| check_local_file_copy_source(Path::new(path)))
+}
+
+#[cfg(target_os = "windows")]
+fn check_local_file_copy_source(path: &Path) -> Result<(), String> {
+    use std::{
+        os::windows::fs::MetadataExt,
+        path::{Component, Prefix},
+    };
+    use windows::{
+        core::PCWSTR,
+        Win32::Storage::FileSystem::{GetDriveTypeW, FILE_ATTRIBUTE_REPARSE_POINT},
+    };
+
+    let mut components = path.components();
+    let Some(Component::Prefix(prefix)) = components.next() else {
+        return Ok(());
+    };
+    let Prefix::Disk(letter) = prefix.kind() else {
+        return Ok(());
+    };
+    let root = [u16::from(letter), b':' as u16, b'\\' as u16, 0];
+    // UNC、映射网络盘和未知盘符不做探测。检查逐级止于重解析点，以免访问其目标。
+    match unsafe { GetDriveTypeW(PCWSTR(root.as_ptr())) } {
+        0 | 4 => return Ok(()), // DRIVE_UNKNOWN / DRIVE_REMOTE
+        1 => return Err(FILE_COPY_SOURCE_MISSING.into()), // DRIVE_NO_ROOT_DIR
+        _ => {}
+    }
+    let mut current = PathBuf::from(format!("{}:\\", char::from(letter)));
+    for part in components {
+        match part {
+            Component::ParentDir => {
+                current.pop();
+            }
+            Component::Normal(name) => {
+                current.push(name);
+                let metadata = fs::symlink_metadata(&current)
+                    .map_err(|_| FILE_COPY_SOURCE_MISSING.to_owned())?;
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
+                    return Ok(());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn check_local_file_copy_source(_path: &Path) -> Result<(), String> {
+    Ok(())
 }
 
 fn copy_format_package(
@@ -5032,72 +5157,118 @@ fn log_paste_failure(
     );
 }
 
+fn should_hide_panel_for_paste(mode: WindowMode, pinned: bool, input_ready: bool) -> bool {
+    mode == WindowMode::Quick && !pinned && input_ready
+}
+
+struct PasteInvocation {
+    mode: WindowMode,
+    pinned: bool,
+    session_id: u64,
+    identity: Option<PasteTargetIdentity>,
+}
+
+impl PasteInvocation {
+    fn capture(app: &AppHandle, paste_target: &PasteTarget) -> Self {
+        let mode = app.state::<CurrentWindowMode>().get();
+        let pinned = app.state::<QuickPanelPinned>().0.load(Ordering::Relaxed);
+        let session_id = current_quick_panel_session_id(app);
+        let identity = if mode == WindowMode::Quick {
+            if pinned {
+                refresh_pinned_paste_target(app, paste_target);
+            }
+            paste_target.snapshot()
+        } else {
+            recent_external_target()
+        };
+        Self {
+            mode,
+            pinned,
+            session_id,
+            identity,
+        }
+    }
+}
+
 fn paste_to_remembered_target(
     app: &AppHandle,
     paste_target: &PasteTarget,
+    invocation: PasteInvocation,
     elevated_paste_enabled: bool,
-    quick_panel_pinned: bool,
-    clipboard_sequence: Option<u64>,
+    written_sequence: Option<u64>,
     expected: &ClipboardSnapshot,
 ) -> PasteAttempt {
     let started = Instant::now();
-    if quick_panel_pinned {
-        refresh_pinned_paste_target(app, paste_target);
-    }
-    let identity = paste_target.identity_for_activation(quick_panel_pinned);
-    if !quick_panel_pinned {
-        if identity.is_some() || app.state::<CurrentWindowMode>().get() == WindowMode::Quick {
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.hide();
+    let PasteInvocation {
+        mode,
+        pinned,
+        session_id,
+        identity,
+    } = invocation;
+    let quick = mode == WindowMode::Quick;
+    let target_failure = match identity.as_ref() {
+        _ if current_quick_panel_session_id(app) != session_id
+            || app.state::<CurrentWindowMode>().get() != mode =>
+        {
+            Some((
+                "paste_session_changed",
+                metrics::PasteTerminalOutcome::TargetStale,
+            ))
+        }
+        None => Some(("no_target", metrics::PasteTerminalOutcome::TargetMissing)),
+        Some(identity) if !target_identity_is_current(identity) => {
+            if quick && paste_target.clear_if_current(identity) {
+                let _ = app.emit(PASTE_TARGET_EVENT, cleared_paste_target_payload(session_id));
             }
+            Some(("target_stale", metrics::PasteTerminalOutcome::TargetStale))
         }
-        let _ = app.emit(
-            PASTE_TARGET_EVENT,
-            cleared_paste_target_payload(current_quick_panel_session_id(app)),
-        );
-    }
-    let Some(identity) = identity else {
-        log_paste_failure("no_target", None, started);
-        set_tray_status(app, "已复制，可手动粘贴");
-        return PasteAttempt {
-            result: PasteResult {
-                copied: true,
-                pasted: false,
-                requires_elevation: false,
-            },
-            terminal_outcome: metrics::PasteTerminalOutcome::TargetMissing,
-        };
+        _ => None,
     };
-    if !target_identity_is_current(&identity) {
-        log_paste_failure("target_stale", Some(&identity), started);
+    if let Some((reason, terminal_outcome)) = target_failure {
+        log_paste_failure(reason, identity.as_ref(), started);
         set_tray_status(app, "已复制，可手动粘贴");
-        if paste_target.clear_if_current(&identity) {
-            let _ = app.emit(
-                PASTE_TARGET_EVENT,
-                cleared_paste_target_payload(current_quick_panel_session_id(app)),
-            );
-        }
         return PasteAttempt {
             result: PasteResult {
                 copied: true,
                 pasted: false,
                 requires_elevation: false,
+                panel_hidden: false,
+                clipboard_changed: false,
             },
-            terminal_outcome: metrics::PasteTerminalOutcome::TargetStale,
+            terminal_outcome,
         };
     }
-    if !quick_panel_pinned {
-        thread::sleep(Duration::from_millis(55));
-    }
-
+    let identity = identity.expect("validated paste target");
     let target_elevated = window_is_elevated(identity.window_handle).unwrap_or(true);
     let current_elevated = current_process_is_elevated().unwrap_or(false);
     let strategy = choose_paste_strategy(current_elevated, target_elevated, elevated_paste_enabled);
+    let clipboard_ready = clipboard_ready_after_write(written_sequence, expected);
+    let elevated_sequence = if clipboard_ready && strategy == PasteStrategy::ElevatedHelper {
+        verified_elevated_clipboard_sequence(expected)
+    } else {
+        None
+    };
+    let input_ready =
+        clipboard_ready && (strategy == PasteStrategy::Direct || elevated_sequence.is_some());
+    let hidden_window = if should_hide_panel_for_paste(mode, pinned, input_ready) {
+        app.get_webview_window("main")
+            .filter(|window| window.hide().is_ok())
+    } else {
+        None
+    };
+    if hidden_window.is_some() {
+        thread::sleep(Duration::from_millis(55));
+    }
+
     let outcome = match strategy {
-        PasteStrategy::Direct => paste_into_window(&identity, clipboard_sequence, expected),
+        _ if !clipboard_ready => Err("clipboard_changed"),
+        PasteStrategy::Direct => paste_into_window(&identity, written_sequence, expected),
         PasteStrategy::CopyOnly => Err("elevation_required"),
-        PasteStrategy::ElevatedHelper => match verified_elevated_clipboard_sequence(expected) {
+        PasteStrategy::ElevatedHelper => match elevated_sequence {
             Some(sequence) if launch_elevated_paste_helper(&identity, sequence) => Ok(()),
+            _ if !clipboard_ready_after_write(written_sequence, expected) => {
+                Err("clipboard_changed")
+            }
             Some(_) => Err("uac_helper_failed"),
             None => Err("clipboard_sequence_unavailable"),
         },
@@ -5106,7 +5277,24 @@ fn paste_to_remembered_target(
         log_paste_failure(reason, Some(&identity), started);
     }
     let pasted = outcome.is_ok();
-    let copied = outcome != Err("clipboard_changed");
+    let clipboard_changed = outcome == Err("clipboard_changed");
+    let copied = !clipboard_changed;
+    let mut panel_hidden = hidden_window.is_some();
+    if let Some(window) = hidden_window {
+        if clipboard_changed
+            && current_quick_panel_session_id(app) == session_id
+            && app.state::<CurrentWindowMode>().get() == WindowMode::Quick
+        {
+            // 切到目标时剪贴板可能再次变化，恢复这次仍可重试的面板和目标。
+            if window.show().is_ok() {
+                panel_hidden = false;
+                let _ = window.set_focus();
+            }
+        }
+        if panel_hidden && paste_target.clear_if_current(&identity) {
+            let _ = app.emit(PASTE_TARGET_EVENT, cleared_paste_target_payload(session_id));
+        }
+    }
     set_tray_status(
         app,
         if pasted {
@@ -5126,7 +5314,9 @@ fn paste_to_remembered_target(
         result: PasteResult {
             copied,
             pasted,
-            requires_elevation: !pasted && strategy != PasteStrategy::Direct,
+            requires_elevation: copied && !pasted && strategy != PasteStrategy::Direct,
+            panel_hidden,
+            clipboard_changed,
         },
     }
 }
@@ -5159,11 +5349,10 @@ fn paste_clipboard_text(
     internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
-    quick_panel_pinned: State<'_, QuickPanelPinned>,
-    current_window_mode: State<'_, CurrentWindowMode>,
     metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
     let started = Instant::now();
+    let invocation = PasteInvocation::capture(&app, &paste_target);
     let expected = ClipboardSnapshot::Text(text.clone());
     let _access = clipboard_write_access()?;
     let clipboard_sequence = match write_internal_clipboard(&internal_writes, &expected, || {
@@ -5174,15 +5363,13 @@ fn paste_clipboard_text(
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
         }
     };
-    let continuous_paste = current_window_mode.get() == WindowMode::Quick
-        && quick_panel_pinned.0.load(Ordering::Relaxed);
     finish_paste_attempt(
         &metrics_state,
         paste_to_remembered_target(
             &app,
             &paste_target,
+            invocation,
             elevated_paste.0.load(Ordering::Relaxed),
-            continuous_paste,
             clipboard_sequence,
             &expected,
         ),
@@ -5200,11 +5387,10 @@ fn paste_clipboard_formats(
     internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
-    quick_panel_pinned: State<'_, QuickPanelPinned>,
-    current_window_mode: State<'_, CurrentWindowMode>,
     metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
     let started = Instant::now();
+    let invocation = PasteInvocation::capture(&app, &paste_target);
     let package = match clipboard_formats::prepare_format_package(
         &plain_text,
         html.as_deref(),
@@ -5225,15 +5411,13 @@ fn paste_clipboard_formats(
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
         }
     };
-    let continuous_paste = current_window_mode.get() == WindowMode::Quick
-        && quick_panel_pinned.0.load(Ordering::Relaxed);
     finish_paste_attempt(
         &metrics_state,
         paste_to_remembered_target(
             &app,
             &paste_target,
+            invocation,
             elevated_paste.0.load(Ordering::Relaxed),
-            continuous_paste,
             clipboard_sequence,
             &expected,
         ),
@@ -5249,11 +5433,10 @@ fn paste_clipboard_files(
     internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
-    quick_panel_pinned: State<'_, QuickPanelPinned>,
-    current_window_mode: State<'_, CurrentWindowMode>,
     metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
     let started = Instant::now();
+    let invocation = PasteInvocation::capture(&app, &paste_target);
     let package = match clipboard_formats::prepare_file_package(&paths) {
         Ok(expected) => expected,
         Err(error) => {
@@ -5270,15 +5453,13 @@ fn paste_clipboard_files(
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
         }
     };
-    let continuous_paste = current_window_mode.get() == WindowMode::Quick
-        && quick_panel_pinned.0.load(Ordering::Relaxed);
     finish_paste_attempt(
         &metrics_state,
         paste_to_remembered_target(
             &app,
             &paste_target,
+            invocation,
             elevated_paste.0.load(Ordering::Relaxed),
-            continuous_paste,
             clipboard_sequence,
             &expected,
         ),
@@ -5294,11 +5475,10 @@ fn paste_clipboard_image(
     internal_writes: State<'_, InternalClipboardWrites>,
     paste_target: State<'_, PasteTarget>,
     elevated_paste: State<'_, ElevatedPasteEnabled>,
-    quick_panel_pinned: State<'_, QuickPanelPinned>,
-    current_window_mode: State<'_, CurrentWindowMode>,
     metrics_state: State<'_, AcceptanceMetricsState>,
 ) -> Result<PasteResult, String> {
     let started = Instant::now();
+    let invocation = PasteInvocation::capture(&app, &paste_target);
     let image = match decode_clipboard_image(&data_url) {
         Ok(image) => image,
         Err(error) => {
@@ -5320,15 +5500,13 @@ fn paste_clipboard_image(
             return paste_command_error(&metrics_state, "clipboard_write_failed", started, error)
         }
     };
-    let continuous_paste = current_window_mode.get() == WindowMode::Quick
-        && quick_panel_pinned.0.load(Ordering::Relaxed);
     finish_paste_attempt(
         &metrics_state,
         paste_to_remembered_target(
             &app,
             &paste_target,
+            invocation,
             elevated_paste.0.load(Ordering::Relaxed),
-            continuous_paste,
             clipboard_sequence,
             &expected,
         ),
@@ -5508,7 +5686,7 @@ pub fn run() {
             tray_builder.build(app)?;
 
             #[cfg(target_os = "windows")]
-            start_foreground_tracking();
+            start_foreground_tracking(app.handle());
             start_clipboard_monitor(
                 app.handle().clone(),
                 capture_control.clone(),
@@ -5541,8 +5719,7 @@ pub fn run() {
                     .0
                     .load(Ordering::Relaxed);
                 if pinned && mode == WindowMode::Quick {
-                    let app = window.app_handle();
-                    refresh_pinned_paste_target(app, &app.state::<PasteTarget>());
+                    update_visible_pinned_paste_target(window.app_handle());
                 }
                 let onboarding_active = window.app_handle().state::<OnboardingWindowActive>().get();
                 let native_window_foreground = native_window_is_foreground(window);
@@ -6034,6 +6211,42 @@ mod tests {
     }
 
     #[test]
+    fn internal_write_tolerates_later_sequences_and_is_consumed_once() {
+        let snapshot = ClipboardSnapshot::Text("plain".into());
+        let writes = InternalClipboardWrites::default();
+        let signature = writes.begin(&snapshot);
+        writes.commit(signature, Some(10));
+
+        assert!(!writes.consume(Some(9), signature));
+        assert!(writes.consume(Some(11), signature));
+        assert!(!writes.consume(Some(12), signature));
+
+        let signature = writes.begin(&snapshot);
+        writes.commit(signature, Some(11));
+        assert!(!writes.consume(Some(12), signature.wrapping_add(1)));
+        assert!(!writes.consume(Some(13), signature));
+
+        let signature = writes.begin(&snapshot);
+        writes.commit(signature, Some(u64::from(u32::MAX)));
+        assert!(writes.consume(Some(1), signature));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn file_copy_checks_the_current_source_on_disk() {
+        let directory = std::env::temp_dir();
+        let existing = directory.join(format!("quickpaste-copy-source-{}.tmp", std::process::id()));
+        fs::write(&existing, b"synthetic fixture").unwrap();
+        let paths = [existing.to_string_lossy().into_owned()];
+        assert_eq!(check_file_copy_sources(&paths), Ok(()));
+        fs::remove_file(existing).unwrap();
+        assert_eq!(
+            check_file_copy_sources(&paths),
+            Err(FILE_COPY_SOURCE_MISSING.into())
+        );
+    }
+
+    #[test]
     fn image_payload_is_encoded_as_png_data_url() {
         let payload = snapshot_payload(
             ClipboardSnapshot::Image {
@@ -6337,9 +6550,7 @@ mod tests {
         let target = PasteTarget::default();
         target.remember_with_pid_and_focus(4242, 777, Some(4343));
 
-        let identity = target
-            .identity_for_activation(false)
-            .expect("paste target should exist");
+        let identity = target.snapshot().expect("paste target should exist");
         assert_eq!(identity.window_handle, 4242);
         assert_eq!(identity.process_id, 777);
         assert_eq!(identity.focus_window_handle, Some(4343));
@@ -6350,10 +6561,10 @@ mod tests {
         let target = PasteTarget::default();
         target.remember(4242);
 
-        assert!(target.identity_for_activation(true).is_some());
+        assert!(target.snapshot().is_some());
 
         let second = target
-            .identity_for_activation(true)
+            .snapshot()
             .expect("successful pinned paste should keep its target");
         assert_eq!(second.window_handle, 4242);
     }
@@ -6362,11 +6573,8 @@ mod tests {
     fn pinned_attempt_keeps_its_target_until_a_new_foreground_window_is_observed() {
         let target = PasteTarget::default();
         target.remember(4242);
-        let first = target.identity_for_activation(true).unwrap();
-        assert_eq!(
-            target.identity_for_activation(true).unwrap().window_handle,
-            4242
-        );
+        let first = target.snapshot().unwrap();
+        assert_eq!(target.snapshot().unwrap().window_handle, 4242);
 
         let next = PasteTargetIdentity {
             window_handle: 8484,
@@ -6375,10 +6583,7 @@ mod tests {
         };
         assert!(target.refresh_if_newer(&next));
         assert!(!target.refresh_if_newer(&first));
-        assert_eq!(
-            target.identity_for_activation(true).unwrap().window_handle,
-            8484
-        );
+        assert_eq!(target.snapshot().unwrap().window_handle, 8484);
     }
 
     #[test]
@@ -6389,27 +6594,54 @@ mod tests {
     }
 
     #[test]
-    fn unpinned_activation_still_consumes_the_target_immediately() {
+    fn unpinned_target_remains_available_until_its_panel_hides() {
         let target = PasteTarget::default();
         target.remember(4242);
+        let snapshot = target.snapshot().unwrap();
 
-        assert!(target.identity_for_activation(false).is_some());
-        assert!(target.identity_for_activation(false).is_none());
+        assert!(!should_hide_panel_for_paste(
+            WindowMode::Quick,
+            false,
+            false
+        ));
+        assert!(!should_hide_panel_for_paste(WindowMode::Quick, true, true));
+        assert!(!should_hide_panel_for_paste(
+            WindowMode::Library,
+            false,
+            true
+        ));
+        assert!(should_hide_panel_for_paste(WindowMode::Quick, false, true));
+        assert!(target.snapshot().is_some());
+        assert!(target.clear_if_current(&snapshot));
+        assert!(target.snapshot().is_none());
+    }
+
+    #[test]
+    fn paste_target_age_does_not_invalidate_a_live_window_or_accept_a_reused_handle() {
+        let now = Instant::now();
+        let old = now.checked_sub(Duration::from_secs(600)).unwrap_or(now);
+        let target = PasteTargetIdentity {
+            window_handle: 4242,
+            focus_window_handle: None,
+            process_id: 777,
+            captured_at: old,
+        };
+        assert!(paste_target_matches_live_window(&target, Some(777)));
+        assert!(!paste_target_matches_live_window(&target, Some(888)));
+        assert!(!paste_target_matches_live_window(&target, None));
     }
 
     #[test]
     fn completing_an_old_activation_does_not_clear_a_new_target() {
         let target = PasteTarget::default();
         target.remember(4242);
-        let old_identity = target
-            .identity_for_activation(true)
-            .expect("first target should exist");
+        let old_identity = target.snapshot().expect("first target should exist");
         target.remember(8484);
 
         assert!(!target.clear_if_current(&old_identity));
         assert_eq!(
             target
-                .identity_for_activation(true)
+                .snapshot()
                 .expect("new target should remain")
                 .window_handle,
             8484

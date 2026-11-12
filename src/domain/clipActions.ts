@@ -46,7 +46,7 @@ export function getClipActions(clip: ClipboardItem, surface: ClipSurface): ClipA
 
   if (surface === 'preview') return actions
 
-  actions.push({ id: 'copy' })
+  actions.push({ id: 'copy', ...(mode === 'files' && !hasCompleteFileGroup(clip) ? { disabled: true } : {}) })
   if (clip.kind === 'link') actions.push({
     id: 'open-link',
     disabled: clip.payloadLoaded !== false && !isSafeExternalUrl(clip.content),

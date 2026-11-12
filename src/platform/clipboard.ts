@@ -6,6 +6,8 @@ export interface PasteResult {
   copied: boolean
   pasted: boolean
   requiresElevation: boolean
+  panelHidden?: boolean
+  clipboardChanged?: boolean
 }
 export type PasteInvoker = (command: string, args: Record<string, unknown>) => Promise<PasteResult>
 
@@ -133,14 +135,16 @@ function clipboardFilePaths(filesOrPaths: readonly (ClipboardFile | string)[]): 
   return paths
 }
 
-export async function copyFiles(files: readonly ClipboardFile[]): Promise<boolean> {
+export async function copyFiles(files: readonly ClipboardFile[]): Promise<'copied' | 'missing' | 'failed'> {
+  if (!files.length || files.some((file) => !file.exists)) return 'missing'
   const paths = clipboardFilePaths(files)
-  if (!paths || !files.every((file) => file.exists) || !('__TAURI_INTERNALS__' in window)) return false
+  if (!paths || !('__TAURI_INTERNALS__' in window)) return 'failed'
   try {
-    await invokePaste('write_clipboard_files', { paths })
-    return true
-  } catch {
-    return false
+    const { invoke } = await import('@tauri-apps/api/core')
+    await invoke('write_clipboard_files', { paths })
+    return 'copied'
+  } catch (error) {
+    return error === 'file_copy_source_missing' ? 'missing' : 'failed'
   }
 }
 

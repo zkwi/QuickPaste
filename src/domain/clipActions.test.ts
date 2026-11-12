@@ -79,6 +79,8 @@ describe('clip action policy', () => {
     const oversizedLink = { ...linkClip, content: `https://example.com/${'a'.repeat(8 * 1024)}` }
     const missingImage = { ...imageClip, imageUrl: undefined }
 
+    expect(getClipActions(missingFile, 'quick').find(({ id }) => id === 'copy')?.disabled).toBe(true)
+    expect(getClipActions(missingFile, 'manager').find(({ id }) => id === 'copy')?.disabled).toBe(true)
     expect(getClipActions(missingFile, 'manager').find(({ id }) => id === 'open-file')?.disabled).toBe(true)
     expect(getClipActions(missingFile, 'manager').find(({ id }) => id === 'reveal-file')?.disabled).toBe(true)
     expect(getClipActions(invalidLink, 'manager').find(({ id }) => id === 'open-link')?.disabled).toBe(true)

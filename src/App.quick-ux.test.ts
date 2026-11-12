@@ -2,7 +2,7 @@ import { flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import App from './App.vue'
 
 const clipboardMocks = vi.hoisted(() => ({
-  copyFiles: vi.fn().mockResolvedValue(true),
+  copyFiles: vi.fn().mockResolvedValue('copied'),
   copyFormats: vi.fn().mockResolvedValue(true),
   copyImage: vi.fn().mockResolvedValue(true),
   copyText: vi.fn().mockResolvedValue(true),
@@ -284,18 +284,20 @@ describe('quick panel high-frequency interaction', () => {
     expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
   })
 
-  it('opens and closes preview with Space from an empty search without activating paste', async () => {
+  it.each([' ', 'Escape'])('restores search focus when closing a preview with %s', async (closeKey) => {
     const search = wrapper.get('[data-testid="search-input"]')
+    ;(search.element as HTMLElement).focus()
     expect(dispatchKey(search.element, ' ', { isComposing: true }).defaultPrevented).toBe(false)
     expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
     expect(dispatchKey(search.element, ' ').defaultPrevented).toBe(true)
     await flushPromises()
     const button = wrapper.get('[data-testid="preview-paste"]')
     ;(button.element as HTMLElement).focus()
-    expect(dispatchKey(button.element, ' ').defaultPrevented).toBe(true)
+    expect(dispatchKey(button.element, closeKey).defaultPrevented).toBe(true)
     await flushPromises()
     expect(wrapper.find('[data-testid="preview-panel"]').exists()).toBe(false)
     expect(clipboardMocks.pasteText).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(search.element)
     await search.setValue('Windows')
     expect(dispatchKey(search.element, ' ').defaultPrevented).toBe(false)
   })
@@ -310,6 +312,35 @@ describe('quick panel high-frequency interaction', () => {
     expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(false)
     await wrapper.get('[data-testid="undo-delete"]').trigger('click')
     expect(wrapper.find('[data-clip-id="clip-1"]').exists()).toBe(true)
+  })
+
+  it('moves selection to the adjacent item on repeated deletes from the search box', async () => {
+    const search = wrapper.get<HTMLInputElement>('[data-testid="search-input"]')
+    search.element.focus()
+    const original = wrapper.findAll('[data-clip-id]').map((row) => row.attributes('data-clip-id'))
+    dispatchKey(search.element, 'ArrowDown')
+    await wrapper.vm.$nextTick()
+    dispatchKey(search.element, 'Delete')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.clip-row.is-selected').attributes('data-clip-id')).toBe(original[2])
+    expect(document.activeElement).toBe(search.element)
+    dispatchKey(search.element, 'Delete')
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('.clip-row.is-selected').attributes('data-clip-id')).toBe(original[3])
+    expect(wrapper.get('[data-clip-id]').attributes('data-clip-id')).toBe(original[0])
+  })
+
+  it('keeps search focused after deleting a middle record from its context menu', async () => {
+    const search = wrapper.get<HTMLInputElement>('[data-testid="search-input"]')
+    search.element.focus()
+    const rows = wrapper.findAll('[data-clip-id]')
+    const nextId = rows[3].attributes('data-clip-id')
+    dispatchContextMenu(rows[2].element)
+    await wrapper.vm.$nextTick()
+    await wrapper.get('[data-testid="context-delete"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('.clip-row.is-selected').attributes('data-clip-id')).toBe(nextId)
+    expect(document.activeElement).toBe(search.element)
   })
 
   it('uses quick context actions to pin, exclude the source, and delete a record', async () => {

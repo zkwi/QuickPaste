@@ -71,7 +71,7 @@ const metricsMocks = vi.hoisted(() => ({
 }))
 
 const clipboardMocks = vi.hoisted(() => ({
-  copyFiles: vi.fn().mockResolvedValue(true),
+  copyFiles: vi.fn().mockResolvedValue('copied'),
   copyFormats: vi.fn().mockResolvedValue(true),
   copyImage: vi.fn().mockResolvedValue(true),
   copyText: vi.fn().mockResolvedValue(true),
@@ -1586,7 +1586,7 @@ describe('native setting reliability', () => {
     expect(wrapper.find('.feedback-toast').exists()).toBe(false)
   })
 
-  it('updates the paste target atomically with a session and expires a stale label', async () => {
+  it('keeps the session target visible after five minutes', async () => {
     vi.useFakeTimers()
     const sourceAppIcon = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3voZ8QAAAABJRU5ErkJggg=='
     let quickPanelInvoked: ((session: { sessionId: number; sourceApp: string; sourceAppIcon?: string; elevated: boolean }) => void) | undefined
@@ -1605,13 +1605,11 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="paste-target"] .source-app-icon img').attributes('src')).toBe(sourceAppIcon)
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000)
-    await wrapper.vm.$nextTick()
-    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('当前应用')
-    expect(wrapper.get('[data-testid="paste-target"]').text()).not.toContain('WeChat')
-    expect(wrapper.find('[data-testid="paste-target"] .source-app-icon img').exists()).toBe(false)
+    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('WeChat')
+    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('管理员')
   })
 
-  it('expires a future paste target even when the matching quick-panel event is lost', async () => {
+  it('updates and clears a pinned target from native events without re-invoking the panel', async () => {
     vi.useFakeTimers()
     let pasteTargetChanged: ((target: {
       sessionId: number
@@ -1637,10 +1635,15 @@ describe('native setting reliability', () => {
     expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('Windows Terminal')
 
     await vi.advanceTimersByTimeAsync(5 * 60 * 1_000)
+    pasteTargetChanged?.({ sessionId: 11, sourceApp: 'Notepad', elevated: false })
+    pasteTargetChanged?.({ sessionId: 10, sourceApp: 'Older app', elevated: true })
     await wrapper.vm.$nextTick()
-
-    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('当前应用')
+    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('Notepad')
+    expect(wrapper.get('[data-testid="paste-target"]').text()).not.toContain('管理员')
     expect(wrapper.find('[data-testid="paste-target"] .source-app-icon img').exists()).toBe(false)
+    pasteTargetChanged?.({ sessionId: 11, sourceApp: '', elevated: false })
+    await wrapper.vm.$nextTick()
+    expect(wrapper.get('[data-testid="paste-target"]').text()).toContain('当前应用')
   })
 
   it('does not let an older manager transition overwrite a newer quick-panel invocation', async () => {
@@ -1742,6 +1745,40 @@ describe('native setting reliability', () => {
     await flushPromises()
 
     expect(wrapper.get('.feedback-toast').text()).toContain('WeChat')
+  })
+
+  it('keeps focus and shows the clipboard change reason when paste is blocked', async () => {
+    clipboardMocks.pasteText.mockResolvedValueOnce({
+      copied: false, pasted: false, requiresElevation: false, panelHidden: false, clipboardChanged: true,
+    })
+    historyMocks.loadNativeHistory.mockResolvedValueOnce([{
+      id: 'blocked-paste', kind: 'text', title: 'Synthetic text', content: 'fixture',
+      sourceApp: 'Notepad', copiedAt: new Date().toISOString(), pinned: false, searchTerms: [],
+    }])
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    const search = wrapper.get<HTMLInputElement>('[data-testid="search-input"]')
+    search.element.focus()
+    await search.trigger('keydown', { key: 'Enter' })
+    await flushPromises()
+    expect(document.activeElement).toBe(search.element)
+    expect(wrapper.get('.feedback-toast').text()).toContain('剪贴板已被其他应用更新')
+  })
+
+  it('shows the source error when a file disappeared after capture', async () => {
+    clipboardMocks.copyFiles.mockResolvedValueOnce('missing')
+    historyMocks.loadNativeHistory.mockResolvedValueOnce([{
+      id: 'missing-source', kind: 'file', title: 'Synthetic file', content: 'fixture',
+      sourceApp: 'Explorer', copiedAt: new Date().toISOString(), pinned: false, searchTerms: [],
+      formats: ['files'], files: [{ path: 'C:\\Fixtures\\gone.txt', name: 'gone.txt', exists: true, directory: false }],
+    }])
+    const wrapper = mount(App, { attachTo: document.body })
+    await flushPromises()
+    await wrapper.get('[data-testid="search-input"]').trigger('keydown', { key: 'c', ctrlKey: true })
+    await flushPromises()
+    expect(clipboardMocks.copyFiles).toHaveBeenCalled()
+    expect(wrapper.get('.feedback-toast').text()).toContain('源文件已不存在')
+    expect(windowMocks.runWindowAction).not.toHaveBeenCalled()
   })
 
   it('does not leak feedback from an earlier paste into a newly invoked quick session', async () => {

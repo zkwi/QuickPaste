@@ -82,7 +82,7 @@ import {
   type SnippetDraft,
 } from './domain/collections'
 import { formatUpdateSize } from './domain/update'
-import { copyFiles, copyFormats, copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText } from './platform/clipboard'
+import { copyFiles, copyFormats, copyImage, copyText, pasteFiles, pasteFormats, pasteImage, pasteText, type PasteResult } from './platform/clipboard'
 import {
   cancelNativeQuit,
   connectCaptureAvailability,
@@ -165,6 +165,7 @@ interface ClipContextMenuState {
   x: number
   y: number
   restoreFocus: HTMLElement | null
+  searchHadFocus: boolean
 }
 
 interface PendingRetentionChange {
@@ -198,7 +199,6 @@ const HISTORY_RETRY_ATTEMPTS = 3
 const HISTORY_RETRY_DELAY_MS = 200
 const HISTORY_QUIT_FLUSH_TIMEOUT_MS = 900
 const DELETE_UNDO_TIMEOUT_MS = 6_000
-const PASTE_TARGET_TTL_MS = 5 * 60 * 1_000
 const EVENT_SUBSCRIPTION_ATTEMPTS = 3
 const DIRECT_PASTE_ITEM_COUNT = 10
 const NATIVE_HISTORY_PAGE_SIZE = 50
@@ -332,7 +332,6 @@ const historyState = ref<HistoryState>(nativeRuntime ? 'loading' : 'ready')
 let toastTimer: ReturnType<typeof setTimeout> | undefined
 let shortcutRecordingToastActive = false
 let undoTimer: ReturnType<typeof setTimeout> | undefined
-let targetExpiryTimer: ReturnType<typeof setTimeout> | undefined
 let relativeTimeTimer: ReturnType<typeof setInterval> | undefined
 let disconnectNativeClipboard: (() => void) | undefined
 let disconnectPasteTarget: (() => void) | undefined
@@ -424,6 +423,7 @@ const {
   isUnmounted: () => appUnmounted,
 })
 let restoreResultFocusAfterPreview = false
+let previewOpenedFromSearch = false
 let storedOcrPumpGeneration = 0
 let storedOcrPumpPromise: Promise<void> | null = null
 
@@ -1690,9 +1690,11 @@ function deleteClipImmediately(id: string, focusSurface?: ClipFocusSurface) {
     if (undoHadFocus) nextTick(focusCurrentSurfaceFallback)
   }, DELETE_UNDO_TIMEOUT_MS)
 
+  if (focusSurface === 'quick' && (selectedId.value === id || focusedRowId === id)) {
+    selectedId.value = nextFocusId ?? ''
+  }
   if (focusedRowId !== id) return
-  if (focusSurface === 'quick') selectedId.value = nextFocusId ?? ''
-  else if (focusSurface === 'manager') managerSelectedId.value = nextFocusId ?? ''
+  if (focusSurface === 'manager') managerSelectedId.value = nextFocusId ?? ''
   nextTick(() => {
     if (focusSurface === 'quick') {
       const nextResult = nextFocusId
@@ -1750,7 +1752,10 @@ function openClipContextMenu(
   if (!items.value.some((clip) => clip.id === clipId)) return
   if (surface === 'manager') managerSelectedId.value = clipId
   else selectedId.value = clipId
-  clipContextMenu.value = { clipId, surface, x, y, restoreFocus }
+  clipContextMenu.value = {
+    clipId, surface, x, y, restoreFocus,
+    searchHadFocus: surface === 'quick' && document.activeElement === searchInput.value,
+  }
 }
 
 function contextMenuTarget(target: Element) {
@@ -1850,7 +1855,16 @@ function runContextPreview() {
 async function runContextAction(action: ClipAction) {
   const clip = contextMenuClip.value
   if (!clip || action.disabled) return
-  const actionSurface = clipContextMenu.value?.surface ?? 'quick'
+  const menu = clipContextMenu.value
+  const actionSurface = menu?.surface ?? 'quick'
+  if (action.id === 'delete') {
+    closeClipContextMenu()
+    await nextTick()
+    const focus = menu?.searchHadFocus ? searchInput.value : menu?.restoreFocus
+    if (focus?.isConnected) focus.focus({ preventScroll: true })
+    deleteClip(clip.id, 'quick')
+    return
+  }
   closeClipContextMenu(true)
   if (action.pasteMode) {
     await pasteClip(clip, action.pasteMode)
@@ -1862,10 +1876,6 @@ async function runContextAction(action: ClipAction) {
   }
   if (action.id === 'pin' || action.id === 'unpin') {
     pinClip(clip.id, 'quick')
-    return
-  }
-  if (action.id === 'delete') {
-    deleteClip(clip.id, 'quick')
     return
   }
   if (action.id === 'exclude-source') {
@@ -2244,6 +2254,7 @@ function resetQuickSession(focusSearch = true) {
   quickSearchComposing.value = false
   managerSearchComposing.value = false
   restoreResultFocusAfterPreview = false
+  previewOpenedFromSearch = false
   selectedId.value = onboardingPracticePending.value
     && items.value.some((clip) => clip.id === ONBOARDING_SAMPLE_ID)
     ? ONBOARDING_SAMPLE_ID
@@ -2273,11 +2284,13 @@ async function toggleQuickPanelPinned() {
 }
 
 async function openPreview(id: string) {
+  const fromSearch = document.activeElement === searchInput.value
   showHoverPreview(null)
   selectedId.value = id
   const clip = items.value.find((candidate) => candidate.id === id)
   if (!clip) return
   if (cachedPayload(clip)) {
+    previewOpenedFromSearch = fromSearch
     previewId.value = id
     restoreResultFocusAfterPreview = false
     return
@@ -2294,6 +2307,7 @@ async function openPreview(id: string) {
     }
     return
   }
+  previewOpenedFromSearch = fromSearch
   previewId.value = id
   restoreResultFocusAfterPreview = false
 }
@@ -2323,8 +2337,10 @@ async function showHoverPreview(id: string | null) {
 
 function closePreview() {
   previewLoadGeneration += 1
-  restoreResultFocusAfterPreview = true
+  restoreResultFocusAfterPreview = !previewOpenedFromSearch
   previewId.value = null
+  if (previewOpenedFromSearch) restoreFocus(searchInput.value)
+  previewOpenedFromSearch = false
 }
 
 function focusCurrentView() {
@@ -2340,7 +2356,8 @@ function focusCurrentQuickContent() {
       previewPasteButton.value?.focusPrimary()
     } else if (restoreResultFocusAfterPreview) {
       restoreResultFocusAfterPreview = false
-      document.querySelector<HTMLElement>(`[data-clip-id="${selectedId.value}"] .clip-primary`)?.focus()
+      const row = document.querySelector<HTMLElement>(`[data-clip-id="${selectedId.value}"] .clip-primary`)
+      ;(row ?? searchInput.value)?.focus()
     }
   })
 }
@@ -2356,21 +2373,37 @@ async function releaseInputFocusBeforePaste(): Promise<HTMLElement | null> {
   return activeElement
 }
 
+function showPasteFeedback(result: PasteResult, app: string) {
+  const message = result.clipboardChanged
+    ? t('clipboardChangedBeforePaste')
+    : result.requiresElevation
+      ? t('elevatedPasteApprovalRequired')
+      : result.pasted
+        ? t('pastedTo', { app })
+        : result.copied
+          ? t('pasteFallbackCopied', { app })
+          : t('clipboardUnavailable')
+  showToast(message, !result.pasted)
+}
+
 async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode(clip)) {
   if (pasteInFlight.value) return
   const sessionGeneration = quickSessionGeneration
-  const fromQuick = currentView.value === 'quick'
-  const pasteTargetLabel = targetApp.value ?? t('currentApp')
+  const view = currentView.value
+  const fromQuick = view === 'quick'
+  const isCurrent = () => sessionGeneration === quickSessionGeneration && view === currentView.value
+  const pasteTargetLabel = (fromQuick ? targetApp.value : null) ?? t('currentApp')
   pasteInFlight.value = true
   try {
     const payload = await resolveClipPayload(clip)
-    if (!payload || sessionGeneration !== quickSessionGeneration) {
-      if (!payload && sessionGeneration === quickSessionGeneration) showToast(t('historyUnavailable'), true)
+    if (!payload || !isCurrent()) {
+      if (!payload && isCurrent()) showToast(t('historyUnavailable'), true)
       return
     }
     const action = getClipActions(payload, 'quick').find((candidate) => candidate.pasteMode === mode)
     if (!action || action.disabled) return
     const focusBeforePaste = await releaseInputFocusBeforePaste()
+    if (!isCurrent()) return
     const result = mode === 'files'
       ? await pasteFiles(payload.files ?? [])
       : mode === 'preserve'
@@ -2378,18 +2411,12 @@ async function pasteClip(clip: ClipboardItem, mode: PasteMode = defaultPasteMode
         : mode === 'image' && payload.imageUrl
           ? await pasteImage(payload.imageUrl)
           : await pasteText(payload.content)
-    if (sessionGeneration !== quickSessionGeneration) return
-    if (!result.pasted && (!nativeRuntime || !result.copied || quickPanelPinned.value || !fromQuick)) restoreFocus(focusBeforePaste)
+    if (!isCurrent()) return
+    if (!result.pasted && !result.panelHidden) restoreFocus(focusBeforePaste)
     if (payload.id === ONBOARDING_SAMPLE_ID && result.pasted) {
       onboardingPracticePending.value = false
     }
-    showToast(result.requiresElevation
-      ? t('elevatedPasteApprovalRequired')
-      : result.pasted
-      ? t('pastedTo', { app: pasteTargetLabel })
-      : result.copied
-        ? t('pasteFallbackCopied', { app: pasteTargetLabel })
-      : t('clipboardUnavailable'), result.requiresElevation || !result.pasted)
+    showPasteFeedback(result, pasteTargetLabel)
     if (fromQuick && (result.pasted || result.copied)) promoteQuickClip(clip.id)
   } finally {
     pasteInFlight.value = false
@@ -2424,9 +2451,15 @@ async function copyClip(clip: ClipboardItem) {
       case 'image':
         copied = Boolean(payload.imageUrl && await copyImage(payload.imageUrl))
         break
-      case 'files':
-        copied = await copyFiles(payload.files ?? [])
+      case 'files': {
+        const result = await copyFiles(payload.files ?? [])
+        if (result === 'missing') {
+          if (isCurrent()) showToast(t('fileCopySourceUnavailable'), true)
+          return
+        }
+        copied = result === 'copied'
         break
+      }
       case 'preserve':
         copied = await copyFormats(payload.content, payload.html, payload.rtfBase64)
         break
@@ -2458,14 +2491,8 @@ async function pasteRecognizedText(text: string) {
     const focusBeforePaste = await releaseInputFocusBeforePaste()
     const result = await pasteText(text)
     if (sessionGeneration !== quickSessionGeneration) return
-    if (!result.pasted && (!nativeRuntime || !result.copied || quickPanelPinned.value)) restoreFocus(focusBeforePaste)
-    showToast(result.requiresElevation
-      ? t('elevatedPasteApprovalRequired')
-      : result.pasted
-        ? t('pastedTo', { app: pasteTargetLabel })
-        : result.copied
-          ? t('pasteFallbackCopied', { app: pasteTargetLabel })
-          : t('clipboardUnavailable'), result.requiresElevation || !result.pasted)
+    if (!result.pasted && !result.panelHidden) restoreFocus(focusBeforePaste)
+    showPasteFeedback(result, pasteTargetLabel)
   } finally {
     pasteInFlight.value = false
   }
@@ -3177,24 +3204,12 @@ const { handleKeydown } = useGlobalKeyboard(() => ({
 function applyPasteTarget(target: PasteTargetInfo) {
   if (typeof target.sessionId === 'number') {
     if (target.sessionId < activeQuickSessionId) return
-    // 原生会先发送目标、再发送面板会话；即使后一事件丢失，目标也必须按自己的会话过期。
+    // 原生会先发送目标、再发送面板会话；即使后一事件丢失，也忽略更早会话的目标。
     activeQuickSessionId = target.sessionId
   }
-  if (targetExpiryTimer) clearTimeout(targetExpiryTimer)
-  targetExpiryTimer = undefined
   targetApp.value = target.sourceApp || null
   targetAppIcon.value = targetApp.value ? normalizeSourceAppIcon(target.sourceAppIcon) ?? null : null
   targetElevated.value = Boolean(target.sourceApp) && target.elevated
-  if (!targetApp.value) return
-
-  const targetSessionId = target.sessionId ?? activeQuickSessionId
-  targetExpiryTimer = setTimeout(() => {
-    if (targetSessionId !== activeQuickSessionId) return
-    targetApp.value = null
-    targetAppIcon.value = null
-    targetElevated.value = false
-    targetExpiryTimer = undefined
-  }, PASTE_TARGET_TTL_MS)
 }
 
 async function connectEventWithRetry(
@@ -3433,7 +3448,6 @@ onBeforeUnmount(() => {
   void historyPersistence.flush()
   if (toastTimer) clearTimeout(toastTimer)
   if (undoTimer) clearTimeout(undoTimer)
-  if (targetExpiryTimer) clearTimeout(targetExpiryTimer)
   if (relativeTimeTimer) clearInterval(relativeTimeTimer)
   cancelNativeHistorySearchRefresh()
 })
